@@ -10,6 +10,12 @@ export default defineConfig({
   build: {
     outDir: "../../dist/renderer",
     emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        index: "src/renderer/index.html",
+        overlay: "src/renderer/overlay.html",
+      },
+    },
   },
   server: { port: 5183, strictPort: true },
 });

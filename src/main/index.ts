@@ -1,7 +1,9 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage, session } from "electron";
+import { app, BrowserWindow, Tray, Menu, nativeImage, session, ipcMain } from "electron";
 import path from "node:path";
 import { HotkeyAdapter } from "./hotkey";
+import { OverlayWindow } from "./overlay";
 import { DEFAULT_PTT_KEY } from "../shared/constants";
+import { CAPTURE_DONE, CAPTURE_ERROR, type CaptureDonePayload } from "../shared/ipcContracts";
 
 // AGR Flow: local, on-device dictation. Phase 1 = Windows push-to-talk loop.
 // This entry point owns the app lifecycle: single instance, tray, settings window.
@@ -29,26 +31,46 @@ if (!app.requestSingleInstanceLock()) {
     });
     createTray();
     openSettings();
+    overlay.create(DEV);
+    wireCapture();
     startPtt();
   });
 }
 
-// Push-to-talk wiring. For now the callbacks only surface the state (tray
-// tooltip + dev log); the capture pipeline plugs into these in the next commit.
+const overlay = new OverlayWindow();
+
+// The dictation loop, main-process side. PTT drives the overlay (which owns the
+// microphone); the finished WAV comes back once per utterance and is handed to
+// the next stage, then every reference is dropped. Next commit: the ASR sidecar
+// consumes it; today we only log its size in dev.
 const hotkey = new HotkeyAdapter(DEFAULT_PTT_KEY, {
   onStart() {
     tray?.setToolTip("AGR Flow - listening...");
-    if (DEV) console.log("[ptt] start");
+    overlay.startCapture();
   },
   onStop() {
     tray?.setToolTip("AGR Flow");
-    if (DEV) console.log("[ptt] stop -> transcribe");
+    overlay.stopCapture();
   },
   onCancel() {
     tray?.setToolTip("AGR Flow");
-    if (DEV) console.log("[ptt] cancel (tap too short)");
+    overlay.cancelCapture();
   },
 });
+
+function wireCapture() {
+  ipcMain.on(CAPTURE_DONE, (_ev, payload: CaptureDonePayload) => {
+    // NOTHING is retained: the buffer lives in this handler and dies with it.
+    if (DEV)
+      console.log(
+        `[capture] ${payload.durationMs} ms of speech, wav ${payload.wav.byteLength} bytes -> (ASR sidecar arrives next commit)`,
+      );
+  });
+  ipcMain.on(CAPTURE_ERROR, (_ev, message: string) => {
+    console.error("[capture] failed:", message);
+    tray?.setToolTip("AGR Flow - microphone unavailable");
+  });
+}
 
 async function startPtt() {
   try {
@@ -61,7 +83,10 @@ async function startPtt() {
   }
 }
 
-app.on("before-quit", () => hotkey.stop());
+app.on("before-quit", () => {
+  hotkey.stop();
+  overlay.destroy();
+});
 
 function iconPath(): string {
   // Packaged: resources/ sits next to the app; dev: repo root.
