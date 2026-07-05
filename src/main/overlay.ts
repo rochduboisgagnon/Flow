@@ -12,6 +12,12 @@ import {
 // the focus probe (and the insertion) target ourselves.
 export class OverlayWindow {
   private win: BrowserWindow | null = null;
+  // A PTT press in the first second after boot can beat the renderer's load:
+  // sending CAPTURE_START into a page with no listener would silently lose the
+  // dictation. Defer the last START until did-finish-load; a stop/cancel that
+  // arrives meanwhile clears it (nothing was captured, nothing to deliver).
+  private ready = false;
+  private pendingStart = false;
 
   create(dev: boolean) {
     const { width, height } = screen.getPrimaryDisplay().workAreaSize;
@@ -38,24 +44,39 @@ export class OverlayWindow {
     });
     this.win.setAlwaysOnTop(true, "screen-saver");
     this.win.setIgnoreMouseEvents(true); // clicks pass through to whatever is under it
+    this.win.webContents.on("did-finish-load", () => {
+      this.ready = true;
+      if (this.pendingStart) {
+        this.pendingStart = false;
+        this.startCapture();
+      }
+    });
     if (dev) this.win.loadURL("http://localhost:5183/overlay.html");
     else this.win.loadFile(path.join(__dirname, "..", "renderer", "overlay.html"));
   }
 
   startCapture() {
     if (!this.win || this.win.isDestroyed()) return;
+    if (!this.ready) {
+      this.pendingStart = true;
+      return;
+    }
     this.win.showInactive(); // show WITHOUT focusing
     this.win.webContents.send(CAPTURE_START);
   }
 
   stopCapture() {
-    this.win?.webContents.send(CAPTURE_STOP);
-    this.win?.hide();
+    this.pendingStart = false;
+    if (!this.win || this.win.isDestroyed()) return;
+    this.win.webContents.send(CAPTURE_STOP);
+    this.win.hide();
   }
 
   cancelCapture() {
-    this.win?.webContents.send(CAPTURE_CANCEL);
-    this.win?.hide();
+    this.pendingStart = false;
+    if (!this.win || this.win.isDestroyed()) return;
+    this.win.webContents.send(CAPTURE_CANCEL);
+    this.win.hide();
   }
 
   destroy() {

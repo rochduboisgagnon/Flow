@@ -33,10 +33,20 @@ function Overlay() {
 
   useEffect(() => {
     const api = window.agrflow;
+    // Cancellation token for the async start(). getUserMedia can take hundreds
+    // of ms; a 300 ms press can legitimately release BEFORE the mic is ready.
+    // Without this, that stop() found no session yet and the capture finished
+    // establishing itself afterwards: a hidden, hot microphone accumulating
+    // audio that nothing would ever stop - the exact opposite of this product.
+    // teardown() bumps the generation; start() re-checks it after every await.
+    let gen = 0;
 
     async function start() {
+      const my = ++gen;
+      let stream: MediaStream | null = null;
+      let ctx: AudioContext | null = null;
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
+        stream = await navigator.mediaDevices.getUserMedia({
           audio: {
             channelCount: 1,
             echoCancellation: true,
@@ -44,12 +54,21 @@ function Overlay() {
             autoGainControl: true,
           },
         });
+        if (my !== gen) {
+          stream.getTracks().forEach((t) => t.stop());
+          return; // stop/cancel raced us: nothing was captured, nothing is kept
+        }
         // Chromium resamples the device rate to the context rate: asking the
         // context for 16 kHz gives us ASR-ready PCM with zero conversion step.
-        const ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
+        ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
         await ctx.audioWorklet.addModule(
           URL.createObjectURL(new Blob([WORKLET], { type: "text/javascript" })),
         );
+        if (my !== gen) {
+          stream.getTracks().forEach((t) => t.stop());
+          void ctx.close();
+          return;
+        }
         const src = ctx.createMediaStreamSource(stream);
         const node = new AudioWorkletNode(ctx, "agrflow-capture");
         const chunks: Float32Array[] = [];
@@ -66,12 +85,16 @@ function Overlay() {
         sessionRef.current = { ctx, stream, chunks };
         setPhase("listening");
       } catch (err) {
+        // A later step can throw AFTER the stream is live: never leak a hot mic.
+        stream?.getTracks().forEach((t) => t.stop());
+        void ctx?.close();
         setPhase("error");
         api.sendCaptureError(String(err));
       }
     }
 
     function teardown(): Float32Array[] {
+      gen++; // invalidate any start() still awaiting its microphone
       const s = sessionRef.current;
       sessionRef.current = null;
       if (!s) return [];
