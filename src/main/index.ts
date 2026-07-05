@@ -1,5 +1,7 @@
 import { app, BrowserWindow, Tray, Menu, nativeImage, session } from "electron";
 import path from "node:path";
+import { HotkeyAdapter } from "./hotkey";
+import { DEFAULT_PTT_KEY } from "../shared/constants";
 
 // AGR Flow: local, on-device dictation. Phase 1 = Windows push-to-talk loop.
 // This entry point owns the app lifecycle: single instance, tray, settings window.
@@ -27,8 +29,39 @@ if (!app.requestSingleInstanceLock()) {
     });
     createTray();
     openSettings();
+    startPtt();
   });
 }
+
+// Push-to-talk wiring. For now the callbacks only surface the state (tray
+// tooltip + dev log); the capture pipeline plugs into these in the next commit.
+const hotkey = new HotkeyAdapter(DEFAULT_PTT_KEY, {
+  onStart() {
+    tray?.setToolTip("AGR Flow - listening...");
+    if (DEV) console.log("[ptt] start");
+  },
+  onStop() {
+    tray?.setToolTip("AGR Flow");
+    if (DEV) console.log("[ptt] stop -> transcribe");
+  },
+  onCancel() {
+    tray?.setToolTip("AGR Flow");
+    if (DEV) console.log("[ptt] cancel (tap too short)");
+  },
+});
+
+async function startPtt() {
+  try {
+    await hotkey.start();
+    if (DEV) console.log(`[ptt] armed on ${DEFAULT_PTT_KEY}`);
+  } catch (err) {
+    // Dictation without a hotkey is dead: surface it instead of dying silently.
+    console.error("[ptt] key listener failed to start:", err);
+    tray?.setToolTip("AGR Flow - hotkey unavailable (see Settings)");
+  }
+}
+
+app.on("before-quit", () => hotkey.stop());
 
 function iconPath(): string {
   // Packaged: resources/ sits next to the app; dev: repo root.
