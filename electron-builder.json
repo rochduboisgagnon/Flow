@@ -1,0 +1,20 @@
+{
+  "appId": "ca.agrlabs.agrflow",
+  "productName": "AGR Flow",
+  "directories": { "output": "dist-build" },
+  "files": ["dist/**", "package.json"],
+  "extraResources": [
+    { "from": "resources/icon.png", "to": "icon.png" },
+    { "from": "resources/bin", "to": "bin", "filter": ["**/*"] }
+  ],
+  "win": {
+    "target": [{ "target": "nsis", "arch": ["x64"] }],
+    "icon": "resources/icon.png"
+  },
+  "nsis": {
+    "oneClick": true,
+    "perMachine": false,
+    "deleteAppDataOnUninstall": false
+  },
+  "publish": null
+}
