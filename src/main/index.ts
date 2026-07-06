@@ -5,6 +5,7 @@ import { OverlayWindow } from "./overlay";
 import { WhisperSidecar } from "./asr/sidecar";
 import { ensureModel, DEFAULT_MODEL_FILE } from "./asr/modelStore";
 import { FocusProbe } from "./focus/probe";
+import { insertViaPaste, leaveOnClipboard } from "./insert";
 import { decideRoute } from "../shared/route";
 import { DEFAULT_PTT_KEY } from "../shared/constants";
 import { CAPTURE_DONE, CAPTURE_ERROR, type CaptureDonePayload } from "../shared/ipcContracts";
@@ -120,16 +121,16 @@ function wireCapture() {
       .transcribe(new Uint8Array(payload.wav))
       .then(async ({ text, ms }) => {
         if (!text) return; // model heard only silence
-        // Probe the focus WHILE nothing else has stolen it, then route.
+        // Probe the focus WHILE nothing else has stolen it, then route and act.
         const focus = (await probe?.probe()) ?? null;
         const route = decideRoute(focus);
-        // Next commit: perform the insertion / clipboard write. Today we log it.
+        if (route === "insert") await insertViaPaste(text);
+        else leaveOnClipboard(text);
+        // `text` goes out of scope here: the dictation is never retained (5.4).
         if (DEV)
-          console.log(
-            `[asr] ${ms} ms -> "${text}" | focus=${focus?.control ?? "none"} -> ${route}`,
-          );
+          console.log(`[flow] ${ms} ms | focus=${focus?.control ?? "none"} -> ${route}`);
       })
-      .catch((err) => console.error("[asr] transcription failed:", err));
+      .catch((err) => console.error("[flow] failed:", err));
   });
   ipcMain.on(CAPTURE_ERROR, (_ev, message: string) => {
     console.error("[capture] failed:", message);

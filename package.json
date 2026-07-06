@@ -19,6 +19,7 @@
     "postinstall": "node scripts/ensure-keyspy.cjs"
   },
   "dependencies": {
+    "@nut-tree-fork/nut-js": "^4.2.6",
     "keyspy": "^1.1.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
