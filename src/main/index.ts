@@ -4,6 +4,8 @@ import { HotkeyAdapter } from "./hotkey";
 import { OverlayWindow } from "./overlay";
 import { WhisperSidecar } from "./asr/sidecar";
 import { ensureModel, DEFAULT_MODEL_FILE } from "./asr/modelStore";
+import { FocusProbe } from "./focus/probe";
+import { decideRoute } from "../shared/route";
 import { DEFAULT_PTT_KEY } from "../shared/constants";
 import { CAPTURE_DONE, CAPTURE_ERROR, type CaptureDonePayload } from "../shared/ipcContracts";
 
@@ -37,7 +39,17 @@ if (!app.requestSingleInstanceLock()) {
     wireCapture();
     startPtt();
     void warmAsr();
+    probe = new FocusProbe(focusProbeScript(), DEV ? (m) => console.log(m) : undefined);
   });
+}
+
+// Focus probe: decides insert-at-cursor vs leave-on-clipboard per dictation.
+let probe: FocusProbe | null = null;
+
+function focusProbeScript(): string {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, "focus-probe.ps1")
+    : path.join(app.getAppPath(), "resources", "focus-probe.ps1");
 }
 
 // The warm ASR sidecar: model ensured (first run downloads it into AGR Flow's
@@ -106,9 +118,16 @@ function wireCapture() {
     }
     void sidecar
       .transcribe(new Uint8Array(payload.wav))
-      .then(({ text, ms }) => {
-        // Next commits: focus probe + insertion. Today the loop ends here.
-        if (DEV) console.log(`[asr] ${ms} ms -> "${text}"`);
+      .then(async ({ text, ms }) => {
+        if (!text) return; // model heard only silence
+        // Probe the focus WHILE nothing else has stolen it, then route.
+        const focus = (await probe?.probe()) ?? null;
+        const route = decideRoute(focus);
+        // Next commit: perform the insertion / clipboard write. Today we log it.
+        if (DEV)
+          console.log(
+            `[asr] ${ms} ms -> "${text}" | focus=${focus?.control ?? "none"} -> ${route}`,
+          );
       })
       .catch((err) => console.error("[asr] transcription failed:", err));
   });
@@ -133,6 +152,7 @@ app.on("before-quit", () => {
   hotkey.stop();
   overlay.destroy();
   sidecar?.stop();
+  probe?.stop();
 });
 
 function iconPath(): string {
