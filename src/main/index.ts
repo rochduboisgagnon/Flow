@@ -2,6 +2,8 @@ import { app, BrowserWindow, Tray, Menu, nativeImage, session, ipcMain } from "e
 import path from "node:path";
 import { HotkeyAdapter } from "./hotkey";
 import { OverlayWindow } from "./overlay";
+import { WhisperSidecar } from "./asr/sidecar";
+import { ensureModel, DEFAULT_MODEL_FILE } from "./asr/modelStore";
 import { DEFAULT_PTT_KEY } from "../shared/constants";
 import { CAPTURE_DONE, CAPTURE_ERROR, type CaptureDonePayload } from "../shared/ipcContracts";
 
@@ -34,7 +36,42 @@ if (!app.requestSingleInstanceLock()) {
     overlay.create(DEV);
     wireCapture();
     startPtt();
+    void warmAsr();
   });
+}
+
+// The warm ASR sidecar: model ensured (first run downloads it into AGR Flow's
+// own data folder, outside the install), whisper-server spawned once, model
+// loaded once. Dictating while the warm-up is still running simply queues on
+// ensureStarted() inside transcribe().
+let sidecar: WhisperSidecar | null = null;
+
+function serverBinaryPath(): string {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, "bin", "whisper-server-win32-x64.exe")
+    : path.join(app.getAppPath(), "resources", "bin", "whisper-server-win32-x64.exe");
+}
+
+async function warmAsr() {
+  try {
+    let lastPct = -1;
+    const model = await ensureModel(DEFAULT_MODEL_FILE, (pct) => {
+      if (pct !== lastPct) {
+        lastPct = pct;
+        tray?.setToolTip(`AGR Flow - downloading the speech model (${pct}%)`);
+      }
+    });
+    sidecar = new WhisperSidecar({
+      binaryPath: serverBinaryPath(),
+      modelPath: model,
+      log: DEV ? (m) => console.log(m) : undefined,
+    });
+    await sidecar.ensureStarted();
+    tray?.setToolTip("AGR Flow");
+  } catch (err) {
+    console.error("[asr] warm-up failed:", err);
+    tray?.setToolTip("AGR Flow - speech engine unavailable");
+  }
 }
 
 const overlay = new OverlayWindow();
@@ -60,11 +97,20 @@ const hotkey = new HotkeyAdapter(DEFAULT_PTT_KEY, {
 
 function wireCapture() {
   ipcMain.on(CAPTURE_DONE, (_ev, payload: CaptureDonePayload) => {
-    // NOTHING is retained: the buffer lives in this handler and dies with it.
-    if (DEV)
-      console.log(
-        `[capture] ${payload.durationMs} ms of speech, wav ${payload.wav.byteLength} bytes -> (ASR sidecar arrives next commit)`,
-      );
+    // NOTHING is retained: the WAV lives in this handler, feeds one inference,
+    // and every reference dies with it. Sub-300 ms of audio is release noise.
+    if (payload.durationMs < 300) return;
+    if (!sidecar) {
+      console.error("[asr] utterance dropped: engine not ready");
+      return;
+    }
+    void sidecar
+      .transcribe(new Uint8Array(payload.wav))
+      .then(({ text, ms }) => {
+        // Next commits: focus probe + insertion. Today the loop ends here.
+        if (DEV) console.log(`[asr] ${ms} ms -> "${text}"`);
+      })
+      .catch((err) => console.error("[asr] transcription failed:", err));
   });
   ipcMain.on(CAPTURE_ERROR, (_ev, message: string) => {
     console.error("[capture] failed:", message);
@@ -86,6 +132,7 @@ async function startPtt() {
 app.on("before-quit", () => {
   hotkey.stop();
   overlay.destroy();
+  sidecar?.stop();
 });
 
 function iconPath(): string {
