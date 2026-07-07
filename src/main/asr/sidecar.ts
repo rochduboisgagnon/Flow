@@ -9,6 +9,8 @@ import {
   buildInferenceBody,
   parseInferenceResponse,
   pickThreads,
+  computeAudioCtx,
+  wavDurationSec,
 } from "./protocol";
 
 // The ASR sidecar: whisper.cpp's whisper-server kept WARM on loopback. The
@@ -165,7 +167,12 @@ export class WhisperSidecar {
     await this.ensureStarted();
     const started = Date.now();
     const boundary = "agrflow-" + crypto.randomBytes(12).toString("hex");
-    const body = buildInferenceBody(boundary, wav, this.opts.language ?? "auto");
+    const body = buildInferenceBody(
+      boundary,
+      wav,
+      this.opts.language ?? "auto",
+      computeAudioCtx(wavDurationSec(wav.length)),
+    );
     const raw = await new Promise<string>((resolve, reject) => {
       const req = http.request(
         {

@@ -18,6 +18,28 @@ export function buildServerArgs(modelPath: string, port: number, threads: number
   ];
 }
 
+// Whisper always encodes a full 30 s window: without a hint, a 2 s utterance
+// pays the same ~1.8 s encoder bill as a 30 s one (measured on this exact
+// binary). audio_ctx shrinks the encoder context to what the audio actually
+// needs - measured 1858 ms -> 254 ms on a short utterance with an IDENTICAL
+// transcript. 50 ctx units per second (1500 = 30 s), a safety margin against
+// the repetition artifacts seen with too-tight contexts, and a floor for very
+// short clips. This single knob is what puts dictation far under the one-
+// second target on CPU (plan 2, speed as requirement #1).
+const CTX_PER_SECOND = 50;
+const CTX_MARGIN = 128;
+const CTX_MIN = 256;
+const CTX_FULL = 1500;
+
+export function computeAudioCtx(durationSec: number): number {
+  return Math.min(CTX_FULL, Math.max(CTX_MIN, Math.ceil(durationSec * CTX_PER_SECOND) + CTX_MARGIN));
+}
+
+/** Duration of a canonical 16 kHz mono 16-bit WAV, from its byte length. */
+export function wavDurationSec(wavBytes: number): number {
+  return Math.max(0, wavBytes - 44) / 32_000;
+}
+
 // whisper-server expects multipart/form-data: the WAV under "file", plus
 // simple fields. Same shape OpenWhispr proved against this exact server.
 // verbose_json (OpenAI-compatible) gets us per-segment no-speech scoring on
@@ -26,14 +48,20 @@ export function buildInferenceBody(
   boundary: string,
   wav: Uint8Array,
   language: string,
+  audioCtx?: number,
 ): Buffer {
   const head =
     `--${boundary}\r\n` +
     `Content-Disposition: form-data; name="file"; filename="utterance.wav"\r\n` +
     `Content-Type: audio/wav\r\n\r\n`;
+  const ctxField = audioCtx
+    ? `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="audio_ctx"\r\n\r\n${audioCtx}\r\n`
+    : "";
   const fields =
     `\r\n--${boundary}\r\n` +
     `Content-Disposition: form-data; name="language"\r\n\r\n${language}\r\n` +
+    ctxField +
     `--${boundary}\r\n` +
     `Content-Disposition: form-data; name="response_format"\r\n\r\nverbose_json\r\n` +
     `--${boundary}--\r\n`;

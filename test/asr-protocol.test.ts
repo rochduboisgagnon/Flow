@@ -5,6 +5,8 @@ import {
   buildInferenceBody,
   parseInferenceResponse,
   pickThreads,
+  computeAudioCtx,
+  wavDurationSec,
 } from "../src/main/asr/protocol";
 
 test("server args: loopback only, model and port pinned", () => {
@@ -76,4 +78,24 @@ test("thread pick keeps headroom and caps at 8", () => {
   assert.equal(pickThreads(4), 2);
   assert.equal(pickThreads(16), 8);
   assert.equal(pickThreads(1), 1);
+});
+
+test("audio_ctx scales with duration, floored and capped", () => {
+  assert.equal(computeAudioCtx(0.5), 256); // floor: very short clips
+  assert.equal(computeAudioCtx(2.4), 256); // ceil(120)+128 = 248, floored to 256
+  assert.equal(computeAudioCtx(6), 428); // ceil(300)+128
+  assert.equal(computeAudioCtx(60), 1500); // capped at whisper's full window
+});
+
+test("audio_ctx lands in the multipart body", () => {
+  const body = buildInferenceBody("B", new Uint8Array([1, 2]), "auto", 300).toString("latin1");
+  assert.ok(body.includes('name="audio_ctx"\r\n\r\n300'));
+  const noCtx = buildInferenceBody("B", new Uint8Array([1, 2]), "auto").toString("latin1");
+  assert.ok(!noCtx.includes("audio_ctx"));
+});
+
+test("wav duration math from byte length", () => {
+  assert.equal(wavDurationSec(44 + 32_000), 1);
+  assert.equal(wavDurationSec(44), 0);
+  assert.equal(wavDurationSec(10), 0);
 });
