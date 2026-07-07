@@ -4,10 +4,10 @@
 // goes to the main process and every local reference is dropped: the "nothing
 // is ever stored" rule starts here.
 //
-// Visual (plan v2 chantier D): the listening ribbon EXACTLY as the validated
-// prototype - thin DARK strands (rgba(40,40,40)) on a CREAM pill (#f8f7f4),
-// length 0.80, crest slightly left - only slimmer in height. Amplitude follows
-// the microphone level; during transcription it flattens toward a wire.
+// Visual (plan v3 chantier 3): the validated prototype ribbon - thin DARK
+// strands (rgba(40,40,40)), length 0.80, crest slightly left - on a FROSTED
+// GLASS pill (translucent white, see-through, Roch), bigger/more imposing than
+// v2. Amplitude follows the mic; during transcription it flattens to a wire.
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { floatTo16BitPcm, encodeWav, durationMs, SAMPLE_RATE } from "../shared/wav";
@@ -114,7 +114,7 @@ function makeStrands(n: number): Strand[] {
 
 const RIBBON = {
   strokeWidth: 0.55, // thin strands (validated style)
-  maxAmp: 9, // SLIMMER than the prototype (Roch: "moins haute, plus slim")
+  maxAmp: 13, // v3: more imposing (Roch), still slimmer than the raw prototype
   lengthScale: 0.8, // "20% shorter"
   strandCount: 30,
   skew: 0.86, // crest slightly left of center
@@ -189,7 +189,7 @@ function Ribbon({
   return (
     <canvas
       ref={canvasRef}
-      style={{ width: 170, height: 30, display: "block" }}
+      style={{ width: 216, height: 40, display: "block" }}
       aria-hidden
     />
   );
@@ -311,20 +311,26 @@ function Overlay() {
   return (
     <div
       style={{
+        // Plan v3 chantier 3: frosted-glass pill. Translucency is the alpha of a
+        // white gradient (backdrop-filter can't blur the desktop behind a
+        // transparent Electron window); the inset top highlight + soft shadow
+        // read as glass. Bigger + more imposing than v2 (Roch).
         display: "flex",
         alignItems: "center",
-        gap: 10,
-        height: 38,
-        padding: "0 14px",
-        borderRadius: 19,
-        background: "#f8f7f4",
-        border: "1px solid rgba(26, 25, 22, 0.10)",
-        boxShadow: "0 6px 22px rgba(0, 0, 0, 0.28)",
+        gap: 12,
+        height: 46,
+        padding: "0 20px",
+        borderRadius: 23,
+        background: "linear-gradient(180deg, rgba(255,255,255,0.82), rgba(255,255,255,0.64))",
+        border: "1px solid rgba(255,255,255,0.70)",
+        boxShadow: "0 12px 32px rgba(17,24,39,0.24), inset 0 1px 0 rgba(255,255,255,0.95)",
+        backdropFilter: "blur(16px) saturate(1.2)",
+        WebkitBackdropFilter: "blur(16px) saturate(1.2)",
         color: "#1a1916",
         fontFamily: "'Segoe UI', system-ui, sans-serif",
-        fontSize: 12,
+        fontSize: 12.5,
         width: "fit-content",
-        margin: "4px auto",
+        margin: "7px auto",
       }}
     >
       <span

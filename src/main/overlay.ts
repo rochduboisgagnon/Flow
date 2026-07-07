@@ -23,8 +23,8 @@ export class OverlayWindow {
 
   create(dev: boolean) {
     const { width, height } = screen.getPrimaryDisplay().workAreaSize;
-    const W = 320;
-    const H = 52;
+    const W = 400;
+    const H = 68;
     this.win = new BrowserWindow({
       width: W,
       height: H,
