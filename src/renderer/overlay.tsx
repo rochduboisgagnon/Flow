@@ -4,10 +4,10 @@
 // goes to the main process and every local reference is dropped: the "nothing
 // is ever stored" rule starts here.
 //
-// Visual: the listening ribbon (plan 5.7) - a band of thin strands, pinched at
-// both ends, swelling in the middle - whose amplitude follows the microphone
-// level. Style validated with Roch: thin, slim, length 0.80. During
-// transcription the ribbon flattens toward a wire and the label says so.
+// Visual (plan v2 chantier D): the listening ribbon EXACTLY as the validated
+// prototype - thin DARK strands (rgba(40,40,40)) on a CREAM pill (#f8f7f4),
+// length 0.80, crest slightly left - only slimmer in height. Amplitude follows
+// the microphone level; during transcription it flattens toward a wire.
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { floatTo16BitPcm, encodeWav, durationMs, SAMPLE_RATE } from "../shared/wav";
@@ -114,7 +114,7 @@ function makeStrands(n: number): Strand[] {
 
 const RIBBON = {
   strokeWidth: 0.55, // thin strands (validated style)
-  maxAmp: 13, // slim, scaled for the 40 px-tall pill
+  maxAmp: 9, // SLIMMER than the prototype (Roch: "moins haute, plus slim")
   lengthScale: 0.8, // "20% shorter"
   strandCount: 30,
   skew: 0.86, // crest slightly left of center
@@ -177,7 +177,7 @@ function Ribbon({
           if (k === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
         }
-        ctx.strokeStyle = `rgba(52, 227, 160, ${s.alpha.toFixed(3)})`;
+        ctx.strokeStyle = `rgba(40, 40, 40, ${s.alpha.toFixed(3)})`;
         ctx.stroke();
       }
       raf = requestAnimationFrame(draw);
@@ -189,7 +189,7 @@ function Ribbon({
   return (
     <canvas
       ref={canvasRef}
-      style={{ width: 170, height: 40, display: "block" }}
+      style={{ width: 170, height: 30, display: "block" }}
       aria-hidden
     />
   );
@@ -314,12 +314,13 @@ function Overlay() {
         display: "flex",
         alignItems: "center",
         gap: 10,
-        height: 44,
+        height: 38,
         padding: "0 14px",
-        borderRadius: 22,
-        background: "rgba(11, 13, 16, 0.92)",
-        border: "1px solid rgba(52, 227, 160, 0.35)",
-        color: "#e9edf2",
+        borderRadius: 19,
+        background: "#f8f7f4",
+        border: "1px solid rgba(26, 25, 22, 0.10)",
+        boxShadow: "0 6px 22px rgba(0, 0, 0, 0.28)",
+        color: "#1a1916",
         fontFamily: "'Segoe UI', system-ui, sans-serif",
         fontSize: 12,
         width: "fit-content",
@@ -328,11 +329,11 @@ function Overlay() {
     >
       <span
         style={{
-          width: 8,
-          height: 8,
+          width: 7,
+          height: 7,
           borderRadius: "50%",
-          background: phase === "error" ? "#e11d2a" : "#34e3a0",
-          boxShadow: phase === "listening" ? "0 0 8px #34e3a0" : "none",
+          background: phase === "error" ? "#c0392b" : "#1d6f5c",
+          boxShadow: phase === "listening" ? "0 0 7px rgba(29, 111, 92, 0.7)" : "none",
           flexShrink: 0,
         }}
       />
@@ -342,7 +343,7 @@ function Overlay() {
         <>
           <Ribbon levelRef={levelRef} phase={phase} />
           {phase === "transcribing" && (
-            <span style={{ color: "#8b93a0" }}>Transcribing...</span>
+            <span style={{ color: "#6b6960" }}>Transcribing...</span>
           )}
         </>
       )}
