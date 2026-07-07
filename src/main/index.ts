@@ -7,7 +7,8 @@ import { ensureModel, DEFAULT_MODEL_FILE } from "./asr/modelStore";
 import { FocusProbe } from "./focus/probe";
 import { insertViaPaste, leaveOnClipboard } from "./insert";
 import { decideRoute } from "../shared/route";
-import { DEFAULT_PTT_KEY } from "../shared/constants";
+import { comboLabel } from "../shared/combo";
+import { loadSettings } from "./settings";
 import { CAPTURE_DONE, CAPTURE_ERROR, type CaptureDonePayload } from "../shared/ipcContracts";
 
 // AGR Flow: local, on-device dictation. Phase 1 = Windows push-to-talk loop.
@@ -17,6 +18,10 @@ import { CAPTURE_DONE, CAPTURE_ERROR, type CaptureDonePayload } from "../shared/
 // duration of one utterance and are handed straight to the insertion path.
 
 const DEV = process.env.AGRFLOW_DEV === "1";
+
+// Settings (shortcut, language, model, microphone) live in ~/.agr-flow,
+// outside the install; loaded once at boot, mutated via the settings window.
+const settings = loadSettings();
 
 let tray: Tray | null = null;
 let settingsWin: BrowserWindow | null = null;
@@ -68,7 +73,7 @@ function serverBinaryPath(): string {
 async function warmAsr() {
   try {
     let lastPct = -1;
-    const model = await ensureModel(DEFAULT_MODEL_FILE, (pct) => {
+    const model = await ensureModel(settings.model ?? DEFAULT_MODEL_FILE, (pct) => {
       if (pct !== lastPct) {
         lastPct = pct;
         tray?.setToolTip(`AGR Flow - downloading the speech model (${pct}%)`);
@@ -77,6 +82,7 @@ async function warmAsr() {
     sidecar = new WhisperSidecar({
       binaryPath: serverBinaryPath(),
       modelPath: model,
+      language: settings.language,
       log: DEV ? (m) => console.log(m) : undefined,
     });
     await sidecar.ensureStarted();
@@ -91,9 +97,8 @@ const overlay = new OverlayWindow();
 
 // The dictation loop, main-process side. PTT drives the overlay (which owns the
 // microphone); the finished WAV comes back once per utterance and is handed to
-// the next stage, then every reference is dropped. Next commit: the ASR sidecar
-// consumes it; today we only log its size in dev.
-const hotkey = new HotkeyAdapter(DEFAULT_PTT_KEY, {
+// the ASR sidecar, then every reference is dropped.
+const hotkey = new HotkeyAdapter(settings.combo, {
   onStart() {
     tray?.setToolTip("AGR Flow - listening...");
     overlay.startCapture();
@@ -141,7 +146,7 @@ function wireCapture() {
 async function startPtt() {
   try {
     await hotkey.start();
-    if (DEV) console.log(`[ptt] armed on ${DEFAULT_PTT_KEY}`);
+    if (DEV) console.log(`[ptt] armed on ${comboLabel(settings.combo)}`);
   } catch (err) {
     // Dictation without a hotkey is dead: surface it instead of dying silently.
     console.error("[ptt] key listener failed to start:", err);

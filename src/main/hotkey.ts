@@ -1,11 +1,16 @@
 import { GlobalKeyboardListener } from "keyspy";
 import type { IGlobalKeyEvent } from "keyspy";
-import { createPtt, type PttAction } from "../shared/ptt";
-import { MIN_HOLD_MS } from "../shared/constants";
+import { createComboMatcher, type ComboMatcher } from "../shared/combo";
+import { MIN_HOLD_MS, DOUBLE_TAP_MS } from "../shared/constants";
 
 // HotkeyAdapter: the only place that touches keyspy. The rest of the app sees
 // three callbacks (start / stop / cancel), so the listener library can be
-// swapped (e.g. for OpenWhispr's C key-listener) without touching the loop.
+// swapped (uiohook-napi is the documented fallback) without touching the loop.
+//
+// All matching lives in the pure combo matcher (src/shared/combo.ts): keyspy
+// only reports raw keydown/keyup and applies our swallow verdicts. The verdict
+// (return value) is what blocks a Win keypress from reaching the OS - the
+// Start-menu trap of the default Ctrl+Win shortcut (plan 5.8).
 export interface PttCallbacks {
   onStart(): void;
   onStop(): void;
@@ -14,12 +19,15 @@ export interface PttCallbacks {
 
 export class HotkeyAdapter {
   private listener: GlobalKeyboardListener | null = null;
-  private ptt = createPtt(MIN_HOLD_MS);
-  private key: string;
+  private matcher: ComboMatcher;
+  private suspended = false;
   private cbs: PttCallbacks;
 
-  constructor(key: string, cbs: PttCallbacks) {
-    this.key = key;
+  constructor(combo: string[], cbs: PttCallbacks) {
+    this.matcher = createComboMatcher(combo, {
+      minHoldMs: MIN_HOLD_MS,
+      doubleTapMs: DOUBLE_TAP_MS,
+    });
     this.cbs = cbs;
   }
 
@@ -27,20 +35,33 @@ export class HotkeyAdapter {
     this.listener = new GlobalKeyboardListener();
     // keyspy spawns its key server; the promise rejects if the binary is missing.
     await this.listener.addListener((e: IGlobalKeyEvent) => {
-      if (e.name !== this.key) return;
-      const action: PttAction =
-        e.state === "DOWN" ? this.ptt.down(Date.now()) : this.ptt.up(Date.now());
+      // The low-level hook gives the OS ~1 s per event before it silently
+      // removes us: this handler must stay trivial (pure state machine, no IO).
+      if (this.suspended || !e.name) return false;
+      const { action, swallow } = this.matcher.handle(
+        { key: e.name, state: e.state },
+        Date.now(),
+      );
       if (action === "start") this.cbs.onStart();
       else if (action === "stop") this.cbs.onStop();
       else if (action === "cancel") this.cbs.onCancel();
-      // Never capture/block the key: dictating must not eat the keystroke for
-      // other apps (RIGHT CTRL may be part of someone's muscle memory).
-      return false;
+      return swallow;
     });
   }
 
-  setKey(key: string) {
-    this.key = key;
+  /** Applies a new shortcut immediately (from the settings recorder). */
+  setCombo(combo: string[]) {
+    const wasCapturing = this.matcher.capturing();
+    this.matcher.setCombo(combo);
+    // Never leave a hot microphone behind a state reset.
+    if (wasCapturing) this.cbs.onCancel();
+  }
+
+  /** While suspended (shortcut recorder open), keys pass through untouched. */
+  suspend(v: boolean) {
+    if (v && this.matcher.capturing()) this.cbs.onCancel();
+    this.suspended = v;
+    this.matcher.reset();
   }
 
   stop() {
