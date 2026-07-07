@@ -3,13 +3,17 @@
   "productName": "AGR Flow",
   "directories": { "output": "dist-build" },
   "files": ["dist/**", "package.json"],
+  "asarUnpack": ["node_modules/keyspy/runtime/**"],
   "extraResources": [
     { "from": "resources/icon.png", "to": "icon.png" },
     { "from": "resources/focus-probe.ps1", "to": "focus-probe.ps1" },
     { "from": "resources/bin", "to": "bin", "filter": ["**/*"] }
   ],
   "win": {
-    "target": [{ "target": "nsis", "arch": ["x64"] }],
+    "target": [
+      { "target": "nsis", "arch": ["x64"] },
+      { "target": "zip", "arch": ["x64"] }
+    ],
     "icon": "resources/icon.png"
   },
   "nsis": {
