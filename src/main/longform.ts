@@ -15,6 +15,7 @@ import {
   transcriptHeader,
   transcriptLine,
   markLine,
+  gapLine,
   recordingBaseName,
   summaryPrompt,
   chunkTranscript,
@@ -23,8 +24,10 @@ import {
   type RecentEntry,
 } from "../shared/longform";
 
-// The long-form recorder (plan §6, the Plaud-style mode): continuous capture
-// streamed from the overlay, pause-aware segmentation, one warm-whisper pass
+// The long-form recorder (plan §6 + plan v2 chantier C): continuous capture
+// streamed from the DEVICE running AGR Pilot's PWA (phone or PC browser),
+// arriving through the local API (/long/chunk) - never the host mic. Pause-
+// aware segmentation, one warm-whisper pass
 // per closed segment, INCREMENTAL transcript writes into the folder the USER
 // chose (crash-safe: everything transcribed so far is already on disk), marks,
 // and an optional Ollama summary at stop. Memory stays bounded: a segment's
@@ -51,6 +54,7 @@ export interface LongStateSnapshot {
   dir: string;
   transcriptPath: string;
   notesPath: string;
+  audioPath: string;
   lastError: string;
   recent: RecentEntry[];
 }
@@ -58,8 +62,6 @@ export interface LongStateSnapshot {
 export interface LongDeps {
   getSidecar(): WhisperSidecar | null;
   cleanupModel(): string; // settings.cleanupModel ("" = none configured)
-  startCapture(): void; // overlay long mode on
-  stopCapture(): void;
   log?: (msg: string) => void;
   /** Tests only: keep the recent-list file away from the real ~/.agr-flow. */
   recentPathOverride?: string;
@@ -102,6 +104,7 @@ export class LongRecorder {
   private template: TemplateId = "meeting";
   private transcriptPath = "";
   private notesPath = "";
+  private audioPath = "";
   private marks: number[] = [];
   private lastError = "";
   // Current (open) segment + its start offset in samples since recording start.
@@ -120,7 +123,7 @@ export class LongRecorder {
     return this.active || this.finalizing;
   }
 
-  start(opts: LongStartOpts): { ok: boolean; error?: string; transcriptPath?: string } {
+  start(opts: LongStartOpts): { ok: boolean; error?: string; transcriptPath?: string; audioPath?: string } {
     if (this.active || this.finalizing) return { ok: false, error: "a recording is already in progress" };
     let stat: fs.Stats;
     try {
@@ -136,6 +139,10 @@ export class LongRecorder {
     const base = recordingBaseName(this.title, now);
     this.transcriptPath = path.join(opts.dir, base + "-transcript.md");
     this.notesPath = path.join(opts.dir, base + "-notes.md");
+    // The AUDIO file (plan v2: the recording must be listenable afterwards) is
+    // WRITTEN BY THE PILOT SERVER as the chunks stream in; we only own the
+    // path so it lands next to the transcript and reaches the recent list.
+    this.audioPath = path.join(opts.dir, base + ".wav");
     this.startedAt = Date.now();
     this.startedIso = now.toISOString();
     this.marks = [];
@@ -151,12 +158,11 @@ export class LongRecorder {
       return { ok: false, error: "cannot write in the folder: " + String(err) };
     }
     this.active = true;
-    this.deps.startCapture();
     this.deps.log?.(`[long] recording started -> ${this.transcriptPath}`);
-    return { ok: true, transcriptPath: this.transcriptPath };
+    return { ok: true, transcriptPath: this.transcriptPath, audioPath: this.audioPath };
   }
 
-  /** One streamed slice from the overlay (~5 s of Int16 PCM). */
+  /** One streamed PCM slice (~5 s, Int16 16 kHz) from the recording device. */
   onChunk(pcm: Int16Array): void {
     if (!this.active) return;
     this.cur.push(pcm);
@@ -183,13 +189,26 @@ export class LongRecorder {
     return { ok: true };
   }
 
+  /** A capture gap on the CLIENT device (screen locked, network loss): note it
+   * honestly in the transcript. The audio and the offsets stay on the AUDIO
+   * timeline (what was actually captured), so transcript timestamps keep
+   * matching the playable file. */
+  gap(seconds: number): { ok: boolean } {
+    if (!this.active) return { ok: false };
+    try {
+      fs.appendFileSync(this.transcriptPath, gapLine(Date.now() - this.startedAt, seconds));
+    } catch {
+      /* the recording goes on */
+    }
+    return { ok: true };
+  }
+
   /** Stops the capture; transcription of the backlog + the summary continue in
    * the background (state shows finalizing until done). */
   stop(): { ok: boolean; transcriptPath: string; notesPath: string } {
     if (!this.active) return { ok: false, transcriptPath: "", notesPath: "" };
     this.active = false;
     this.finalizing = true;
-    this.deps.stopCapture();
     const joined = this.joinCurrent();
     if (joined.length > 0) this.closeSegment(joined, joined.length);
     const t = this.transcriptPath;
@@ -211,6 +230,7 @@ export class LongRecorder {
       dir: this.dir,
       transcriptPath: this.transcriptPath,
       notesPath: this.template === "raw" ? "" : this.notesPath,
+      audioPath: this.audioPath,
       lastError: this.lastError,
       recent: loadRecent(this.deps.recentPathOverride),
     };
@@ -334,6 +354,7 @@ export class LongRecorder {
           dir: this.dir,
           transcriptPath: this.transcriptPath,
           notesPath: this.notesPath,
+          audioPath: this.audioPath,
           durationMs: Math.round((this.consumed / SAMPLE_RATE) * 1000),
         }),
         this.deps.recentPathOverride,

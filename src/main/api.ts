@@ -27,10 +27,14 @@ export interface ApiDeps {
    * optional cleanup. Empty text = gated silence. */
   transcribe(wav: Uint8Array, cleanup: boolean): Promise<{ text: string; ms: number }>;
   // Long-form mode (plan §6/§7.2b), driven remotely by AGR Pilot's PWA page.
+  // The AUDIO comes from the recording DEVICE (phone or PC browser) through
+  // /long/chunk (plan v2 chantier C) - AGR Flow never opens a mic for it.
   longState(): unknown;
   longStart(opts: { dir: string; title?: string; template?: string }): unknown;
   longStop(): unknown;
   longMark(): unknown;
+  longChunk(pcm: Int16Array): unknown;
+  longGap(seconds: number): unknown;
   /** Tests only: redirect the discovery file away from the real ~/.agr-flow. */
   infoPathOverride?: string;
 }
@@ -142,6 +146,34 @@ export class LocalApi {
       }
       if (req.method === "POST" && url.pathname === "/long/mark") {
         return json(200, this.deps.longMark());
+      }
+      if (req.method === "POST" && url.pathname === "/long/chunk") {
+        // Raw Int16 mono 16 kHz PCM slice (a few seconds), relayed by the
+        // Pilot server from the recording device. Bounded well above the
+        // normal ~160 KB per 5 s slice.
+        const chunks: Buffer[] = [];
+        let size = 0;
+        await new Promise<void>((resolve, reject) => {
+          req.on("data", (c: Buffer) => {
+            size += c.length;
+            if (size > 8 * 1024 * 1024) {
+              reject(new Error("chunk too large"));
+              req.destroy();
+              return;
+            }
+            chunks.push(c);
+          });
+          req.on("end", resolve);
+          req.on("error", reject);
+        });
+        const buf = Buffer.concat(chunks);
+        const pcm = new Int16Array(buf.buffer, buf.byteOffset, Math.floor(buf.length / 2));
+        return json(200, this.deps.longChunk(pcm.slice(0)));
+      }
+      if (req.method === "POST" && url.pathname === "/long/gap") {
+        const body = await readJson(req);
+        const seconds = typeof body?.seconds === "number" ? body.seconds : 0;
+        return json(200, this.deps.longGap(seconds));
       }
       if (req.method === "POST" && url.pathname === "/transcribe") {
         const chunks: Buffer[] = [];

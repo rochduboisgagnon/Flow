@@ -56,8 +56,6 @@ test(
     const rec = new LongRecorder({
       getSidecar: () => sc,
       cleanupModel: () => "",
-      startCapture: () => {},
-      stopCapture: () => {},
       recentPathOverride: path.join(work, "recent.json"),
     });
     try {

@@ -57,7 +57,7 @@ function playCue(kind: "start" | "stop") {
   }
 }
 
-type Phase = "idle" | "listening" | "transcribing" | "long" | "error";
+type Phase = "idle" | "listening" | "transcribing" | "error";
 
 // ---- Listening ribbon (ported from prototype-animation-ecoute.html) ----
 
@@ -134,15 +134,11 @@ function Ribbon({
     const draw = (now: number) => {
       const t = now / 1000;
       const p = phaseRef.current;
-      // Listening/long: amplitude follows the mic (a floor keeps it alive
-      // between words). Transcribing: collapse toward a breathing wire.
+      // Listening: amplitude follows the mic (a floor keeps it alive between
+      // words). Transcribing: collapse toward a breathing wire. Idle: flat.
       level += (levelRef.current - level) * 0.25;
       const target =
-        p === "listening" || p === "long"
-          ? 0.3 + 0.7 * Math.min(1, level * 1.6)
-          : p === "transcribing"
-            ? 0.12
-            : 0;
+        p === "listening" ? 0.3 + 0.7 * Math.min(1, level * 1.6) : p === "transcribing" ? 0.12 : 0;
       activation += (target - activation) * 0.08;
 
       ctx.clearRect(0, 0, W, H);
@@ -294,93 +290,6 @@ function Overlay() {
       else if (cmd === "cancel") cancel();
     });
 
-    // ---- long-form capture (plan §6): continuous, streamed, memory-bounded ----
-    // Same microphone machinery, but the Float32 buffer is flushed to main
-    // every ~5 s as Int16 (transferred, not copied): hours of recording never
-    // accumulate in this renderer. Main owns segmentation and transcription.
-    let longActive = false;
-    const FLUSH_SAMPLES = SAMPLE_RATE * 5;
-
-    async function startLong(cfg?: CaptureStartPayload) {
-      if (longActive || sessionRef.current) return;
-      longActive = true;
-      const my = ++gen;
-      let stream: MediaStream | null = null;
-      let ctx: AudioContext | null = null;
-      if (cfg?.sounds) playCue("start");
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            ...(cfg?.micDeviceId ? { deviceId: { ideal: cfg.micDeviceId } } : {}),
-            channelCount: 1,
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
-        });
-        if (my !== gen || !longActive) {
-          stream.getTracks().forEach((t) => t.stop());
-          return;
-        }
-        ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
-        await ctx.audioWorklet.addModule(
-          URL.createObjectURL(new Blob([WORKLET], { type: "text/javascript" })),
-        );
-        if (my !== gen || !longActive) {
-          stream.getTracks().forEach((t) => t.stop());
-          void ctx.close();
-          return;
-        }
-        const src = ctx.createMediaStreamSource(stream);
-        const node = new AudioWorkletNode(ctx, "agrflow-capture");
-        let pending: Float32Array[] = [];
-        let pendingLen = 0;
-        const flush = () => {
-          if (!pendingLen) return;
-          const pcm = floatTo16BitPcm(pending);
-          pending = [];
-          pendingLen = 0;
-          api.sendLongChunk(pcm.buffer as ArrayBuffer);
-        };
-        node.port.onmessage = (ev: MessageEvent<Float32Array>) => {
-          pending.push(ev.data);
-          pendingLen += ev.data.length;
-          let sum = 0;
-          for (let i = 0; i < ev.data.length; i++) sum += ev.data[i] * ev.data[i];
-          levelRef.current = Math.min(1, Math.sqrt(sum / ev.data.length) * 6);
-          if (pendingLen >= FLUSH_SAMPLES) flush();
-        };
-        src.connect(node);
-        sessionRef.current = { ctx, stream, chunks: [] }; // chunks unused: streaming mode
-        longFlushRef = flush;
-        setPhase("long");
-      } catch (err) {
-        longActive = false;
-        stream?.getTracks().forEach((t) => t.stop());
-        void ctx?.close();
-        setPhase("error");
-        api.sendLongError(String(err));
-      }
-    }
-
-    let longFlushRef: (() => void) | null = null;
-
-    function stopLong() {
-      if (!longActive) return;
-      longActive = false;
-      try { longFlushRef?.(); } catch { /* */ }
-      longFlushRef = null;
-      teardown();
-      if (lastCfg?.sounds) playCue("stop");
-      setPhase("idle");
-    }
-
-    api.onLongCommand((cmd, cfg) => {
-      if (cmd === "start") {
-        lastCfg = cfg;
-        void startLong(cfg);
-      } else stopLong();
-    });
   }, []);
 
   return (
@@ -406,9 +315,8 @@ function Overlay() {
           width: 8,
           height: 8,
           borderRadius: "50%",
-          background: phase === "error" ? "#e11d2a" : phase === "long" ? "#ff5964" : "#34e3a0",
-          boxShadow:
-            phase === "listening" ? "0 0 8px #34e3a0" : phase === "long" ? "0 0 8px #ff5964" : "none",
+          background: phase === "error" ? "#e11d2a" : "#34e3a0",
+          boxShadow: phase === "listening" ? "0 0 8px #34e3a0" : "none",
           flexShrink: 0,
         }}
       />
@@ -420,7 +328,6 @@ function Overlay() {
           {phase === "transcribing" && (
             <span style={{ color: "#8b93a0" }}>Transcribing...</span>
           )}
-          {phase === "long" && <span style={{ color: "#ff98a0" }}>Recording</span>}
         </>
       )}
     </div>

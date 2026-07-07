@@ -21,8 +21,6 @@ import { SUMMARY_TEMPLATES } from "../shared/longform";
 import {
   CAPTURE_DONE,
   CAPTURE_ERROR,
-  LONG_CHUNK,
-  LONG_ERROR,
   SETTINGS_GET,
   SETTINGS_SET,
   SHORTCUT_RECORD,
@@ -30,7 +28,6 @@ import {
   OLLAMA_MODELS,
   MODEL_STATE,
   type CaptureDonePayload,
-  type LongChunkPayload,
   type ModelStatePayload,
 } from "../shared/ipcContracts";
 
@@ -86,6 +83,11 @@ if (!app.requestSingleInstanceLock()) {
       },
       longStop: () => longRec.stop(),
       longMark: () => longRec.mark(),
+      longChunk: (pcm) => {
+        longRec.onChunk(pcm);
+        return { ok: true };
+      },
+      longGap: (seconds) => longRec.gap(seconds),
     });
     api.start().catch((err) => console.error("[api] failed to start:", err));
   });
@@ -155,15 +157,13 @@ const overlay = new OverlayWindow();
 // the ASR sidecar, then every reference is dropped.
 let listening = false; // dictation capture in flight (drives /update-readiness)
 
-// Long-form recorder (plan §6): remote-controlled through the local API by
-// AGR Pilot's PWA page. It shares the mic (via the overlay) and the warm ASR
-// with dictation; while it records, push-to-talk is politely refused.
+// Long-form recorder (plan §6 + v2 chantier C): remote-controlled through the
+// local API by AGR Pilot's PWA page, which ALSO streams the audio from the
+// recording device (/long/chunk). It shares the warm ASR with dictation;
+// while it records, push-to-talk is politely refused.
 const longRec = new LongRecorder({
   getSidecar: () => sidecar,
   cleanupModel: () => settings.cleanupModel,
-  startCapture: () =>
-    overlay.startLong({ sounds: settings.sounds, micDeviceId: settings.micDeviceId }),
-  stopCapture: () => overlay.stopLong(),
   log: (m) => (DEV ? console.log(m) : undefined),
 });
 
@@ -246,15 +246,6 @@ function wireCapture() {
   });
   ipcMain.on(CAPTURE_ERROR, (_ev, message: string) => {
     console.error("[capture] failed:", message);
-    tray?.setToolTip("AGR Flow - microphone unavailable");
-  });
-  // Long-form stream (plan §6): slices arrive every few seconds; the recorder
-  // owns segmentation, transcription and the incremental transcript writes.
-  ipcMain.on(LONG_CHUNK, (_ev, payload: LongChunkPayload) => {
-    longRec.onChunk(new Int16Array(payload.pcm));
-  });
-  ipcMain.on(LONG_ERROR, (_ev, message: string) => {
-    longRec.abort(message);
     tray?.setToolTip("AGR Flow - microphone unavailable");
   });
 }

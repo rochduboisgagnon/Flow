@@ -87,6 +87,14 @@ export function markLine(offsetMs: number): string {
   return `> [Moment marked at ${hms(offsetMs)}]\n\n`;
 }
 
+/** Honest hole in the capture (device locked, network loss): the audio file
+ * simply skips it, the transcript says so. offsetMs is wall time since start;
+ * seconds is the measured length of the hole. */
+export function gapLine(offsetMs: number, seconds: number): string {
+  const n = Math.max(1, Math.round(seconds));
+  return `> [Recording paused ~${n}s (device locked or offline) around ${hms(offsetMs)}]\n\n`;
+}
+
 /** File-safe recording base name: kebab title + local timestamp. */
 export function recordingBaseName(title: string, d: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -158,6 +166,7 @@ export interface RecentEntry {
   dir: string;
   transcriptPath: string;
   notesPath: string; // "" when the raw template skipped the summary
+  audioPath: string; // "" for pre-v2 recordings (no audio kept)
   durationMs: number;
 }
 

@@ -100,6 +100,7 @@ test("pushRecent caps at RECENT_MAX, newest first", () => {
       dir: "",
       transcriptPath: "",
       notesPath: "",
+      audioPath: "",
       durationMs: 0,
     });
   }
@@ -126,22 +127,15 @@ test("LongRecorder end to end with a mock engine (raw template)", async () => {
       return Promise.resolve({ text: "Bonjour tout le monde.", ms: 5 });
     },
   } as unknown as WhisperSidecar;
-  let captureOn = false;
   const rec = new LongRecorder({
     getSidecar: () => mockSidecar,
     cleanupModel: () => "",
-    startCapture: () => {
-      captureOn = true;
-    },
-    stopCapture: () => {
-      captureOn = false;
-    },
     recentPathOverride: recent,
   });
 
   const started = rec.start({ dir: work, title: "Test Meeting", template: "raw" });
   assert.equal(started.ok, true, started.error);
-  assert.equal(captureOn, true);
+  assert.ok(started.audioPath && started.audioPath.endsWith(".wav"), "start must hand out the audio path");
   assert.equal(rec.isBusy, true);
 
   // 10 s of speech then a real pause: the segment closes naturally.
@@ -149,11 +143,11 @@ test("LongRecorder end to end with a mock engine (raw template)", async () => {
   rec.onChunk(speechy(5000));
   rec.onChunk(concat(speechy(2000), silence(1500)));
   rec.mark();
+  rec.gap(7.4);
   // More speech, stopped mid-flow: stop() closes the remainder.
   rec.onChunk(speechy(4000));
   const stopped = rec.stop();
   assert.equal(stopped.ok, true);
-  assert.equal(captureOn, false);
   assert.equal(stopped.notesPath, "", "raw template writes no notes");
 
   // finalizing drains in the background; poll it out.
@@ -167,12 +161,14 @@ test("LongRecorder end to end with a mock engine (raw template)", async () => {
   assert.ok(transcript.includes("# Test Meeting - transcript"));
   assert.ok(transcript.includes("[00:00:00] Bonjour tout le monde."));
   assert.ok(transcript.includes("Moment marked at"));
+  assert.ok(transcript.includes("Recording paused ~7s"), "the gap must be marked honestly");
   assert.ok(seen.length >= 2, "the mock engine transcribed the segments");
 
   const recentList = JSON.parse(fs.readFileSync(recent, "utf8"));
   assert.equal(recentList.length, 1);
   assert.equal(recentList[0].title, "Test Meeting");
   assert.equal(recentList[0].notesPath, "");
+  assert.ok(String(recentList[0].audioPath).endsWith(".wav"), "recent entries carry the audio path");
   fs.rmSync(work, { recursive: true, force: true });
 });
 
@@ -180,8 +176,6 @@ test("LongRecorder refuses a missing folder and double starts", () => {
   const rec = new LongRecorder({
     getSidecar: () => null,
     cleanupModel: () => "",
-    startCapture: () => {},
-    stopCapture: () => {},
     recentPathOverride: path.join(os.tmpdir(), "agrflow-long-none.json"),
   });
   const bad = rec.start({ dir: path.join(os.tmpdir(), "does-not-exist-agrflow"), template: "raw" });

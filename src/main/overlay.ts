@@ -4,8 +4,6 @@ import {
   CAPTURE_START,
   CAPTURE_STOP,
   CAPTURE_CANCEL,
-  LONG_START,
-  LONG_STOP,
   type CaptureStartPayload,
 } from "../shared/ipcContracts";
 
@@ -100,21 +98,6 @@ export class OverlayWindow {
     clearTimeout(this.hideTimer);
     if (!this.win || this.win.isDestroyed()) return;
     this.win.webContents.send(CAPTURE_CANCEL);
-    this.win.hide();
-  }
-
-  // ---- long-form capture (plan §6): the pill stays visible for the whole
-  // recording (red dot + elapsed), chunks stream to main every few seconds. ----
-  startLong(cfg: CaptureStartPayload) {
-    if (!this.win || this.win.isDestroyed()) return;
-    if (!this.ready) return; // long mode is user-driven, never boot-raced
-    this.win.showInactive();
-    this.win.webContents.send(LONG_START, cfg);
-  }
-
-  stopLong() {
-    if (!this.win || this.win.isDestroyed()) return;
-    this.win.webContents.send(LONG_STOP);
     this.win.hide();
   }
 
