@@ -27,35 +27,7 @@ registerProcessor("agrflow-capture", CaptureProcessor);
 `;
 
 // Audible start/stop cues (plan 5.9): know it is listening without looking.
-// Synthesized on the fly (two-tone blips), so no audio assets to ship. A
-// dedicated AudioContext at the device rate, NEVER the capture context (which
-// is 16 kHz and has no output).
-let cueCtx: AudioContext | null = null;
-function playCue(kind: "start" | "stop") {
-  try {
-    cueCtx ??= new AudioContext();
-    void cueCtx.resume();
-    const t0 = cueCtx.currentTime;
-    const osc = cueCtx.createOscillator();
-    const gain = cueCtx.createGain();
-    osc.type = "sine";
-    if (kind === "start") {
-      osc.frequency.setValueAtTime(620, t0);
-      osc.frequency.exponentialRampToValueAtTime(880, t0 + 0.07);
-    } else {
-      osc.frequency.setValueAtTime(880, t0);
-      osc.frequency.exponentialRampToValueAtTime(540, t0 + 0.09);
-    }
-    gain.gain.setValueAtTime(0.0001, t0);
-    gain.gain.exponentialRampToValueAtTime(0.12, t0 + 0.015);
-    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.12);
-    osc.connect(gain).connect(cueCtx.destination);
-    osc.start(t0);
-    osc.stop(t0 + 0.14);
-  } catch {
-    /* a failed cue must never break the capture */
-  }
-}
+// v5 chantier 5: audible start/stop cues removed entirely (Roch: no noise at all).
 
 type Phase = "idle" | "listening" | "transcribing" | "error";
 
@@ -218,7 +190,6 @@ function Overlay() {
       const my = ++gen;
       let stream: MediaStream | null = null;
       let ctx: AudioContext | null = null;
-      if (cfg?.sounds) playCue("start");
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           audio: {
@@ -284,7 +255,6 @@ function Overlay() {
     let lastCfg: CaptureStartPayload | undefined;
 
     function stop() {
-      if (lastCfg?.sounds) playCue("stop");
       const chunks = teardown();
       setPhase("transcribing"); // the overlay stays up until main says flowDone
       const pcm = floatTo16BitPcm(chunks);
@@ -317,10 +287,10 @@ function Overlay() {
         // read as glass. Bigger + more imposing than v2 (Roch).
         display: "flex",
         alignItems: "center",
-        gap: 12,
-        height: 46,
-        padding: "0 20px",
-        borderRadius: 23,
+        gap: 10,
+        height: 40,
+        padding: "0 17px",
+        borderRadius: 20,
         background: "linear-gradient(180deg, rgba(255,255,255,0.82), rgba(255,255,255,0.64))",
         border: "1px solid rgba(255,255,255,0.70)",
         boxShadow: "0 12px 32px rgba(17,24,39,0.24), inset 0 1px 0 rgba(255,255,255,0.95)",
@@ -328,7 +298,7 @@ function Overlay() {
         WebkitBackdropFilter: "blur(16px) saturate(1.2)",
         color: "#1a1916",
         fontFamily: "'Segoe UI', system-ui, sans-serif",
-        fontSize: 12.5,
+        fontSize: 10.5,
         width: "fit-content",
         margin: "7px auto",
       }}

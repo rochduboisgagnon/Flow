@@ -1,5 +1,7 @@
 import { app, session, ipcMain } from "electron";
 import path from "node:path";
+import fs from "node:fs";
+import { spawn } from "node:child_process";
 import { HotkeyAdapter } from "./hotkey";
 import { OverlayWindow } from "./overlay";
 import { WhisperSidecar } from "./asr/sidecar";
@@ -93,6 +95,15 @@ if (!app.requestSingleInstanceLock()) {
         }
         return { combo: null };
       },
+      recordOpenShortcut: async () => {
+        // v5 c2: same gesture recorder, applied to the "open AGR Pilot" combo.
+        const combo = await hotkey.record();
+        if (combo && combo.length > 0) {
+          applySettings({ openPilotCombo: combo });
+          return { combo, comboLabel: comboLabel(combo) };
+        }
+        return { combo: null };
+      },
       listMics: () => overlay.listMics(),
       ollamaModels: () => listOllamaModels(),
       quit: () => {
@@ -123,22 +134,28 @@ function focusProbeScript(): string {
 // ensureStarted() inside transcribe().
 let sidecar: WhisperSidecar | null = null;
 
-function serverBinaryPath(): string {
-  return app.isPackaged
-    ? path.join(process.resourcesPath, "bin", "whisper-server-win32-x64.exe")
-    : path.join(app.getAppPath(), "resources", "bin", "whisper-server-win32-x64.exe");
+// v5 c1: ordered whisper-server candidates. The Vulkan build is GPU-accelerated
+// on ANY modern GPU (NVIDIA/AMD/Intel), sub-second (e.g. Roch's RTX 4080); the CPU
+// build is the universal fallback. The sidecar freezes the first that starts.
+function serverBinaryPaths(): string[] {
+  const dir = app.isPackaged
+    ? path.join(process.resourcesPath, "bin")
+    : path.join(app.getAppPath(), "resources", "bin");
+  return [
+    path.join(dir, "whisper-server-win32-x64-vulkan.exe"),
+    path.join(dir, "whisper-server-win32-x64-cpu.exe"),
+  ];
 }
 
-// Plan v4 chantier 11 (Roch's call = best French). A short French seed, sent as
-// a per-request UTF-8 prompt only for French/auto, biases whisper toward accents,
-// casing and punctuation. Beam search is the second cheap accuracy lever.
-const FRENCH_PROMPT =
-  "Voici une dictée en français, soignée et bien ponctuée, avec les accents et les majuscules : déjà, préalable, résumé, étudié, français, numéro, être, ça, où.";
+// v5 c1: a SHORT, clean French seed (no word list, which whisper injected into short clips),
+// sent as a per-request UTF-8 prompt only for an explicit French language. It biases accents,
+// casing and punctuation without leaking vocabulary. Beam search is the second accuracy lever.
+const FRENCH_PROMPT = "Transcription en français, avec la ponctuation et les accents.";
 const BEAM_SIZE = 5;
 
 function newSidecar(modelPath: string): WhisperSidecar {
   return new WhisperSidecar({
-    binaryPath: serverBinaryPath(),
+    binaryPaths: serverBinaryPaths(),
     modelPath,
     language: settings.language,
     beamSize: BEAM_SIZE,
@@ -188,7 +205,23 @@ const longRec = new LongRecorder({
   log: (m) => (DEV ? console.log(m) : undefined),
 });
 
-const hotkey = new HotkeyAdapter(settings.combo, {
+// v5 c2: the "open AGR Pilot" shortcut. Flow's keyspy runs on a DEDICATED thread
+// that only pumps keys, so it never drops the combo the way a hook on the Manager's
+// busy UI thread did (v4). On a match, Flow launches the Manager with --open-pilot;
+// the Manager's single-instance handler signals the running Manager to open the AGR
+// Pilot window (Program.cs). Best-effort: a failed launch never crashes the thread.
+function openPilotApp(): void {
+  try {
+    // Flow lives at <hub>\AGR Flow\AGR Flow.exe; AGR-Manager.exe is one level up.
+    const mgr = path.join(path.dirname(path.dirname(app.getPath("exe"))), "AGR-Manager.exe");
+    if (!fs.existsSync(mgr)) return;
+    spawn(mgr, ["--open-pilot"], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+  } catch {
+    /* best effort */
+  }
+}
+
+const hotkey = new HotkeyAdapter(settings.combo, settings.openPilotCombo, {
   onStart() {
     if (longRec.isBusy) {
       // The transcript belongs to the long recording; a dictation mid-meeting
@@ -206,6 +239,7 @@ const hotkey = new HotkeyAdapter(settings.combo, {
     listening = false;
     overlay.cancelCapture();
   },
+  onOpenPilot: openPilotApp,
 });
 
 /** The shared utterance pipeline (PTT loop AND local API): anti-hallucination
@@ -304,9 +338,11 @@ function applySettings(patch: Partial<FlowSettings>): FlowSettings {
   const comboChanged = JSON.stringify(next.combo) !== JSON.stringify(settings.combo);
   const modelChanged = next.model !== settings.model;
   const langChanged = next.language !== settings.language;
+  const openComboChanged = JSON.stringify(next.openPilotCombo) !== JSON.stringify(settings.openPilotCombo);
   Object.assign(settings, next);
   saveSettings(settings);
   if (comboChanged) hotkey.setCombo(settings.combo);
+  if (openComboChanged) hotkey.setOpenCombo(settings.openPilotCombo); // v5 c2: re-arm the open shortcut
   if (langChanged) sidecar?.setLanguage(settings.language);
   if (modelChanged) void swapModel(settings.model);
   return { ...settings, combo: [...settings.combo] };

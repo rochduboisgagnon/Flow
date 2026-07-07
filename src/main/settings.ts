@@ -19,16 +19,18 @@ export interface FlowSettings {
   sounds: boolean; // audible start/stop cues
   cleanup: boolean; // optional Ollama pass (punctuation + voice commands)
   cleanupModel: string; // Ollama model name, e.g. "gemma3:4b"
+  openPilotCombo: string[]; // v5 c2: global shortcut to open AGR Pilot ([] = off)
 }
 
 export const SETTINGS_DEFAULTS: FlowSettings = {
   combo: DEFAULT_COMBO,
-  language: "auto",
+  language: "fr", // v5 c1: force French (auto-detect is unreliable on 1-2 s clips, locked EN)
   model: DEFAULT_MODEL_FILE,
   micDeviceId: "",
-  sounds: true,
+  sounds: false, // v5 c5: no audible cues at all
   cleanup: false, // dictation never needs the LLM (plan: optional, off)
   cleanupModel: "",
+  openPilotCombo: [], // v5 c2: off until the user records one
 };
 
 export function dataDir(): string {
@@ -64,6 +66,14 @@ export function sanitizeSettings(raw: unknown): FlowSettings {
   if (typeof r.cleanup === "boolean") out.cleanup = r.cleanup;
   if (typeof r.cleanupModel === "string" && /^[\w.:-]*$/.test(r.cleanupModel)) {
     out.cleanupModel = r.cleanupModel;
+  }
+  // v5 c2: openPilotCombo is 0-3 keys (empty = the shortcut is off).
+  if (
+    Array.isArray(r.openPilotCombo) &&
+    r.openPilotCombo.length <= 3 &&
+    r.openPilotCombo.every((k) => typeof k === "string" && k.trim().length > 0)
+  ) {
+    out.openPilotCombo = r.openPilotCombo.map((k) => (k as string).trim().toUpperCase());
   }
   return out;
 }

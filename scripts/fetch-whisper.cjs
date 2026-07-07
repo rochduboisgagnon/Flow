@@ -1,25 +1,24 @@
-// Fetches the whisper-server binary (whisper.cpp, prebuilt by the OpenWhispr
-// project's whisper.cpp fork releases) into resources/bin/. CPU build by
-// default - it runs everywhere; the CUDA build is an opt-in via
-// WHISPER_VARIANT=cuda (bundles the CUDA runtime, much larger download).
-// Pin a tag with WHISPER_CPP_VERSION for reproducible builds.
+// Fetches the whisper-server binaries (whisper.cpp, prebuilt by the OpenWhispr
+// whisper.cpp fork releases) into resources/bin/. v5: we ship TWO Windows builds
+// and pick at runtime (sidecar.ts): the Vulkan build (GPU-accelerated on ANY
+// modern GPU - NVIDIA, AMD, Intel - sub-second, e.g. Roch's RTX 4080) and the CPU
+// build as the universal fallback. Vulkan is self-contained (vulkan-1.dll is a
+// system file shipped with every GPU driver); no huge CUDA runtime to bundle.
+// Pin a tag with WHISPER_CPP_VERSION for reproducible builds; WHISPER_FORCE re-fetches.
 const fs = require("node:fs");
 const path = require("node:path");
 const { execSync } = require("node:child_process");
 const https = require("node:https");
 
 const REPO = "OpenWhispr/whisper.cpp";
-const VARIANT = process.env.WHISPER_VARIANT === "cuda" ? "cuda" : "cpu";
-const ZIP = `whisper-server-win32-x64-${VARIANT}.zip`;
 const OUT_DIR = path.join(__dirname, "..", "resources", "bin");
-const OUT_EXE = path.join(OUT_DIR, "whisper-server-win32-x64.exe");
+// The exe inside each zip is already variant-named; we keep those names so the
+// runtime can choose. base = current cross-platform naming used by the sidecar.
+const VARIANTS = ["cpu", "vulkan"];
+const exeFor = (v) => path.join(OUT_DIR, `whisper-server-win32-x64-${v}.exe`);
 
 if (process.platform !== "win32") {
   console.log("[fetch-whisper] windows only for now");
-  process.exit(0);
-}
-if (fs.existsSync(OUT_EXE) && !process.env.WHISPER_FORCE) {
-  console.log("[fetch-whisper] already present:", OUT_EXE);
   process.exit(0);
 }
 
@@ -61,30 +60,41 @@ function downloadTo(url, dest, redirects = 0) {
 }
 
 (async () => {
+  const missing = VARIANTS.filter((v) => process.env.WHISPER_FORCE || !fs.existsSync(exeFor(v)));
+  if (!missing.length) {
+    console.log("[fetch-whisper] both builds already present:", OUT_DIR);
+    process.exit(0);
+  }
   const tagged = process.env.WHISPER_CPP_VERSION;
   const release = await getJson(
     tagged
       ? `https://api.github.com/repos/${REPO}/releases/tags/${tagged}`
       : `https://api.github.com/repos/${REPO}/releases/latest`,
   );
-  const asset = (release.assets || []).find((a) => a.name === ZIP);
-  if (!asset) throw new Error(`asset ${ZIP} not found in ${REPO} ${release.tag_name}`);
   fs.mkdirSync(OUT_DIR, { recursive: true });
-  const zipPath = path.join(OUT_DIR, ZIP);
-  console.log(`[fetch-whisper] ${release.tag_name} / ${ZIP} ...`);
-  await downloadTo(asset.browser_download_url, zipPath);
-  // Windows 10+ ships bsdtar (System32), which understands zip archives: no
-  // unzip dependency. The ABSOLUTE path matters: a Git Bash environment puts
-  // GNU tar first in PATH, and GNU tar reads neither zips nor "C:\" paths.
   const sysTar = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe");
-  execSync(`"${sysTar}" -xf "${ZIP}"`, { stdio: "inherit", cwd: OUT_DIR });
-  fs.unlinkSync(zipPath);
-  const extracted = fs
-    .readdirSync(OUT_DIR)
-    .find((f) => f.startsWith("whisper-server") && f.endsWith(".exe"));
-  if (!extracted) throw new Error("no whisper-server exe found after extraction");
-  if (path.join(OUT_DIR, extracted) !== OUT_EXE) fs.renameSync(path.join(OUT_DIR, extracted), OUT_EXE);
-  console.log("[fetch-whisper] ready:", OUT_EXE, `(${release.tag_name}, ${VARIANT})`);
+  for (const variant of missing) {
+    const zip = `whisper-server-win32-x64-${variant}.zip`;
+    const asset = (release.assets || []).find((a) => a.name === zip);
+    if (!asset) throw new Error(`asset ${zip} not found in ${REPO} ${release.tag_name}`);
+    const zipPath = path.join(OUT_DIR, zip);
+    console.log(`[fetch-whisper] ${release.tag_name} / ${zip} (${(asset.size / 1048576).toFixed(1)} MB) ...`);
+    await downloadTo(asset.browser_download_url, zipPath);
+    // Windows 10+ ships bsdtar (System32), which reads zips. The ABSOLUTE path
+    // matters: Git Bash puts GNU tar first, which reads neither zips nor "C:\".
+    execSync(`"${sysTar}" -xf "${zip}"`, { stdio: "inherit", cwd: OUT_DIR });
+    fs.unlinkSync(zipPath);
+    // The extracted exe is already `whisper-server-win32-x64-<variant>.exe`.
+    if (!fs.existsSync(exeFor(variant))) {
+      const found = fs
+        .readdirSync(OUT_DIR)
+        .find((f) => f.startsWith("whisper-server") && f.includes(variant) && f.endsWith(".exe"));
+      if (!found) throw new Error(`no ${variant} whisper-server exe after extraction`);
+      if (path.join(OUT_DIR, found) !== exeFor(variant)) fs.renameSync(path.join(OUT_DIR, found), exeFor(variant));
+    }
+    console.log(`[fetch-whisper] ready: ${exeFor(variant)}`);
+  }
+  console.log(`[fetch-whisper] done (${release.tag_name}, variants: ${VARIANTS.join(", ")})`);
 })().catch((e) => {
   console.error("[fetch-whisper] FAILED:", e.message);
   process.exit(1);

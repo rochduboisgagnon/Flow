@@ -44,10 +44,13 @@ test("model names that look like paths are rejected", () => {
 test("language accepts auto and short ISO codes only", () => {
   assert.equal(sanitizeSettings({ language: "auto" }).language, "auto");
   assert.equal(sanitizeSettings({ language: "en" }).language, "en");
-  assert.equal(sanitizeSettings({ language: "french" }).language, "auto");
+  // An invalid value falls back to the default (v5 c1: French forced by default).
+  assert.equal(sanitizeSettings({ language: "french" }).language, SETTINGS_DEFAULTS.language);
 });
 
-test("defaults are Ctrl+Win and the large-v3-turbo multilingual model (best French)", () => {
+test("defaults are Ctrl+Win, large-v3-turbo, French forced, no sounds (v5)", () => {
   assert.deepEqual(SETTINGS_DEFAULTS.combo, ["CTRL", "WIN"]);
   assert.match(SETTINGS_DEFAULTS.model, /^ggml-large-v3-turbo/);
+  assert.equal(SETTINGS_DEFAULTS.language, "fr");
+  assert.equal(SETTINGS_DEFAULTS.sounds, false);
 });

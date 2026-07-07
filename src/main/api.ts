@@ -42,6 +42,7 @@ export interface ApiDeps {
   getSettings(): unknown;
   setSettings(patch: Record<string, unknown>): unknown;
   recordShortcut(): Promise<unknown>;
+  recordOpenShortcut(): Promise<unknown>; // v5 c2: record the "open AGR Pilot" combo
   listMics(): Promise<unknown>;
   ollamaModels(): Promise<unknown>;
   quit(): void;
@@ -149,6 +150,10 @@ export class LocalApi {
         // Long-poll by design: resolves when the user finishes the gesture
         // (or the 10 s recorder timeout fires).
         return json(200, await this.deps.recordShortcut());
+      }
+      if (req.method === "POST" && url.pathname === "/open-shortcut/record") {
+        // v5 c2: same long-poll gesture recorder, for the "open AGR Pilot" combo.
+        return json(200, await this.deps.recordOpenShortcut());
       }
       if (req.method === "GET" && url.pathname === "/mics") {
         return json(200, await this.deps.listMics());

@@ -13,10 +13,13 @@ import { modelPath, DEFAULT_MODEL_FILE } from "../src/main/asr/modelStore";
 // microphone slices; the transcript must carry both, in order, with correct
 // summary-free (raw) finalization. Skipped where the model is absent (CI).
 
-const BIN = path.join(__dirname, "..", "resources", "bin", "whisper-server-win32-x64.exe");
+const BINS = [
+  path.join(__dirname, "..", "resources", "bin", "whisper-server-win32-x64-vulkan.exe"),
+  path.join(__dirname, "..", "resources", "bin", "whisper-server-win32-x64-cpu.exe"),
+];
 const MODEL = modelPath(DEFAULT_MODEL_FILE);
 const available =
-  process.platform === "win32" && fs.existsSync(BIN) && fs.existsSync(MODEL);
+  process.platform === "win32" && BINS.some((b) => fs.existsSync(b)) && fs.existsSync(MODEL);
 
 function tts(text: string): Int16Array {
   const wavPath = path.join(os.tmpdir(), `agrflow-lt-${Math.floor(Math.random() * 1e9)}.wav`);
@@ -52,7 +55,7 @@ test(
   { skip: !available ? "model or binary not present on this machine" : false },
   async () => {
     const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-lt-"));
-    const sc = new WhisperSidecar({ binaryPath: BIN, modelPath: MODEL });
+    const sc = new WhisperSidecar({ binaryPaths: BINS, modelPath: MODEL });
     const rec = new LongRecorder({
       getSidecar: () => sc,
       cleanupModel: () => "",

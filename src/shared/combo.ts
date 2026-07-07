@@ -226,3 +226,53 @@ export function createComboMatcher(
     reset,
   };
 }
+
+// v5 chantier 2: a MINIMAL rising-edge matcher for a single-fire global shortcut
+// ("open AGR Pilot"). No push-to-talk hold/tap semantics: it fires ONCE the exact
+// combo becomes fully pressed and re-arms only after the combo breaks (so Windows
+// auto-repeat never re-fires). It swallows the completing NON-modifier key (so e.g.
+// the "P" of Ctrl+Alt+P never types) but never an UP or a key outside the combo.
+export interface EdgeMatcher {
+  handle(e: ComboEvent): { fire: boolean; swallow: boolean };
+  setCombo(combo: string[]): void;
+  reset(): void;
+}
+
+export function createEdgeMatcher(initialCombo: string[]): EdgeMatcher {
+  let combo = [...initialCombo];
+  const down = new Set<string>();
+  let armed = true;
+  const fullDown = () => combo.length > 0 && combo.every((entry) => [...down].some((k) => satisfies(entry, k)));
+  const isKey = (key: string) => combo.some((entry) => satisfies(entry, key));
+  const isNonMod = (key: string) => genericOf(key) === key; // "P" -> non-modifier; "LEFT CTRL" -> modifier
+  function reset() {
+    down.clear();
+    armed = true;
+  }
+  return {
+    handle(e) {
+      if (e.state === "DOWN") {
+        const already = down.has(e.key);
+        const wasFull = fullDown();
+        if (!already) down.add(e.key);
+        const nowFull = fullDown();
+        // Swallow the combo's completing key + its auto-repeats, only if it is a
+        // combo key AND a non-modifier (letters/F-keys), never an unrelated key.
+        const swallow = nowFull && isKey(e.key) && isNonMod(e.key);
+        if (!wasFull && nowFull && armed) {
+          armed = false; // fire once per physical press
+          return { fire: true, swallow };
+        }
+        return { fire: false, swallow };
+      }
+      down.delete(e.key);
+      if (!fullDown()) armed = true; // re-arm once the combo is no longer fully held
+      return { fire: false, swallow: false };
+    },
+    setCombo(next) {
+      combo = [...next];
+      reset();
+    },
+    reset,
+  };
+}

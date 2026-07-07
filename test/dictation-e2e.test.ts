@@ -16,10 +16,13 @@ import { encodeWav } from "../src/shared/wav";
 // -> hallucination gate). Skipped when the model is absent (CI); on the dev
 // machine it proves the audio-to-text spine end to end and prints the latency.
 
-const BIN = path.join(__dirname, "..", "resources", "bin", "whisper-server-win32-x64.exe");
+const BINS = [
+  path.join(__dirname, "..", "resources", "bin", "whisper-server-win32-x64-vulkan.exe"),
+  path.join(__dirname, "..", "resources", "bin", "whisper-server-win32-x64-cpu.exe"),
+];
 const MODEL = modelPath(DEFAULT_MODEL_FILE);
 const available =
-  process.platform === "win32" && fs.existsSync(BIN) && fs.existsSync(MODEL);
+  process.platform === "win32" && BINS.some((b) => fs.existsSync(b)) && fs.existsSync(MODEL);
 
 const SENTENCE = "Hello, this is a local dictation test for the flow application.";
 
@@ -65,7 +68,7 @@ test(
     const speech = analyzeSpeech(pcm);
     assert.ok(hasSpeech(speech), `VAD must hear TTS speech (voicedMs=${speech.voicedMs})`);
 
-    const sc = new WhisperSidecar({ binaryPath: BIN, modelPath: MODEL });
+    const sc = new WhisperSidecar({ binaryPaths: BINS, modelPath: MODEL });
     try {
       const { text, ms } = await sc.transcribe(encodeWav(trimToSpeech(pcm, speech)));
       const clean = gateTranscript(text);

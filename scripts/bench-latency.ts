@@ -11,7 +11,10 @@ import { modelPath, DEFAULT_MODEL_FILE } from "../src/main/asr/modelStore";
 import { analyzeSpeech, trimToSpeech } from "../src/shared/vad";
 import { encodeWav } from "../src/shared/wav";
 
-const BIN = path.join(__dirname, "..", "resources", "bin", "whisper-server-win32-x64.exe");
+const BINS = [
+  path.join(__dirname, "..", "resources", "bin", "whisper-server-win32-x64-vulkan.exe"),
+  path.join(__dirname, "..", "resources", "bin", "whisper-server-win32-x64-cpu.exe"),
+];
 const MODEL_FILE = process.argv[2] ?? DEFAULT_MODEL_FILE;
 
 function tts(text: string): Uint8Array {
@@ -47,7 +50,7 @@ function pcmFromAnyWav(wav: Uint8Array): Int16Array {
 }
 
 async function main() {
-  const sc = new WhisperSidecar({ binaryPath: BIN, modelPath: modelPath(MODEL_FILE) });
+  const sc = new WhisperSidecar({ binaryPaths: BINS, modelPath: modelPath(MODEL_FILE) });
   const t0 = Date.now();
   await sc.ensureStarted();
   console.log(`model ${MODEL_FILE} warm in ${Date.now() - t0} ms`);
