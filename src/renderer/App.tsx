@@ -12,6 +12,8 @@ interface SettingsShape {
   model: string;
   micDeviceId: string;
   sounds: boolean;
+  cleanup: boolean;
+  cleanupModel: string;
 }
 
 const LANGUAGES: Array<[string, string]> = [
@@ -81,6 +83,7 @@ export function App() {
   const [micBlocked, setMicBlocked] = useState(false);
   const [recording, setRecording] = useState(false);
   const [modelState, setModelState] = useState<ModelStatePayload>({ status: "idle" });
+  const [ollamaModels, setOllamaModels] = useState<string[] | null>(null);
 
   useEffect(() => {
     void window.agrflow.getSettings().then((b) => {
@@ -88,6 +91,7 @@ export function App() {
       setModels(b.models);
     });
     window.agrflow.onModelState(setModelState);
+    void window.agrflow.listOllamaModels().then(setOllamaModels);
     // Microphone labels only exist after one granted getUserMedia; grab a
     // stream for a moment, enumerate, and release it immediately. A failure
     // here doubles as the onboarding check (banner below).
@@ -272,6 +276,48 @@ export function App() {
           onChange={(e) => patch({ sounds: e.target.checked })}
           style={{ width: 16, height: 16, accentColor: "#34e3a0" }}
         />
+      </div>
+
+      <div style={S.row}>
+        <div>
+          <div style={S.label}>AI cleanup (optional)</div>
+          <div style={S.hint}>
+            {ollamaModels === null
+              ? "Requires Ollama running locally (not detected). Dictation never needs it."
+              : ollamaModels.length === 0
+                ? "Ollama is running but has no model; pull one (e.g. gemma3:4b)."
+                : "Fixes punctuation and applies spoken commands (“new line”, “nouvelle ligne”...) on longer dictations. Still 100% local."}
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {settings.cleanup && (ollamaModels?.length ?? 0) > 0 && (
+            <select
+              style={S.select}
+              value={settings.cleanupModel}
+              onChange={(e) => patch({ cleanupModel: e.target.value })}
+            >
+              <option value="">Pick a model...</option>
+              {ollamaModels!.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          )}
+          <input
+            type="checkbox"
+            checked={settings.cleanup}
+            disabled={!ollamaModels || ollamaModels.length === 0}
+            onChange={(e) => {
+              const first = ollamaModels?.[0] ?? "";
+              patch({
+                cleanup: e.target.checked,
+                ...(e.target.checked && !settings.cleanupModel ? { cleanupModel: first } : {}),
+              });
+            }}
+            style={{ width: 16, height: 16, accentColor: "#34e3a0" }}
+          />
+        </div>
       </div>
     </div>
   );

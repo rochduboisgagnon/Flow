@@ -12,6 +12,8 @@ import { loadSettings, saveSettings, sanitizeSettings, type FlowSettings } from 
 import { analyzeSpeech, hasSpeech, trimToSpeech } from "../shared/vad";
 import { gateTranscript } from "../shared/textGate";
 import { pcmFromWav, encodeWav } from "../shared/wav";
+import { listOllamaModels, cleanTranscript, warmCleanupModel } from "./llm/ollama";
+import { CLEANUP_MIN_CHARS } from "../shared/cleanup";
 import {
   CAPTURE_DONE,
   CAPTURE_ERROR,
@@ -19,6 +21,7 @@ import {
   SETTINGS_SET,
   SHORTCUT_RECORD,
   OPEN_MIC_SETTINGS,
+  OLLAMA_MODELS,
   MODEL_STATE,
   type CaptureDonePayload,
   type ModelStatePayload,
@@ -59,6 +62,7 @@ if (!app.requestSingleInstanceLock()) {
     wireSettingsIpc();
     startPtt();
     void warmAsr();
+    if (settings.cleanup && settings.cleanupModel) warmCleanupModel(settings.cleanupModel);
     probe = new FocusProbe(focusProbeScript(), DEV ? (m) => console.log(m) : undefined);
   });
 }
@@ -170,10 +174,16 @@ function wireCapture() {
       .then(async ({ text, ms }) => {
         // Gates #2 and #3 live upstream and here: per-segment no-speech
         // filtering in the protocol parser, then the known-hallucination list.
-        const clean = gateTranscript(text);
+        let clean = gateTranscript(text);
         if (!clean) {
           if (DEV) console.log(`[gate] dropped: ${JSON.stringify(text)}`);
           return;
+        }
+        // Optional Ollama pass (plan 5.1 step 4): punctuation + spoken
+        // formatting commands. Opt-in, long texts only, falls back to the
+        // raw transcript on any failure - never a gate, never a blocker.
+        if (settings.cleanup && settings.cleanupModel && clean.length > CLEANUP_MIN_CHARS) {
+          clean = await cleanTranscript(settings.cleanupModel, clean);
         }
         // Probe the focus WHILE nothing else has stolen it, then route and act.
         const focus = (await probe?.probe()) ?? null;
@@ -242,11 +252,14 @@ function applySettings(patch: Partial<FlowSettings>): FlowSettings {
   const comboChanged = JSON.stringify(next.combo) !== JSON.stringify(settings.combo);
   const modelChanged = next.model !== settings.model;
   const langChanged = next.language !== settings.language;
+  const cleanupTurnedOn =
+    next.cleanup && next.cleanupModel && (!settings.cleanup || next.cleanupModel !== settings.cleanupModel);
   Object.assign(settings, next);
   saveSettings(settings);
   if (comboChanged) hotkey.setCombo(settings.combo);
   if (langChanged) sidecar?.setLanguage(settings.language);
   if (modelChanged) void swapModel(settings.model);
+  if (cleanupTurnedOn) warmCleanupModel(settings.cleanupModel);
   return { ...settings, combo: [...settings.combo] };
 }
 
@@ -266,6 +279,7 @@ function wireSettingsIpc() {
     // denied (plan 5.9). macOS gets its own panels in phase 5.
     shell.openExternal("ms-settings:privacy-microphone"),
   );
+  ipcMain.handle(OLLAMA_MODELS, () => listOllamaModels());
 }
 
 async function startPtt() {

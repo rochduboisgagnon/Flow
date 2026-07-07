@@ -9,6 +9,7 @@ import {
   SETTINGS_SET,
   SHORTCUT_RECORD,
   OPEN_MIC_SETTINGS,
+  OLLAMA_MODELS,
   MODEL_STATE,
   type CaptureStartPayload,
   type ModelStatePayload,
@@ -57,6 +58,9 @@ const api = {
   },
   openMicSettings(): Promise<void> {
     return ipcRenderer.invoke(OPEN_MIC_SETTINGS) as Promise<void>;
+  },
+  listOllamaModels(): Promise<string[] | null> {
+    return ipcRenderer.invoke(OLLAMA_MODELS) as Promise<string[] | null>;
   },
 };
 

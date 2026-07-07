@@ -17,6 +17,8 @@ export interface FlowSettings {
   model: string; // ggml model file name served from AGR Flow's model store
   micDeviceId: string; // "" = system default microphone
   sounds: boolean; // audible start/stop cues
+  cleanup: boolean; // optional Ollama pass (punctuation + voice commands)
+  cleanupModel: string; // Ollama model name, e.g. "gemma3:4b"
 }
 
 export const SETTINGS_DEFAULTS: FlowSettings = {
@@ -25,6 +27,8 @@ export const SETTINGS_DEFAULTS: FlowSettings = {
   model: DEFAULT_MODEL_FILE,
   micDeviceId: "",
   sounds: true,
+  cleanup: false, // dictation never needs the LLM (plan: optional, off)
+  cleanupModel: "",
 };
 
 export function dataDir(): string {
@@ -57,6 +61,10 @@ export function sanitizeSettings(raw: unknown): FlowSettings {
   }
   if (typeof r.micDeviceId === "string") out.micDeviceId = r.micDeviceId;
   if (typeof r.sounds === "boolean") out.sounds = r.sounds;
+  if (typeof r.cleanup === "boolean") out.cleanup = r.cleanup;
+  if (typeof r.cleanupModel === "string" && /^[\w.:-]*$/.test(r.cleanupModel)) {
+    out.cleanupModel = r.cleanupModel;
+  }
   return out;
 }
 
