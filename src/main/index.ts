@@ -394,6 +394,7 @@ function openSettings() {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: false, // the preload requires shared modules (see overlay.ts)
     },
   });
   // Closing the settings window keeps the app alive in the tray (it is a

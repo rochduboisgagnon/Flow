@@ -44,6 +44,12 @@ export class OverlayWindow {
         preload: path.join(__dirname, "preload.js"),
         contextIsolation: true,
         nodeIntegration: false,
+        // Sandboxed preloads cannot require() relative files (Electron 20+):
+        // ours pulls ../shared/ipcContracts, so the preload silently failed to
+        // load and window.agrflow never existed - no capture at all in the
+        // packaged app. contextIsolation stays on; both windows load only our
+        // own local pages.
+        sandbox: false,
       },
     });
     this.win.setAlwaysOnTop(true, "screen-saver");
