@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage, session, ipcMain } from "electron";
+import { app, BrowserWindow, Tray, Menu, nativeImage, session, ipcMain, shell } from "electron";
 import path from "node:path";
 import { HotkeyAdapter } from "./hotkey";
 import { OverlayWindow } from "./overlay";
@@ -18,6 +18,7 @@ import {
   SETTINGS_GET,
   SETTINGS_SET,
   SHORTCUT_RECORD,
+  OPEN_MIC_SETTINGS,
   MODEL_STATE,
   type CaptureDonePayload,
   type ModelStatePayload,
@@ -140,10 +141,12 @@ function wireCapture() {
   ipcMain.on(CAPTURE_DONE, (_ev, payload: CaptureDonePayload) => {
     // NOTHING is retained: the WAV lives in this handler, feeds one inference,
     // and every reference dies with it. Sub-300 ms of audio is release noise.
-    if (payload.durationMs < 300) return;
+    // Every exit path calls overlay.flowDone() so the "Transcribing..." pill
+    // never outlives the utterance.
+    if (payload.durationMs < 300) return overlay.flowDone();
     if (!sidecar) {
       console.error("[asr] utterance dropped: engine not ready");
-      return;
+      return overlay.flowDone();
     }
     // Anti-hallucination gate #1 (plan 5.9): if the utterance carries no
     // actual speech energy, it never reaches the model - an accidental press
@@ -156,11 +159,11 @@ function wireCapture() {
       speech = analyzeSpeech(pcm);
     } catch (err) {
       console.error("[vad] malformed capture dropped:", err);
-      return;
+      return overlay.flowDone();
     }
     if (!hasSpeech(speech)) {
       if (DEV) console.log(`[vad] dropped: ${speech.voicedMs} ms voiced`);
-      return;
+      return overlay.flowDone();
     }
     void sidecar
       .transcribe(encodeWav(trimToSpeech(pcm, speech)))
@@ -181,7 +184,8 @@ function wireCapture() {
         if (DEV)
           console.log(`[flow] ${ms} ms | focus=${focus?.control ?? "none"} -> ${route}`);
       })
-      .catch((err) => console.error("[flow] failed:", err));
+      .catch((err) => console.error("[flow] failed:", err))
+      .finally(() => overlay.flowDone());
   });
   ipcMain.on(CAPTURE_ERROR, (_ev, message: string) => {
     console.error("[capture] failed:", message);
@@ -257,6 +261,11 @@ function wireSettingsIpc() {
     if (combo && combo.length > 0) return applySettings({ combo }).combo;
     return null;
   });
+  ipcMain.handle(OPEN_MIC_SETTINGS, () =>
+    // Windows microphone privacy panel: the onboarding path when access is
+    // denied (plan 5.9). macOS gets its own panels in phase 5.
+    shell.openExternal("ms-settings:privacy-microphone"),
+  );
 }
 
 async function startPtt() {

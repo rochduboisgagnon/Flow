@@ -78,6 +78,7 @@ export function App() {
   const [settings, setSettings] = useState<SettingsShape | null>(null);
   const [models, setModels] = useState<readonly ModelChoice[]>([]);
   const [mics, setMics] = useState<Array<[string, string]>>([]);
+  const [micBlocked, setMicBlocked] = useState(false);
   const [recording, setRecording] = useState(false);
   const [modelState, setModelState] = useState<ModelStatePayload>({ status: "idle" });
 
@@ -88,7 +89,8 @@ export function App() {
     });
     window.agrflow.onModelState(setModelState);
     // Microphone labels only exist after one granted getUserMedia; grab a
-    // stream for a moment, enumerate, and release it immediately.
+    // stream for a moment, enumerate, and release it immediately. A failure
+    // here doubles as the onboarding check (banner below).
     void (async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -99,8 +101,10 @@ export function App() {
             .filter((d) => d.kind === "audioinput" && d.deviceId !== "default" && d.deviceId !== "communications")
             .map((d) => [d.deviceId, d.label || "Microphone"]),
         );
+        setMicBlocked(false);
       } catch {
-        setMics([]); // no permission / no mic: the dropdown just shows Default
+        setMics([]);
+        setMicBlocked(true); // denied or no device: guide instead of failing silently
       }
     })();
   }, []);
@@ -143,6 +147,31 @@ export function App() {
         clipboard when no text field has focus). Nothing leaves this machine; nothing
         is stored.
       </p>
+
+      {micBlocked && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            marginTop: 12,
+            padding: "10px 12px",
+            borderRadius: 8,
+            border: "1px solid rgba(225,29,42,0.5)",
+            background: "rgba(225,29,42,0.08)",
+            fontSize: 12.5,
+          }}
+        >
+          <span>
+            AGR Flow cannot reach a microphone. Allow microphone access for desktop
+            apps in Windows Settings, then reopen this window.
+          </span>
+          <button style={S.btn} onClick={() => void window.agrflow.openMicSettings()}>
+            Open Windows Settings
+          </button>
+        </div>
+      )}
 
       <div style={{ ...S.row, marginTop: 14 }}>
         <div>

@@ -8,6 +8,7 @@ import {
   SETTINGS_GET,
   SETTINGS_SET,
   SHORTCUT_RECORD,
+  OPEN_MIC_SETTINGS,
   MODEL_STATE,
   type CaptureStartPayload,
   type ModelStatePayload,
@@ -53,6 +54,9 @@ const api = {
   },
   onModelState(cb: (state: ModelStatePayload) => void) {
     ipcRenderer.on(MODEL_STATE, (_e, s: ModelStatePayload) => cb(s));
+  },
+  openMicSettings(): Promise<void> {
+    return ipcRenderer.invoke(OPEN_MIC_SETTINGS) as Promise<void>;
   },
 };
 

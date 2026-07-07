@@ -31,6 +31,10 @@ export const SETTINGS_SET = "settings:set";
 // Start menu cannot steal the recorder's focus).
 export const SHORTCUT_RECORD = "shortcut:record";
 
+// settings window -> main: open the Windows microphone privacy panel
+// (onboarding when access is denied, plan 5.9)
+export const OPEN_MIC_SETTINGS = "onboarding:micSettings";
+
 // main -> settings window: ASR model download/swap progress
 export const MODEL_STATE = "model:state";
 

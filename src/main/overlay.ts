@@ -19,6 +19,7 @@ export class OverlayWindow {
   // arrives meanwhile clears it (nothing was captured, nothing to deliver).
   private ready = false;
   private pendingStart: CaptureStartPayload | null = null;
+  private hideTimer: NodeJS.Timeout | undefined;
 
   create(dev: boolean) {
     const { width, height } = screen.getPrimaryDisplay().workAreaSize;
@@ -71,11 +72,24 @@ export class OverlayWindow {
     this.pendingStart = null;
     if (!this.win || this.win.isDestroyed()) return;
     this.win.webContents.send(CAPTURE_STOP);
+    // Stay visible: the renderer shows "Transcribing..." until the text is
+    // routed (flowDone), hiding the model's latency behind honest feedback.
+    // A safety timer guarantees the overlay can never linger forever.
+    clearTimeout(this.hideTimer);
+    this.hideTimer = setTimeout(() => this.win?.hide(), 10_000);
+  }
+
+  /** The utterance finished its journey (inserted, clipboarded, or dropped). */
+  flowDone() {
+    clearTimeout(this.hideTimer);
+    this.hideTimer = undefined;
+    if (!this.win || this.win.isDestroyed()) return;
     this.win.hide();
   }
 
   cancelCapture() {
     this.pendingStart = null;
+    clearTimeout(this.hideTimer);
     if (!this.win || this.win.isDestroyed()) return;
     this.win.webContents.send(CAPTURE_CANCEL);
     this.win.hide();
