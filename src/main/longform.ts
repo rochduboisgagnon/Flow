@@ -36,7 +36,11 @@ import {
 // zero-retention. X last recordings are indexed in ~/.agr-flow/recent.json.
 
 export interface LongStartOpts {
-  dir: string;
+  // v6 c7: optional now. Empty/absent = record into an app-owned STAGING folder;
+  // the destination is chosen at the END (save()). A non-empty dir keeps the old
+  // "record straight into that folder" behaviour (still used by any caller that
+  // wants it).
+  dir?: string;
   title?: string;
   keepAudio?: boolean; // v3 chantier 4: keep the listenable .wav (default off)
 }
@@ -66,12 +70,59 @@ export interface LongDeps {
   log?: (msg: string) => void;
   /** Tests only: keep the recent-list file away from the real ~/.agr-flow. */
   recentPathOverride?: string;
+  /** Tests only: keep the app-owned staging folder away from the real ~/.agr-flow. */
+  stagingRootOverride?: string;
 }
 
 const MAX_QUEUE = 240; // ~100 min of backlog before we refuse to grow (safety)
 
 export function recentPath(): string {
   return path.join(dataDir(), "recent.json");
+}
+
+// v6 c7: app-owned staging root. A recording with no chosen destination lands
+// in a per-session subfolder here; save() moves it out into the user's folder.
+export function stagingRoot(): string {
+  return path.join(dataDir(), "staging");
+}
+
+/** Copy a file INTO destDir without ever clobbering an existing user file: a
+ * name collision gets a "-1", "-2"... suffix. COPY (not rename), so the source
+ * stays put until BOTH files are safely in place - save() deletes the sources
+ * only after committing (two-phase). copyFileSync works across volumes, so no
+ * EXDEV special-casing is needed. */
+function copyFileInto(destDir: string, src: string): string {
+  const base = path.basename(src);
+  const ext = path.extname(base);
+  const stem = base.slice(0, base.length - ext.length);
+  let dest = path.join(destDir, base);
+  for (let i = 1; fs.existsSync(dest); i++) dest = path.join(destDir, stem + "-" + i + ext);
+  try {
+    fs.copyFileSync(src, dest);
+  } catch (err) {
+    // A failed copy can leave a truncated file (e.g. ENOSPC mid-write): remove it
+    // so the user's folder is never littered with partial debris, then rethrow so
+    // save()'s two-phase rollback runs.
+    try {
+      fs.rmSync(dest);
+    } catch {
+      /* nothing to clean */
+    }
+    throw err;
+  }
+  return dest;
+}
+
+/** Remove a now-empty staging subfolder. NEVER touches anything outside the
+ * app-owned staging root (a user's own folder is left exactly as it is). */
+function cleanStagingDir(root: string, dir: string): void {
+  try {
+    const rel = path.relative(root, dir);
+    if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return; // not inside staging
+    if (fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+  } catch {
+    /* best effort: leftover staging costs a little disk, never data */
+  }
 }
 
 export function loadRecent(file = recentPath()): RecentEntry[] {
@@ -102,6 +153,7 @@ export class LongRecorder {
   private startedIso = "";
   private title = "";
   private dir = "";
+  private staged = false; // v6 c7: the doc is still in the app-owned staging folder
   private transcriptPath = ""; // the ONE document (summary spliced in at finalize)
   private audioPath = "";
   private keepAudio = false;
@@ -124,25 +176,45 @@ export class LongRecorder {
     return this.active || this.finalizing;
   }
 
+  private stagingBase(): string {
+    return this.deps.stagingRootOverride ?? stagingRoot();
+  }
+
   start(opts: LongStartOpts): { ok: boolean; error?: string; docPath?: string; audioPath?: string } {
     if (this.active || this.finalizing) return { ok: false, error: "a recording is already in progress" };
-    let stat: fs.Stats;
-    try {
-      stat = fs.statSync(opts.dir);
-    } catch {
-      return { ok: false, error: "destination folder not found: " + opts.dir };
-    }
-    if (!stat.isDirectory()) return { ok: false, error: "destination is not a folder" };
     const now = new Date();
     this.title = (opts.title || "").trim() || "Recording";
     this.keepAudio = !!opts.keepAudio;
-    this.dir = opts.dir;
+    // v6 c7: no destination chosen up front -> record into an app-owned staging
+    // folder and let the user file it at Stop (save()). A caller that passes an
+    // explicit dir keeps the record-straight-into-it behaviour.
+    const explicit = (opts.dir || "").trim();
+    this.staged = !explicit;
+    let dir: string;
+    if (this.staged) {
+      dir = path.join(this.stagingBase(), String(Date.now()) + "-" + Math.random().toString(36).slice(2, 8));
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+      } catch (err) {
+        return { ok: false, error: "cannot prepare the staging folder: " + String(err) };
+      }
+    } else {
+      let stat: fs.Stats;
+      try {
+        stat = fs.statSync(explicit);
+      } catch {
+        return { ok: false, error: "destination folder not found: " + explicit };
+      }
+      if (!stat.isDirectory()) return { ok: false, error: "destination is not a folder" };
+      dir = explicit;
+    }
+    this.dir = dir;
     const base = recordingBaseName(this.title, now);
-    this.transcriptPath = path.join(opts.dir, base + ".md");
+    this.transcriptPath = path.join(dir, base + ".md");
     // The .wav is written by the Pilot server as chunks stream in, ONLY when the
     // user chose to keep the audio (v3 chantier 4). We own the path; an empty
     // path tells the server not to open a file.
-    this.audioPath = this.keepAudio ? path.join(opts.dir, base + ".wav") : "";
+    this.audioPath = this.keepAudio ? path.join(dir, base + ".wav") : "";
     this.startedAt = Date.now();
     this.startedIso = now.toISOString();
     this.marks = [];
@@ -215,6 +287,92 @@ export class LongRecorder {
     const t = this.transcriptPath;
     void this.finalize();
     return { ok: true, docPath: t };
+  }
+
+  /** v6 c7: file the finished recording into the folder the user picks at Stop.
+   * Waits out finalize (so the summary splice is done), then MOVES the document
+   * (and the .wav if kept) out of staging into destDir and repoints recent.json.
+   * Deletes nothing the user owns; a name clash is suffixed, never overwritten. */
+  async save(destDir: string): Promise<{ ok: boolean; error?: string; docPath?: string; audioPath?: string }> {
+    if (this.active) return { ok: false, error: "a recording is still in progress" };
+    const dir = (destDir || "").trim();
+    if (!dir) return { ok: false, error: "no destination folder" };
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(dir);
+    } catch {
+      return { ok: false, error: "destination folder not found: " + dir };
+    }
+    if (!stat.isDirectory()) return { ok: false, error: "destination is not a folder" };
+    // Normally already done: the UI only offers "Save" once state left finalizing.
+    // Wait it out anyway so we never move a half-written document.
+    const deadline = Date.now() + 10 * 60_000;
+    while (this.finalizing && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
+    if (this.finalizing) return { ok: false, error: "still finalizing; try again in a moment" };
+    // recent.json is the source of truth for "the last capture" (survives an
+    // engine restart between Stop and Save).
+    const list = loadRecent(this.deps.recentPathOverride);
+    const entry = list[0];
+    if (!entry || !entry.docPath) return { ok: false, error: "no finished recording to save" };
+    if (!fs.existsSync(entry.docPath)) return { ok: false, error: "the recording is no longer in staging (already saved?)" };
+    // Two-phase commit so a mid-way failure never orphans the recording:
+    // (1) COPY the document (and the .wav if it really exists) into the chosen
+    //     folder; on ANY error, delete the copies made and leave staging
+    //     untouched so a retry is clean. (2) point recent.json at the new
+    //     location, THEN delete the staging sources. Either both files land in
+    //     the folder and recent.json follows, or nothing in recent.json changed
+    //     and the sources stay put. A large .wav that fails to copy (a near-full
+    //     target volume, an antivirus lock) can never strand the transcript.
+    const madeDest: string[] = [];
+    let newDoc: string;
+    let newAudio = "";
+    try {
+      newDoc = copyFileInto(dir, entry.docPath);
+      madeDest.push(newDoc);
+      // The .wav may be absent (transcript-only, or the Pilot server could not
+      // create it and rolled back at /long/start): its absence must NOT fail the
+      // save - the document is the deliverable.
+      if (entry.audioPath && fs.existsSync(entry.audioPath)) {
+        newAudio = copyFileInto(dir, entry.audioPath);
+        madeDest.push(newAudio);
+      }
+    } catch (err) {
+      for (const p of madeDest) {
+        try {
+          fs.rmSync(p);
+        } catch {
+          /* leave a partial copy rather than risk touching a user file */
+        }
+      }
+      return { ok: false, error: "could not save the recording: " + String(err) };
+    }
+    const stagedFrom = entry.dir;
+    const updated: RecentEntry = { ...entry, dir, docPath: newDoc, audioPath: newAudio, staged: false };
+    saveRecent(pushRecent(list.slice(1), updated), this.deps.recentPathOverride);
+    // Keep the live snapshot consistent if it still points at the saved doc.
+    if (this.transcriptPath === entry.docPath) {
+      this.transcriptPath = newDoc;
+      this.audioPath = newAudio;
+      this.dir = dir;
+      this.staged = false;
+    }
+    // recent.json now points at the destination copies; remove the staging
+    // originals (best effort - a leftover only costs a little app-owned disk).
+    try {
+      fs.rmSync(entry.docPath);
+    } catch {
+      /* */
+    }
+    if (entry.audioPath) {
+      try {
+        fs.rmSync(entry.audioPath);
+      } catch {
+        /* */
+      }
+    }
+    cleanStagingDir(this.stagingBase(), stagedFrom);
+    this.deps.log?.(`[long] saved -> ${newDoc}`);
+    return { ok: true, docPath: newDoc, audioPath: newAudio };
   }
 
   /** Live transcript tail for the PWA page (v3 chantier 5): the document
@@ -370,6 +528,7 @@ export class LongRecorder {
           docPath: this.transcriptPath,
           audioPath: this.audioPath,
           durationMs: Math.round((this.consumed / SAMPLE_RATE) * 1000),
+          staged: this.staged, // v6 c7: needs a "Save to..." step until filed
         }),
         this.deps.recentPathOverride,
       );

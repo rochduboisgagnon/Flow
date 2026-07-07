@@ -82,13 +82,17 @@ function longDepsStub() {
       calls.push("state");
       return { active: false };
     },
-    longStart: (o: { dir: string; title?: string; keepAudio?: boolean }) => {
-      calls.push("start:" + o.dir + ":" + (o.keepAudio ? "audio" : "noaudio"));
+    longStart: (o: { dir?: string; title?: string; keepAudio?: boolean }) => {
+      calls.push("start:" + (o.dir ?? "stage") + ":" + (o.keepAudio ? "audio" : "noaudio"));
       return { ok: true };
     },
     longStop: () => {
       calls.push("stop");
       return { ok: true };
+    },
+    longSave: (dir: string) => {
+      calls.push("save:" + dir);
+      return { ok: true, docPath: dir + "\\note.md" };
     },
     longMark: () => {
       calls.push("mark");
@@ -185,14 +189,20 @@ test("long-form routes reach their deps with parsed arguments", async () => {
     assert.equal((await get(port, "/long/state")).code, 200);
     const startBody = Buffer.from(JSON.stringify({ dir: "C:\\tmp", keepAudio: true }));
     assert.equal((await post(port, "/long/start", startBody)).code, 200);
-    assert.equal((await post(port, "/long/start", Buffer.from("{}"))).code, 400, "missing dir -> 400");
+    // v6 c7: no dir is valid now (the engine stages) -> 200, reaches the dep.
+    assert.equal((await post(port, "/long/start", Buffer.from("{}"))).code, 200, "missing dir -> stages");
     assert.equal((await post(port, "/long/mark", new Uint8Array(0))).code, 200);
     // Raw PCM slice from the recording device: 100 Int16 samples = 200 bytes.
     const pcm = new Uint8Array(200);
     assert.equal((await post(port, "/long/chunk", pcm)).code, 200);
     assert.equal((await post(port, "/long/gap", Buffer.from(JSON.stringify({ seconds: 4.2 })))).code, 200);
     assert.equal((await post(port, "/long/stop", new Uint8Array(0))).code, 200);
-    assert.deepEqual(stub.calls, ["state", "start:C:\\tmp:audio", "mark", "chunk:100", "gap:4.2", "stop"]);
+    // v6 c7: save reaches the dep with the chosen dir; a missing dir -> 400.
+    assert.equal((await post(port, "/long/save", Buffer.from(JSON.stringify({ dir: "D:\\Notes" })))).code, 200);
+    assert.equal((await post(port, "/long/save", Buffer.from("{}"))).code, 400, "save without a dir -> 400");
+    assert.deepEqual(stub.calls, [
+      "state", "start:C:\\tmp:audio", "start:stage:noaudio", "mark", "chunk:100", "gap:4.2", "stop", "save:D:\\Notes",
+    ]);
     // A long recording flips the quiet window (plan 8).
     assert.equal((await get(port, "/update-readiness")).body.ready, false);
   } finally {

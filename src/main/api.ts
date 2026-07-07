@@ -30,8 +30,9 @@ export interface ApiDeps {
   // The AUDIO comes from the recording DEVICE (phone or PC browser) through
   // /long/chunk (plan v2 chantier C) - AGR Flow never opens a mic for it.
   longState(): unknown;
-  longStart(opts: { dir: string; title?: string; keepAudio?: boolean }): unknown;
+  longStart(opts: { dir?: string; title?: string; keepAudio?: boolean }): unknown;
   longStop(): unknown;
+  longSave(dir: string): unknown; // v6 c7: file the finished recording at Stop
   longMark(): unknown;
   longChunk(pcm: Int16Array): unknown;
   longGap(seconds: number): unknown;
@@ -171,14 +172,22 @@ export class LocalApi {
         return json(200, this.deps.longState());
       }
       if (req.method === "POST" && url.pathname === "/long/start") {
+        // v6 c7: dir is OPTIONAL now. Absent/empty -> the engine records into an
+        // app-owned staging folder and the destination is chosen at Stop.
         const body = await readJson(req);
-        const dir = typeof body?.dir === "string" ? body.dir : "";
-        if (!dir) return json(400, { ok: false, error: "missing dir" });
         return json(200, this.deps.longStart({
-          dir,
+          dir: typeof body?.dir === "string" ? body.dir : undefined,
           title: typeof body?.title === "string" ? body.title : undefined,
           keepAudio: body?.keepAudio === true,
         }));
+      }
+      if (req.method === "POST" && url.pathname === "/long/save") {
+        // v6 c7: move the finished recording out of staging into the user's
+        // folder. May block briefly if finalize is still running (engine waits).
+        const body = await readJson(req);
+        const dir = typeof body?.dir === "string" ? body.dir : "";
+        if (!dir) return json(400, { ok: false, error: "missing dir" });
+        return json(200, await this.deps.longSave(dir));
       }
       if (req.method === "GET" && url.pathname === "/long/transcript") {
         const since = Number(url.searchParams.get("since") || "0") || 0;

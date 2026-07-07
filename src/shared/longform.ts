@@ -158,9 +158,12 @@ export function chunkTranscript(transcript: string, maxChars = 24_000): string[]
   return out;
 }
 
-// ---- recent recordings (the X last, plan §6; X fixed at 10) ----
-
-export const RECENT_MAX = 10;
+// ---- recent recordings (v6 c8: only the LAST one is remembered) ----
+// v6 c8 (Roch): the setup no longer lists past recordings, so we keep exactly
+// ONE entry - the last capture. pushRecent therefore REPLACES the previous
+// reference. This only forgets the entry in this list; it deletes NOTHING on
+// disk (a document the user already saved into their own folder stays intact).
+export const RECENT_MAX = 1;
 
 export interface RecentEntry {
   title: string;
@@ -169,6 +172,10 @@ export interface RecentEntry {
   docPath: string; // the ONE document (summary + transcript), v3 chantier 4
   audioPath: string; // "" unless the user chose to keep the full audio
   durationMs: number;
+  // v6 c7: true while the document still lives in the app-owned staging folder
+  // (no destination chosen yet). Cleared once the user saves it into their own
+  // folder (/long/save). Optional so older recent.json files still parse.
+  staged?: boolean;
 }
 
 export function pushRecent(list: RecentEntry[], entry: RecentEntry): RecentEntry[] {

@@ -184,3 +184,135 @@ test("LongRecorder refuses a missing folder and double starts", () => {
   rec.stop();
   fs.rmSync(work, { recursive: true, force: true });
 });
+
+test("v6 c8: only the last recording is remembered (RECENT_MAX=1)", () => {
+  assert.equal(RECENT_MAX, 1);
+  let list: RecentEntry[] = [];
+  for (const t of ["a", "b", "c"]) {
+    list = pushRecent(list, { title: t, startedIso: "", dir: "", docPath: "", audioPath: "", durationMs: 0 });
+  }
+  assert.equal(list.length, 1);
+  assert.equal(list[0].title, "c", "the last capture replaces the previous one");
+});
+
+test("v6 c7: no dir -> stage under the app-owned root, then save() files it out (nothing deleted)", async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-stage-"));
+  const staging = path.join(work, "staging");
+  const dest = path.join(work, "dest");
+  fs.mkdirSync(dest);
+  const recent = path.join(work, "recent.json");
+  const mockSidecar = {
+    transcribe: () => Promise.resolve({ text: "Bonjour tout le monde.", ms: 5 }),
+  } as unknown as WhisperSidecar;
+  const rec = new LongRecorder({
+    getSidecar: () => mockSidecar,
+    cleanupModel: () => "",
+    recentPathOverride: recent,
+    stagingRootOverride: staging,
+  });
+  // No dir given: the engine records into staging (v6 c7).
+  const started = rec.start({ title: "Client kickoff", keepAudio: true });
+  assert.equal(started.ok, true, started.error);
+  assert.ok(started.docPath!.startsWith(staging), "the document must live under the staging root");
+  rec.onChunk(speechy(5000));
+  rec.onChunk(speechy(5000));
+  rec.onChunk(concat(speechy(2000), silence(1500)));
+  const stopped = rec.stop();
+  for (let i = 0; i < 100 && rec.isBusy; i++) await new Promise((r) => setTimeout(r, 50));
+  assert.equal(rec.isBusy, false, "finalize must complete");
+  let list = JSON.parse(fs.readFileSync(recent, "utf8"));
+  assert.equal(list.length, 1);
+  assert.equal(list[0].staged, true, "an unsaved recording is marked staged");
+  assert.ok(fs.existsSync(stopped.docPath), "the document sits in staging");
+  // The .wav is normally written by the Pilot server as chunks stream; stand in for it here.
+  fs.writeFileSync(list[0].audioPath, Buffer.from("RIFF0000WAVE"));
+  // File it into the user's folder.
+  const res = (await rec.save(dest)) as { ok: boolean; error?: string; docPath?: string; audioPath?: string };
+  assert.equal(res.ok, true, res.error);
+  assert.equal(fs.existsSync(stopped.docPath), false, "the document moved out of staging");
+  assert.equal(path.dirname(res.docPath!), dest, "the document is now in the chosen folder");
+  assert.equal(path.dirname(res.audioPath!), dest, "the audio moved too");
+  assert.equal(fs.existsSync(path.dirname(started.docPath!)), false, "the empty staging subfolder is cleaned");
+  list = JSON.parse(fs.readFileSync(recent, "utf8"));
+  assert.equal(list.length, 1);
+  assert.equal(list[0].staged, false, "the saved recording is no longer staged");
+  assert.equal(list[0].dir, dest);
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+test("v6 c7: save() never overwrites an existing file in the destination", async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-save-"));
+  const staging = path.join(work, "st");
+  fs.mkdirSync(staging);
+  const dest = path.join(work, "dest");
+  fs.mkdirSync(dest);
+  const recent = path.join(work, "recent.json");
+  const doc = path.join(staging, "note.md");
+  fs.writeFileSync(doc, "NEW");
+  fs.writeFileSync(path.join(dest, "note.md"), "KEEP"); // a user's own file already there
+  fs.writeFileSync(
+    recent,
+    JSON.stringify([{ title: "T", startedIso: "", dir: staging, docPath: doc, audioPath: "", durationMs: 0, staged: true }]),
+  );
+  const rec = new LongRecorder({
+    getSidecar: () => null,
+    cleanupModel: () => "",
+    recentPathOverride: recent,
+    stagingRootOverride: staging,
+  });
+  const res = (await rec.save(dest)) as { ok: boolean; error?: string; docPath?: string };
+  assert.equal(res.ok, true, res.error);
+  assert.equal(fs.readFileSync(path.join(dest, "note.md"), "utf8"), "KEEP", "the existing user file is untouched");
+  assert.equal(fs.readFileSync(path.join(dest, "note-1.md"), "utf8"), "NEW", "the moved doc got a suffixed name");
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+test("v6 c7: save() refuses a missing destination and an empty recent list", async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-save2-"));
+  const recent = path.join(work, "recent.json");
+  const rec = new LongRecorder({ getSidecar: () => null, cleanupModel: () => "", recentPathOverride: recent });
+  assert.equal(((await rec.save(path.join(work, "nope"))) as { ok: boolean }).ok, false, "a missing dir is refused");
+  fs.writeFileSync(recent, "[]");
+  assert.equal(((await rec.save(work)) as { ok: boolean }).ok, false, "no finished recording is refused");
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+test("v6 c7: save() tolerates a phantom .wav (keepAudio on but the file was never written)", async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-save3-"));
+  const staging = path.join(work, "st");
+  fs.mkdirSync(staging);
+  const dest = path.join(work, "dest");
+  fs.mkdirSync(dest);
+  const recent = path.join(work, "recent.json");
+  const doc = path.join(staging, "note.md");
+  fs.writeFileSync(doc, "# hi");
+  const phantomWav = path.join(staging, "note.wav"); // recorded in recent.json but never created on disk
+  fs.writeFileSync(
+    recent,
+    JSON.stringify([{ title: "T", startedIso: "", dir: staging, docPath: doc, audioPath: phantomWav, durationMs: 0, staged: true }]),
+  );
+  const rec = new LongRecorder({ getSidecar: () => null, cleanupModel: () => "", recentPathOverride: recent, stagingRootOverride: staging });
+  const res = (await rec.save(dest)) as { ok: boolean; error?: string; docPath?: string; audioPath?: string };
+  assert.equal(res.ok, true, res.error); // the missing .wav must not fail the save
+  assert.equal(res.audioPath, "", "a phantom .wav is dropped, not treated as saved");
+  assert.equal(fs.existsSync(path.join(dest, "note.md")), true, "the document is filed");
+  assert.equal(fs.existsSync(path.join(dest, "note.wav")), false, "no bogus .wav is created in the destination");
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+test("v6 c7: save() with a vanished document refuses and leaves recent.json untouched (no orphaning)", async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-save4-"));
+  const staging = path.join(work, "st");
+  fs.mkdirSync(staging);
+  const dest = path.join(work, "dest");
+  fs.mkdirSync(dest);
+  const recent = path.join(work, "recent.json");
+  const doc = path.join(staging, "gone.md"); // referenced but not on disk
+  const entry = { title: "T", startedIso: "", dir: staging, docPath: doc, audioPath: "", durationMs: 0, staged: true };
+  fs.writeFileSync(recent, JSON.stringify([entry]));
+  const rec = new LongRecorder({ getSidecar: () => null, cleanupModel: () => "", recentPathOverride: recent, stagingRootOverride: staging });
+  const res = (await rec.save(dest)) as { ok: boolean };
+  assert.equal(res.ok, false, "a vanished source is refused, not half-committed");
+  assert.deepEqual(JSON.parse(fs.readFileSync(recent, "utf8")), [entry], "recent.json is left exactly as it was");
+  fs.rmSync(work, { recursive: true, force: true });
+});

@@ -68,6 +68,7 @@ if (!app.requestSingleInstanceLock()) {
       longState: () => longRec.state(),
       longStart: (opts) => longRec.start({ dir: opts.dir, title: opts.title, keepAudio: !!opts.keepAudio }),
       longStop: () => longRec.stop(),
+      longSave: (dir) => longRec.save(dir), // v6 c7: file the recording at Stop
       longMark: () => longRec.mark(),
       longChunk: (pcm) => {
         longRec.onChunk(pcm);
