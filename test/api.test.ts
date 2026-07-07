@@ -61,6 +61,23 @@ function longDepsStub() {
   const calls: string[] = [];
   return {
     calls,
+    getSettings: () => {
+      calls.push("getSettings");
+      return { settings: { combo: ["CTRL", "WIN"] }, status: "ready" };
+    },
+    setSettings: (patch: Record<string, unknown>) => {
+      calls.push("setSettings:" + Object.keys(patch).sort().join(","));
+      return { ok: true };
+    },
+    recordShortcut: () => {
+      calls.push("record");
+      return Promise.resolve({ combo: ["CTRL", "WIN"] });
+    },
+    listMics: () => Promise.resolve([{ id: "m1", label: "Mic" }]),
+    ollamaModels: () => Promise.resolve(["gemma3:4b"]),
+    quit: () => {
+      calls.push("quit");
+    },
     longState: () => {
       calls.push("state");
       return { active: false };
@@ -75,6 +92,14 @@ function longDepsStub() {
     },
     longMark: () => {
       calls.push("mark");
+      return { ok: true };
+    },
+    longChunk: (pcm: Int16Array) => {
+      calls.push("chunk:" + pcm.length);
+      return { ok: true };
+    },
+    longGap: (seconds: number) => {
+      calls.push("gap:" + seconds);
       return { ok: true };
     },
   };
@@ -123,6 +148,14 @@ test("local API: status, readiness, transcribe, discovery file", async () => {
     assert.equal(t.body.ms, 42);
     assert.deepEqual(seen, [{ bytes: wav.length, cleanup: true }]);
 
+    // Settings surface (headless engine: the Manager drives these).
+    assert.equal((await get(port, "/settings")).body.status, "ready");
+    const patch = Buffer.from(JSON.stringify({ language: "fr" }));
+    assert.equal((await post(port, "/settings", patch)).code, 200);
+    assert.equal((await post(port, "/shortcut/record", new Uint8Array(0))).code, 200);
+    assert.deepEqual((await get(port, "/mics")).body, [{ id: "m1", label: "Mic" }]);
+    assert.deepEqual((await get(port, "/ollama/models")).body, { models: ["gemma3:4b"] });
+
     assert.equal((await get(port, "/nope")).code, 404);
   } finally {
     api.stop();
@@ -150,8 +183,12 @@ test("long-form routes reach their deps with parsed arguments", async () => {
     assert.equal((await post(port, "/long/start", startBody)).code, 200);
     assert.equal((await post(port, "/long/start", Buffer.from("{}"))).code, 400, "missing dir -> 400");
     assert.equal((await post(port, "/long/mark", new Uint8Array(0))).code, 200);
+    // Raw PCM slice from the recording device: 100 Int16 samples = 200 bytes.
+    const pcm = new Uint8Array(200);
+    assert.equal((await post(port, "/long/chunk", pcm)).code, 200);
+    assert.equal((await post(port, "/long/gap", Buffer.from(JSON.stringify({ seconds: 4.2 })))).code, 200);
     assert.equal((await post(port, "/long/stop", new Uint8Array(0))).code, 200);
-    assert.deepEqual(stub.calls, ["state", "start:C:\\tmp:client", "mark", "stop"]);
+    assert.deepEqual(stub.calls, ["state", "start:C:\\tmp:client", "mark", "chunk:100", "gap:4.2", "stop"]);
     // A long recording flips the quiet window (plan 8).
     assert.equal((await get(port, "/update-readiness")).body.ready, false);
   } finally {

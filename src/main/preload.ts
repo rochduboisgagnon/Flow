@@ -5,24 +5,10 @@ import {
   CAPTURE_CANCEL,
   CAPTURE_DONE,
   CAPTURE_ERROR,
-  SETTINGS_GET,
-  SETTINGS_SET,
-  SHORTCUT_RECORD,
-  OPEN_MIC_SETTINGS,
-  OLLAMA_MODELS,
-  MODEL_STATE,
   type CaptureStartPayload,
-  type ModelStatePayload,
-  type ModelChoice,
 } from "../shared/ipcContracts";
-import type { FlowSettings } from "./settings";
 
 export type CaptureCommand = "start" | "stop" | "cancel";
-
-export interface SettingsBundle {
-  settings: FlowSettings;
-  models: readonly ModelChoice[];
-}
 
 // Thin, typed bridge; the overlay is the only window using the capture side.
 const api = {
@@ -41,26 +27,6 @@ const api = {
   },
   sendCaptureError(message: string) {
     ipcRenderer.send(CAPTURE_ERROR, message);
-  },
-  // Settings window side.
-  getSettings(): Promise<SettingsBundle> {
-    return ipcRenderer.invoke(SETTINGS_GET) as Promise<SettingsBundle>;
-  },
-  setSettings(patch: Partial<FlowSettings>): Promise<FlowSettings> {
-    return ipcRenderer.invoke(SETTINGS_SET, patch) as Promise<FlowSettings>;
-  },
-  /** Resolves with the newly applied combo, or null on cancel/timeout. */
-  recordShortcut(): Promise<string[] | null> {
-    return ipcRenderer.invoke(SHORTCUT_RECORD) as Promise<string[] | null>;
-  },
-  onModelState(cb: (state: ModelStatePayload) => void) {
-    ipcRenderer.on(MODEL_STATE, (_e, s: ModelStatePayload) => cb(s));
-  },
-  openMicSettings(): Promise<void> {
-    return ipcRenderer.invoke(OPEN_MIC_SETTINGS) as Promise<void>;
-  },
-  listOllamaModels(): Promise<string[] | null> {
-    return ipcRenderer.invoke(OLLAMA_MODELS) as Promise<string[] | null>;
   },
 };
 

@@ -59,6 +59,22 @@ function playCue(kind: "start" | "stop") {
 
 type Phase = "idle" | "listening" | "transcribing" | "error";
 
+// Microphone enumeration for the Manager's settings view (device labels only
+// exist after one granted getUserMedia; grab a stream for a moment, list,
+// release). Called by main via executeJavaScript: keep it on the main world.
+(window as unknown as Record<string, unknown>).__agrflowListMics = async () => {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    stream.getTracks().forEach((t) => t.stop());
+    return devices
+      .filter((d) => d.kind === "audioinput" && d.deviceId !== "default" && d.deviceId !== "communications")
+      .map((d) => ({ id: d.deviceId, label: d.label || "Microphone" }));
+  } catch {
+    return [];
+  }
+};
+
 // ---- Listening ribbon (ported from prototype-animation-ecoute.html) ----
 
 interface Strand {

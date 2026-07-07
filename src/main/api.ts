@@ -35,6 +35,15 @@ export interface ApiDeps {
   longMark(): unknown;
   longChunk(pcm: Int16Array): unknown;
   longGap(seconds: number): unknown;
+  // Settings surface (plan v2 chantier A): AGR Flow is headless; AGR Manager's
+  // AGR Flow view is the ONLY user-facing settings UI and drives it through
+  // these endpoints.
+  getSettings(): unknown;
+  setSettings(patch: Record<string, unknown>): unknown;
+  recordShortcut(): Promise<unknown>;
+  listMics(): Promise<unknown>;
+  ollamaModels(): Promise<unknown>;
+  quit(): void;
   /** Tests only: redirect the discovery file away from the real ~/.agr-flow. */
   infoPathOverride?: string;
 }
@@ -126,6 +135,30 @@ export class LocalApi {
         // dictation or a long recording is in flight.
         const ready = !this.deps.isListening() && !this.deps.isRecording();
         return json(200, { ready });
+      }
+      // ---- settings surface for the Manager (headless engine, chantier A) ----
+      if (req.method === "GET" && url.pathname === "/settings") {
+        return json(200, this.deps.getSettings());
+      }
+      if (req.method === "POST" && url.pathname === "/settings") {
+        const body = await readJson(req);
+        return json(200, this.deps.setSettings(body ?? {}));
+      }
+      if (req.method === "POST" && url.pathname === "/shortcut/record") {
+        // Long-poll by design: resolves when the user finishes the gesture
+        // (or the 10 s recorder timeout fires).
+        return json(200, await this.deps.recordShortcut());
+      }
+      if (req.method === "GET" && url.pathname === "/mics") {
+        return json(200, await this.deps.listMics());
+      }
+      if (req.method === "GET" && url.pathname === "/ollama/models") {
+        return json(200, { models: await this.deps.ollamaModels() });
+      }
+      if (req.method === "POST" && url.pathname === "/quit") {
+        json(200, { ok: true });
+        this.deps.quit();
+        return;
       }
       // ---- long-form mode: state / start / stop / mark ----
       if (req.method === "GET" && url.pathname === "/long/state") {

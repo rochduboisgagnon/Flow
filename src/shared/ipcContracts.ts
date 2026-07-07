@@ -23,25 +23,8 @@ export interface CaptureDonePayload {
 }
 
 
-// settings window <-> main (invoke/handle)
-export const SETTINGS_GET = "settings:get";
-export const SETTINGS_SET = "settings:set";
-// Records a new shortcut through the low-level hook itself: main resolves with
-// the normalized combo, or null on cancel/timeout. While recording, keyspy
-// swallows every key (nothing leaks to the OS - including the Win key, so the
-// Start menu cannot steal the recorder's focus).
-export const SHORTCUT_RECORD = "shortcut:record";
-
-// settings window -> main: open the Windows microphone privacy panel
-// (onboarding when access is denied, plan 5.9)
-export const OPEN_MIC_SETTINGS = "onboarding:micSettings";
-
-// settings window -> main: installed Ollama models (null = Ollama not running)
-export const OLLAMA_MODELS = "ollama:models";
-
-// main -> settings window: ASR model download/swap progress
-export const MODEL_STATE = "model:state";
-
+// Model download/swap progress, surfaced through the local API (the Manager
+// polls GET /settings; AGR Flow has no settings window of its own since v2).
 export interface ModelStatePayload {
   status: "idle" | "downloading" | "ready" | "error";
   pct?: number;

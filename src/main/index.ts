@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage, session, ipcMain, shell } from "electron";
+import { app, session, ipcMain } from "electron";
 import path from "node:path";
 import { HotkeyAdapter } from "./hotkey";
 import { OverlayWindow } from "./overlay";
@@ -21,49 +21,42 @@ import { SUMMARY_TEMPLATES } from "../shared/longform";
 import {
   CAPTURE_DONE,
   CAPTURE_ERROR,
-  SETTINGS_GET,
-  SETTINGS_SET,
-  SHORTCUT_RECORD,
-  OPEN_MIC_SETTINGS,
-  OLLAMA_MODELS,
-  MODEL_STATE,
   type CaptureDonePayload,
   type ModelStatePayload,
 } from "../shared/ipcContracts";
 
-// AGR Flow: local, on-device dictation. Phase 1 = Windows push-to-talk loop.
-// This entry point owns the app lifecycle: single instance, tray, settings window.
-// Design rule carried through the whole codebase: THE DICTATION IS NEVER STORED,
-// neither on disk nor in a retained buffer. Audio and text live only for the
-// duration of one utterance and are handed straight to the insertion path.
+// AGR Flow: local, on-device dictation + long-recording engine.
+// Since plan v2 (chantier A) this process is HEADLESS: no settings window, no
+// tray, no shortcuts of its own. The only visible surface is the dictation
+// overlay; every user-facing control lives in AGR Manager's AGR Flow view,
+// which talks to the local API below. The Manager also launches, watches and
+// stops this process, exactly like the AGR Pilot server.
+// Design rule carried through the whole codebase: THE DICTATION IS NEVER
+// STORED, neither on disk nor in a retained buffer.
 
 const DEV = process.env.AGRFLOW_DEV === "1";
 
 // Settings (shortcut, language, model, microphone) live in ~/.agr-flow,
-// outside the install; loaded once at boot, mutated via the settings window.
+// outside the install; loaded once at boot, mutated via the local API.
 const settings = loadSettings();
 
-let tray: Tray | null = null;
-let settingsWin: BrowserWindow | null = null;
+// What the Manager shows as the engine status line (replaces the old tray
+// tooltip channel). Exposed through GET /settings.
+let statusText = "starting";
 
-// Second launch = focus the existing instance instead of duplicating tray icons.
+// Second launch = nothing to show (headless); the single instance stands.
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on("second-instance", () => openSettings());
-
   app.whenReady().then(() => {
-    // The overlay (commit 3) captures the microphone from a renderer: grant media
-    // requests from OUR OWN windows only, without a system-style popup. Everything
-    // else stays denied by default.
+    // The overlay captures the microphone from a renderer: grant media
+    // requests from OUR OWN windows only, without a system-style popup.
+    // Everything else stays denied by default.
     session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => {
       cb(permission === "media");
     });
-    createTray();
-    openSettings();
     overlay.create(DEV);
     wireCapture();
-    wireSettingsIpc();
     startPtt();
     void warmAsr();
     if (settings.cleanup && settings.cleanupModel) warmCleanupModel(settings.cleanupModel);
@@ -88,12 +81,39 @@ if (!app.requestSingleInstanceLock()) {
         return { ok: true };
       },
       longGap: (seconds) => longRec.gap(seconds),
+      // Settings surface for the Manager's AGR Flow view (chantier A).
+      getSettings: () => ({
+        settings: { ...settings, combo: [...settings.combo] },
+        comboLabel: comboLabel(settings.combo),
+        models: AVAILABLE_MODELS,
+        modelState: lastModelState,
+        status: statusText,
+      }),
+      setSettings: (patch) => {
+        const applied = applySettings(patch);
+        return { ...applied, comboLabel: comboLabel(applied.combo) };
+      },
+      recordShortcut: async () => {
+        const combo = await hotkey.record();
+        if (combo && combo.length > 0) {
+          applySettings({ combo });
+          return { combo, comboLabel: comboLabel(combo) };
+        }
+        return { combo: null };
+      },
+      listMics: () => overlay.listMics(),
+      ollamaModels: () => listOllamaModels(),
+      quit: () => {
+        // Graceful stop for the Manager (swap/uninstall): answer first, die next.
+        setTimeout(() => app.quit(), 60);
+      },
     });
     api.start().catch((err) => console.error("[api] failed to start:", err));
   });
 }
 
-// Local API for the AGR ecosystem (AGR Pilot's mic, AGR Manager's quiet window).
+// Local API for the AGR ecosystem (AGR Pilot's mic + long mode, AGR Manager's
+// settings view and quiet window).
 let api: LocalApi | null = null;
 
 // Focus probe: decides insert-at-cursor vs leave-on-clipboard per dictation.
@@ -124,10 +144,9 @@ function newSidecar(modelPath: string): WhisperSidecar {
     language: settings.language,
     log: DEV ? (m) => console.log(m) : undefined,
     onState: (state) => {
-      // Tray = the plan's status indicator (ready / listening / error).
-      if (state === "warm") tray?.setToolTip("AGR Flow");
-      else if (state === "down") tray?.setToolTip("AGR Flow - speech engine restarting...");
-      else tray?.setToolTip("AGR Flow - speech engine failed (see Settings)");
+      if (state === "warm") statusText = "ready";
+      else if (state === "down") statusText = "speech engine restarting...";
+      else statusText = "speech engine failed";
     },
   });
 }
@@ -138,15 +157,15 @@ async function warmAsr() {
     const model = await ensureModel(settings.model ?? DEFAULT_MODEL_FILE, (pct) => {
       if (pct !== lastPct) {
         lastPct = pct;
-        tray?.setToolTip(`AGR Flow - downloading the speech model (${pct}%)`);
+        statusText = `downloading the speech model (${pct}%)`;
       }
     });
     sidecar = newSidecar(model);
     await sidecar.ensureStarted();
-    tray?.setToolTip("AGR Flow");
+    statusText = "ready";
   } catch (err) {
     console.error("[asr] warm-up failed:", err);
-    tray?.setToolTip("AGR Flow - speech engine unavailable");
+    statusText = "speech engine unavailable";
   }
 }
 
@@ -170,23 +189,19 @@ const longRec = new LongRecorder({
 const hotkey = new HotkeyAdapter(settings.combo, {
   onStart() {
     if (longRec.isBusy) {
-      // The mic belongs to the long recording; a dictation mid-meeting would
-      // steal the stream and punch a hole in the transcript.
-      tray?.setToolTip("AGR Flow - long recording in progress (dictation paused)");
+      // The transcript belongs to the long recording; a dictation mid-meeting
+      // would fight it for the warm engine.
       return;
     }
     listening = true;
-    tray?.setToolTip("AGR Flow - listening...");
     overlay.startCapture({ sounds: settings.sounds, micDeviceId: settings.micDeviceId });
   },
   onStop() {
     listening = false;
-    tray?.setToolTip("AGR Flow");
     overlay.stopCapture();
   },
   onCancel() {
     listening = false;
-    tray?.setToolTip("AGR Flow");
     overlay.cancelCapture();
   },
 });
@@ -246,21 +261,17 @@ function wireCapture() {
   });
   ipcMain.on(CAPTURE_ERROR, (_ev, message: string) => {
     console.error("[capture] failed:", message);
-    tray?.setToolTip("AGR Flow - microphone unavailable");
+    statusText = "microphone unavailable";
   });
 }
 
-// ---- Settings IPC: get / set (applied live) / shortcut recorder ----
+// ---- settings application (driven by the Manager through the local API) ----
 
-function sendModelState(state: ModelStatePayload) {
-  if (settingsWin && !settingsWin.isDestroyed()) {
-    settingsWin.webContents.send(MODEL_STATE, state);
-  }
-}
+let lastModelState: ModelStatePayload = { status: "idle" };
 
-// Swapping the ASR model: download if missing (progress to the settings
-// window and the tray), then replace the warm sidecar. One swap at a time;
-// a failed swap leaves the previous engine running.
+// Swapping the ASR model: download if missing (progress readable by the
+// Manager through GET /settings), then replace the warm sidecar. One swap at
+// a time; a failed swap leaves the previous engine running.
 let modelSwapping = false;
 async function swapModel(file: string) {
   if (modelSwapping) return;
@@ -268,24 +279,23 @@ async function swapModel(file: string) {
   const old = sidecar;
   try {
     let lastPct = -1;
-    sendModelState({ status: "downloading", pct: 0 });
+    lastModelState = { status: "downloading", pct: 0 };
     const model = await ensureModel(file, (pct) => {
       if (pct !== lastPct) {
         lastPct = pct;
-        sendModelState({ status: "downloading", pct });
-        tray?.setToolTip(`AGR Flow - downloading the speech model (${pct}%)`);
+        lastModelState = { status: "downloading", pct };
+        statusText = `downloading the speech model (${pct}%)`;
       }
     });
     const next = newSidecar(model);
     await next.ensureStarted();
     sidecar = next;
     old?.stop();
-    tray?.setToolTip("AGR Flow");
-    sendModelState({ status: "ready" });
+    statusText = "ready";
+    lastModelState = { status: "ready" };
   } catch (err) {
     console.error("[asr] model swap failed:", err);
-    sendModelState({ status: "error", message: String(err) });
-    tray?.setToolTip("AGR Flow");
+    lastModelState = { status: "error", message: String(err) };
   } finally {
     modelSwapping = false;
   }
@@ -310,25 +320,6 @@ function applySettings(patch: Partial<FlowSettings>): FlowSettings {
   return { ...settings, combo: [...settings.combo] };
 }
 
-function wireSettingsIpc() {
-  ipcMain.handle(SETTINGS_GET, () => ({
-    settings: { ...settings, combo: [...settings.combo] },
-    models: AVAILABLE_MODELS,
-  }));
-  ipcMain.handle(SETTINGS_SET, (_ev, patch: Partial<FlowSettings>) => applySettings(patch));
-  ipcMain.handle(SHORTCUT_RECORD, async () => {
-    const combo = await hotkey.record();
-    if (combo && combo.length > 0) return applySettings({ combo }).combo;
-    return null;
-  });
-  ipcMain.handle(OPEN_MIC_SETTINGS, () =>
-    // Windows microphone privacy panel: the onboarding path when access is
-    // denied (plan 5.9). macOS gets its own panels in phase 5.
-    shell.openExternal("ms-settings:privacy-microphone"),
-  );
-  ipcMain.handle(OLLAMA_MODELS, () => listOllamaModels());
-}
-
 async function startPtt() {
   try {
     await hotkey.start();
@@ -336,7 +327,7 @@ async function startPtt() {
   } catch (err) {
     // Dictation without a hotkey is dead: surface it instead of dying silently.
     console.error("[ptt] key listener failed to start:", err);
-    tray?.setToolTip("AGR Flow - hotkey unavailable (see Settings)");
+    statusText = "keyboard hook unavailable";
   }
 }
 
@@ -348,64 +339,7 @@ app.on("before-quit", () => {
   api?.stop();
 });
 
-function iconPath(): string {
-  // Packaged: resources/ sits next to the app; dev: repo root.
-  return app.isPackaged
-    ? path.join(process.resourcesPath, "icon.png")
-    : path.join(app.getAppPath(), "resources", "icon.png");
-}
-
-function createTray() {
-  const img = nativeImage.createFromPath(iconPath());
-  tray = new Tray(img.isEmpty() ? nativeImage.createEmpty() : img);
-  tray.setToolTip("AGR Flow");
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: "Settings", click: () => openSettings() },
-      { type: "separator" },
-      { label: "Quit AGR Flow", click: () => app.quit() },
-    ]),
-  );
-  tray.on("double-click", () => openSettings());
-}
-
-function openSettings() {
-  if (settingsWin && !settingsWin.isDestroyed()) {
-    settingsWin.show();
-    settingsWin.focus();
-    return;
-  }
-  settingsWin = new BrowserWindow({
-    width: 560,
-    height: 480,
-    show: true,
-    autoHideMenuBar: true,
-    backgroundColor: "#0b0d10",
-    webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false, // the preload requires shared modules (see overlay.ts)
-    },
-  });
-  // Closing the settings window keeps the app alive in the tray (it is a
-  // background dictation tool); only the tray menu quits it.
-  settingsWin.on("close", (e) => {
-    if (!quitting) {
-      e.preventDefault();
-      settingsWin?.hide();
-    }
-  });
-  if (DEV) settingsWin.loadURL("http://localhost:5183");
-  else settingsWin.loadFile(path.join(__dirname, "..", "renderer", "index.html"));
-}
-
-let quitting = false;
-app.on("before-quit", () => {
-  quitting = true;
-});
-
-// A tray app must not die when its last window closes.
+// A headless engine must not die when its only (hidden) window closes.
 app.on("window-all-closed", () => {
-  /* keep running in the tray */
+  /* keep running */
 });

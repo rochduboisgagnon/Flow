@@ -101,6 +101,22 @@ export class OverlayWindow {
     this.win.hide();
   }
 
+  /** Microphone list for the Manager's settings view. Device enumeration
+   * needs a renderer; the overlay page exposes window.__agrflowListMics
+   * (main world, so executeJavaScript reaches it despite contextIsolation). */
+  async listMics(): Promise<Array<{ id: string; label: string }>> {
+    if (!this.win || this.win.isDestroyed() || !this.ready) return [];
+    try {
+      const out = (await this.win.webContents.executeJavaScript(
+        "window.__agrflowListMics ? window.__agrflowListMics() : []",
+        true,
+      )) as Array<{ id: string; label: string }>;
+      return Array.isArray(out) ? out : [];
+    } catch {
+      return [];
+    }
+  }
+
   destroy() {
     this.win?.destroy();
     this.win = null;
