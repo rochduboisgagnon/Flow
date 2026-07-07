@@ -9,6 +9,9 @@ import { insertViaPaste, leaveOnClipboard } from "./insert";
 import { decideRoute } from "../shared/route";
 import { comboLabel } from "../shared/combo";
 import { loadSettings } from "./settings";
+import { analyzeSpeech, hasSpeech, trimToSpeech } from "../shared/vad";
+import { gateTranscript } from "../shared/textGate";
+import { pcmFromWav, encodeWav } from "../shared/wav";
 import { CAPTURE_DONE, CAPTURE_ERROR, type CaptureDonePayload } from "../shared/ipcContracts";
 
 // AGR Flow: local, on-device dictation. Phase 1 = Windows push-to-talk loop.
@@ -122,16 +125,39 @@ function wireCapture() {
       console.error("[asr] utterance dropped: engine not ready");
       return;
     }
+    // Anti-hallucination gate #1 (plan 5.9): if the utterance carries no
+    // actual speech energy, it never reaches the model - an accidental press
+    // must not insert invented text. Trimming the surrounding silence also
+    // shortens the decode.
+    let pcm: Int16Array;
+    let speech: ReturnType<typeof analyzeSpeech>;
+    try {
+      pcm = pcmFromWav(new Uint8Array(payload.wav));
+      speech = analyzeSpeech(pcm);
+    } catch (err) {
+      console.error("[vad] malformed capture dropped:", err);
+      return;
+    }
+    if (!hasSpeech(speech)) {
+      if (DEV) console.log(`[vad] dropped: ${speech.voicedMs} ms voiced`);
+      return;
+    }
     void sidecar
-      .transcribe(new Uint8Array(payload.wav))
+      .transcribe(encodeWav(trimToSpeech(pcm, speech)))
       .then(async ({ text, ms }) => {
-        if (!text) return; // model heard only silence
+        // Gates #2 and #3 live upstream and here: per-segment no-speech
+        // filtering in the protocol parser, then the known-hallucination list.
+        const clean = gateTranscript(text);
+        if (!clean) {
+          if (DEV) console.log(`[gate] dropped: ${JSON.stringify(text)}`);
+          return;
+        }
         // Probe the focus WHILE nothing else has stolen it, then route and act.
         const focus = (await probe?.probe()) ?? null;
         const route = decideRoute(focus);
-        if (route === "insert") await insertViaPaste(text);
-        else leaveOnClipboard(text);
-        // `text` goes out of scope here: the dictation is never retained (5.4).
+        if (route === "insert") await insertViaPaste(clean);
+        else leaveOnClipboard(clean);
+        // `clean` goes out of scope here: the dictation is never retained (5.4).
         if (DEV)
           console.log(`[flow] ${ms} ms | focus=${focus?.control ?? "none"} -> ${route}`);
       })

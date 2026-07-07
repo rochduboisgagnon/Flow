@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { floatTo16BitPcm, encodeWav, durationMs, SAMPLE_RATE } from "../src/shared/wav";
+import { floatTo16BitPcm, encodeWav, durationMs, pcmFromWav, SAMPLE_RATE } from "../src/shared/wav";
 
 test("float chunks concatenate and convert with clamping", () => {
   const pcm = floatTo16BitPcm([
@@ -46,4 +46,16 @@ test("duration math", () => {
   assert.equal(durationMs(16_000), 1000);
   assert.equal(durationMs(8_000), 500);
   assert.equal(durationMs(0), 0);
+});
+
+test("pcmFromWav roundtrips encodeWav exactly", () => {
+  const pcm = new Int16Array([0, 1, -1, 32767, -32768, 4242]);
+  const back = pcmFromWav(encodeWav(pcm));
+  assert.deepEqual([...back], [...pcm]);
+});
+
+test("pcmFromWav rejects non-WAV bytes", () => {
+  assert.throws(() => pcmFromWav(new Uint8Array(10)));
+  const junk = new Uint8Array(64).fill(65);
+  assert.throws(() => pcmFromWav(junk));
 });

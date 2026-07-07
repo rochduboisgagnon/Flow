@@ -46,3 +46,20 @@ export function encodeWav(pcm: Int16Array, sampleRate = SAMPLE_RATE): Uint8Array
 export function durationMs(sampleCount: number, sampleRate = SAMPLE_RATE): number {
   return Math.round((sampleCount / sampleRate) * 1000);
 }
+
+/** Reads back the Int16 samples of a WAV produced by encodeWav (canonical
+ * 44-byte header). Used by the VAD gate in the main process. Throws on
+ * anything that is not our own format: the overlay is the only producer. */
+export function pcmFromWav(wav: Uint8Array): Int16Array {
+  if (wav.length < 44) throw new Error("WAV too short");
+  const tag = (off: number, s: string) =>
+    Array.from(s).every((c, i) => wav[off + i] === c.charCodeAt(0));
+  if (!tag(0, "RIFF") || !tag(8, "WAVE") || !tag(36, "data")) {
+    throw new Error("not a canonical AGR Flow WAV");
+  }
+  const v = new DataView(wav.buffer, wav.byteOffset, wav.byteLength);
+  const dataBytes = Math.min(v.getUint32(40, true), wav.length - 44);
+  const out = new Int16Array(Math.floor(dataBytes / 2));
+  for (let i = 0; i < out.length; i++) out[i] = v.getInt16(44 + i * 2, true);
+  return out;
+}
