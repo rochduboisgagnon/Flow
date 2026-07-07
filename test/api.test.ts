@@ -57,6 +57,29 @@ function post(port: number, p: string, body: Uint8Array): Promise<Reply> {
   });
 }
 
+function longDepsStub() {
+  const calls: string[] = [];
+  return {
+    calls,
+    longState: () => {
+      calls.push("state");
+      return { active: false };
+    },
+    longStart: (o: { dir: string; title?: string; template?: string }) => {
+      calls.push("start:" + o.dir + ":" + (o.template ?? ""));
+      return { ok: true };
+    },
+    longStop: () => {
+      calls.push("stop");
+      return { ok: true };
+    },
+    longMark: () => {
+      calls.push("mark");
+      return { ok: true };
+    },
+  };
+}
+
 test("local API: status, readiness, transcribe, discovery file", async () => {
   const info = path.join(os.tmpdir(), `agrflow-api-test-${process.pid}.json`);
   let listening = false;
@@ -70,6 +93,7 @@ test("local API: status, readiness, transcribe, discovery file", async () => {
       seen.push({ bytes: wav.length, cleanup });
       return Promise.resolve({ text: "bonjour le test", ms: 42 });
     },
+    ...longDepsStub(),
     infoPathOverride: info,
   });
   await api.start();
@@ -106,6 +130,35 @@ test("local API: status, readiness, transcribe, discovery file", async () => {
   assert.equal(fs.existsSync(info), false, "stop() must remove its own discovery file");
 });
 
+test("long-form routes reach their deps with parsed arguments", async () => {
+  const info = path.join(os.tmpdir(), `agrflow-api-test3-${process.pid}.json`);
+  const stub = longDepsStub();
+  const api = new LocalApi({
+    version: "0.0.0",
+    isListening: () => false,
+    isRecording: () => true,
+    isEngineWarm: () => true,
+    transcribe: () => Promise.resolve({ text: "", ms: 0 }),
+    ...stub,
+    infoPathOverride: info,
+  });
+  await api.start();
+  try {
+    const port = (JSON.parse(fs.readFileSync(info, "utf8")) as { port: number }).port;
+    assert.equal((await get(port, "/long/state")).code, 200);
+    const startBody = Buffer.from(JSON.stringify({ dir: "C:\\tmp", template: "client" }));
+    assert.equal((await post(port, "/long/start", startBody)).code, 200);
+    assert.equal((await post(port, "/long/start", Buffer.from("{}"))).code, 400, "missing dir -> 400");
+    assert.equal((await post(port, "/long/mark", new Uint8Array(0))).code, 200);
+    assert.equal((await post(port, "/long/stop", new Uint8Array(0))).code, 200);
+    assert.deepEqual(stub.calls, ["state", "start:C:\\tmp:client", "mark", "stop"]);
+    // A long recording flips the quiet window (plan 8).
+    assert.equal((await get(port, "/update-readiness")).body.ready, false);
+  } finally {
+    api.stop();
+  }
+});
+
 test("transcribe errors surface as 500, never crash the server", async () => {
   const info = path.join(os.tmpdir(), `agrflow-api-test2-${process.pid}.json`);
   const api = new LocalApi({
@@ -114,6 +167,7 @@ test("transcribe errors surface as 500, never crash the server", async () => {
     isRecording: () => false,
     isEngineWarm: () => false,
     transcribe: () => Promise.reject(new Error("engine down")),
+    ...longDepsStub(),
     infoPathOverride: info,
   });
   await api.start();
