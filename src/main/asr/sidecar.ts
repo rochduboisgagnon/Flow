@@ -52,6 +52,11 @@ export class WhisperSidecar {
     this.opts = opts;
   }
 
+  /** Applied to the NEXT inference; the language is a per-request field. */
+  setLanguage(language: string) {
+    this.opts.language = language;
+  }
+
   /** Idempotent warm-up; concurrent callers share the same startup. */
   ensureStarted(): Promise<void> {
     if (this.proc && this.port) return Promise.resolve();

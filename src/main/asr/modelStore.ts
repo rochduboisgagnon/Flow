@@ -14,6 +14,16 @@ import https from "node:https";
 export const DEFAULT_MODEL_FILE = "ggml-small-q5_1.bin";
 const HF_BASE = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
 
+// The models offered in the settings (all multilingual, all quantized builds
+// shipped upstream by whisper.cpp). Speed/accuracy is the user's dial; small
+// stays the default sweet spot for French-first dictation.
+export const AVAILABLE_MODELS = [
+  { file: "ggml-tiny-q5_1.bin", label: "Tiny - fastest, least accurate", size: "32 MB" },
+  { file: "ggml-base-q5_1.bin", label: "Base - fast", size: "60 MB" },
+  { file: "ggml-small-q5_1.bin", label: "Small - best balance (default)", size: "190 MB" },
+  { file: "ggml-medium-q5_0.bin", label: "Medium - most accurate, slower", size: "540 MB" },
+] as const;
+
 export function modelsDir(): string {
   const base = process.env.LOCALAPPDATA ?? path.join(process.env.USERPROFILE ?? ".", "AppData", "Local");
   return path.join(base, "AGR-Flow", "models");

@@ -21,3 +21,27 @@ export interface CaptureDonePayload {
   wav: ArrayBuffer;
   durationMs: number;
 }
+
+// settings window <-> main (invoke/handle)
+export const SETTINGS_GET = "settings:get";
+export const SETTINGS_SET = "settings:set";
+// Records a new shortcut through the low-level hook itself: main resolves with
+// the normalized combo, or null on cancel/timeout. While recording, keyspy
+// swallows every key (nothing leaks to the OS - including the Win key, so the
+// Start menu cannot steal the recorder's focus).
+export const SHORTCUT_RECORD = "shortcut:record";
+
+// main -> settings window: ASR model download/swap progress
+export const MODEL_STATE = "model:state";
+
+export interface ModelStatePayload {
+  status: "idle" | "downloading" | "ready" | "error";
+  pct?: number;
+  message?: string;
+}
+
+export interface ModelChoice {
+  file: string;
+  label: string;
+  size: string;
+}

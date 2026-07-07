@@ -3,16 +3,25 @@ import path from "node:path";
 import { HotkeyAdapter } from "./hotkey";
 import { OverlayWindow } from "./overlay";
 import { WhisperSidecar } from "./asr/sidecar";
-import { ensureModel, DEFAULT_MODEL_FILE } from "./asr/modelStore";
+import { ensureModel, DEFAULT_MODEL_FILE, AVAILABLE_MODELS } from "./asr/modelStore";
 import { FocusProbe } from "./focus/probe";
 import { insertViaPaste, leaveOnClipboard } from "./insert";
 import { decideRoute } from "../shared/route";
 import { comboLabel } from "../shared/combo";
-import { loadSettings } from "./settings";
+import { loadSettings, saveSettings, sanitizeSettings, type FlowSettings } from "./settings";
 import { analyzeSpeech, hasSpeech, trimToSpeech } from "../shared/vad";
 import { gateTranscript } from "../shared/textGate";
 import { pcmFromWav, encodeWav } from "../shared/wav";
-import { CAPTURE_DONE, CAPTURE_ERROR, type CaptureDonePayload } from "../shared/ipcContracts";
+import {
+  CAPTURE_DONE,
+  CAPTURE_ERROR,
+  SETTINGS_GET,
+  SETTINGS_SET,
+  SHORTCUT_RECORD,
+  MODEL_STATE,
+  type CaptureDonePayload,
+  type ModelStatePayload,
+} from "../shared/ipcContracts";
 
 // AGR Flow: local, on-device dictation. Phase 1 = Windows push-to-talk loop.
 // This entry point owns the app lifecycle: single instance, tray, settings window.
@@ -46,6 +55,7 @@ if (!app.requestSingleInstanceLock()) {
     openSettings();
     overlay.create(DEV);
     wireCapture();
+    wireSettingsIpc();
     startPtt();
     void warmAsr();
     probe = new FocusProbe(focusProbeScript(), DEV ? (m) => console.log(m) : undefined);
@@ -73,6 +83,21 @@ function serverBinaryPath(): string {
     : path.join(app.getAppPath(), "resources", "bin", "whisper-server-win32-x64.exe");
 }
 
+function newSidecar(modelPath: string): WhisperSidecar {
+  return new WhisperSidecar({
+    binaryPath: serverBinaryPath(),
+    modelPath,
+    language: settings.language,
+    log: DEV ? (m) => console.log(m) : undefined,
+    onState: (state) => {
+      // Tray = the plan's status indicator (ready / listening / error).
+      if (state === "warm") tray?.setToolTip("AGR Flow");
+      else if (state === "down") tray?.setToolTip("AGR Flow - speech engine restarting...");
+      else tray?.setToolTip("AGR Flow - speech engine failed (see Settings)");
+    },
+  });
+}
+
 async function warmAsr() {
   try {
     let lastPct = -1;
@@ -82,18 +107,7 @@ async function warmAsr() {
         tray?.setToolTip(`AGR Flow - downloading the speech model (${pct}%)`);
       }
     });
-    sidecar = new WhisperSidecar({
-      binaryPath: serverBinaryPath(),
-      modelPath: model,
-      language: settings.language,
-      log: DEV ? (m) => console.log(m) : undefined,
-      onState: (state) => {
-        // Tray = the plan's status indicator (ready / listening / error).
-        if (state === "warm") tray?.setToolTip("AGR Flow");
-        else if (state === "down") tray?.setToolTip("AGR Flow - speech engine restarting...");
-        else tray?.setToolTip("AGR Flow - speech engine failed (see Settings)");
-      },
-    });
+    sidecar = newSidecar(model);
     await sidecar.ensureStarted();
     tray?.setToolTip("AGR Flow");
   } catch (err) {
@@ -172,6 +186,76 @@ function wireCapture() {
   ipcMain.on(CAPTURE_ERROR, (_ev, message: string) => {
     console.error("[capture] failed:", message);
     tray?.setToolTip("AGR Flow - microphone unavailable");
+  });
+}
+
+// ---- Settings IPC: get / set (applied live) / shortcut recorder ----
+
+function sendModelState(state: ModelStatePayload) {
+  if (settingsWin && !settingsWin.isDestroyed()) {
+    settingsWin.webContents.send(MODEL_STATE, state);
+  }
+}
+
+// Swapping the ASR model: download if missing (progress to the settings
+// window and the tray), then replace the warm sidecar. One swap at a time;
+// a failed swap leaves the previous engine running.
+let modelSwapping = false;
+async function swapModel(file: string) {
+  if (modelSwapping) return;
+  modelSwapping = true;
+  const old = sidecar;
+  try {
+    let lastPct = -1;
+    sendModelState({ status: "downloading", pct: 0 });
+    const model = await ensureModel(file, (pct) => {
+      if (pct !== lastPct) {
+        lastPct = pct;
+        sendModelState({ status: "downloading", pct });
+        tray?.setToolTip(`AGR Flow - downloading the speech model (${pct}%)`);
+      }
+    });
+    const next = newSidecar(model);
+    await next.ensureStarted();
+    sidecar = next;
+    old?.stop();
+    tray?.setToolTip("AGR Flow");
+    sendModelState({ status: "ready" });
+  } catch (err) {
+    console.error("[asr] model swap failed:", err);
+    sendModelState({ status: "error", message: String(err) });
+    tray?.setToolTip("AGR Flow");
+  } finally {
+    modelSwapping = false;
+  }
+}
+
+/** Applies a settings patch immediately: shortcut re-armed, language applied
+ * to the next utterance, model swapped (with download), mic/sounds picked up
+ * by the next capture. Persisted atomically. */
+function applySettings(patch: Partial<FlowSettings>): FlowSettings {
+  const next = sanitizeSettings({ ...settings, ...patch });
+  const comboChanged = JSON.stringify(next.combo) !== JSON.stringify(settings.combo);
+  const modelChanged = next.model !== settings.model;
+  const langChanged = next.language !== settings.language;
+  Object.assign(settings, next);
+  saveSettings(settings);
+  if (comboChanged) hotkey.setCombo(settings.combo);
+  if (langChanged) sidecar?.setLanguage(settings.language);
+  if (modelChanged) void swapModel(settings.model);
+  return { ...settings, combo: [...settings.combo] };
+}
+
+function wireSettingsIpc() {
+  ipcMain.handle(SETTINGS_GET, () => ({
+    settings: { ...settings, combo: [...settings.combo] },
+    models: AVAILABLE_MODELS,
+  }));
+  ipcMain.handle(SETTINGS_SET, (_ev, patch: Partial<FlowSettings>) => applySettings(patch));
+  ipcMain.handle(SHORTCUT_RECORD, async () => {
+    const combo = await hotkey.record();
+    if (combo && combo.length > 0) return applySettings({ combo }).combo;
+    return null;
   });
 }
 
