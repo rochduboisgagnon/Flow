@@ -347,10 +347,15 @@ export class LongRecorder {
             partials.join("\n\n---\n\n");
         }
         if (summary) {
+          // Atomic swap (tmp + rename): the summary splice REWRITES the whole document, so a live
+          // transcriptSince poll racing this write must never observe a half-written file. Write the
+          // final content aside, then rename over the path in one step (same discipline as saveRecent).
+          const tmp = this.transcriptPath + ".tmp";
           fs.writeFileSync(
-            this.transcriptPath,
+            tmp,
             this.headerStr + "## Summary\n\n" + summary.trim() + "\n\n## Transcript\n\n" + body.replace(/^\s+/, ""),
           );
+          fs.renameSync(tmp, this.transcriptPath);
         } else {
           this.deps.log?.("[long] summary empty: transcript stands alone");
         }
