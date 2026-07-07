@@ -6,22 +6,25 @@ import https from "node:https";
 // outside the install directory: an app update must never re-download 190 MB,
 // and an uninstall of the binaries can leave user data alone.
 //
-// Default model: ggml-small (multilingual, q5_1). French-first dictation rules
-// out the English-only edge models for now (Moonshine/Parakeet are the planned
-// phase-2 upgrade); small-q5_1 is the speed/accuracy sweet spot whisper.cpp
-// ships quantized upstream.
+// Default model (plan v4 chantier 11, Roch's call = best French): large-v3-turbo
+// (multilingual, q5_0). It is the strongest French transcriber whisper.cpp ships
+// quantized, and the sidecar stays warm so the bigger model is a one-time load
+// cost, not a per-utterance one. small-q5_1 stays in the list as the "fast"
+// option for anyone who wants sub-second dictation over top accuracy.
 
-export const DEFAULT_MODEL_FILE = "ggml-small-q5_1.bin";
+export const DEFAULT_MODEL_FILE = "ggml-large-v3-turbo-q5_0.bin";
 const HF_BASE = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
 
 // The models offered in the settings (all multilingual, all quantized builds
-// shipped upstream by whisper.cpp). Speed/accuracy is the user's dial; small
-// stays the default sweet spot for French-first dictation.
+// shipped upstream by whisper.cpp). Accuracy/speed is the user's dial; turbo is
+// the French-first default, small the fast fallback.
 export const AVAILABLE_MODELS = [
   { file: "ggml-tiny-q5_1.bin", label: "Tiny - fastest, least accurate", size: "32 MB" },
   { file: "ggml-base-q5_1.bin", label: "Base - fast", size: "60 MB" },
-  { file: "ggml-small-q5_1.bin", label: "Small - best balance (default)", size: "190 MB" },
-  { file: "ggml-medium-q5_0.bin", label: "Medium - most accurate, slower", size: "540 MB" },
+  { file: "ggml-small-q5_1.bin", label: "Small - fast, good balance", size: "190 MB" },
+  { file: "ggml-medium-q5_0.bin", label: "Medium - accurate, slower", size: "540 MB" },
+  { file: "ggml-large-v3-turbo-q5_0.bin", label: "Large v3 Turbo - best French (default)", size: "547 MB" },
+  { file: "ggml-large-v3-q5_0.bin", label: "Large v3 - most accurate, slowest", size: "1.1 GB" },
 ] as const;
 
 export function modelsDir(): string {

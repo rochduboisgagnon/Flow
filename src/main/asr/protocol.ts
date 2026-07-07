@@ -5,8 +5,19 @@ export interface InferenceResponse {
   text: string;
 }
 
-export function buildServerArgs(modelPath: string, port: number, threads: number): string[] {
-  return [
+export interface ServerArgOptions {
+  /** Beam search width (whisper-server --beam-size). >0 turns on beam search;
+   * plan v4 chantier 11: a big, cheap accuracy lever after the model size. */
+  beamSize?: number;
+}
+
+export function buildServerArgs(
+  modelPath: string,
+  port: number,
+  threads: number,
+  opts: ServerArgOptions = {},
+): string[] {
+  const args = [
     "--model",
     modelPath,
     "--host",
@@ -16,6 +27,8 @@ export function buildServerArgs(modelPath: string, port: number, threads: number
     "--threads",
     String(threads),
   ];
+  if (opts.beamSize && opts.beamSize > 0) args.push("--beam-size", String(opts.beamSize));
+  return args;
 }
 
 // Whisper always encodes a full 30 s window: without a hint, a 2 s utterance
@@ -49,6 +62,7 @@ export function buildInferenceBody(
   wav: Uint8Array,
   language: string,
   audioCtx?: number,
+  prompt?: string,
 ): Buffer {
   const head =
     `--${boundary}\r\n` +
@@ -58,12 +72,21 @@ export function buildInferenceBody(
     ? `--${boundary}\r\n` +
       `Content-Disposition: form-data; name="audio_ctx"\r\n\r\n${audioCtx}\r\n`
     : "";
+  // Plan v4 chantier 11: whisper-server reads a per-request `prompt` (initial
+  // prompt), verified honored on the pinned build. The multipart body is UTF-8,
+  // so accented French seeds ride cleanly here (a CLI --prompt would be mangled
+  // by the Windows argv codepage). Empty prompt = field omitted.
+  const promptField = prompt
+    ? `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="prompt"\r\n\r\n${prompt}\r\n`
+    : "";
   const fields =
     `\r\n--${boundary}\r\n` +
     `Content-Disposition: form-data; name="language"\r\n\r\n${language}\r\n` +
     ctxField +
     `--${boundary}\r\n` +
     `Content-Disposition: form-data; name="response_format"\r\n\r\nverbose_json\r\n` +
+    promptField +
     `--${boundary}--\r\n`;
   return Buffer.concat([Buffer.from(head), Buffer.from(wav), Buffer.from(fields)]);
 }

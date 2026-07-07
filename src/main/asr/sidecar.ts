@@ -30,6 +30,10 @@ export interface SidecarOptions {
   binaryPath: string;
   modelPath: string;
   language?: string; // "auto" lets the model detect French/English per utterance
+  beamSize?: number; // whisper-server --beam-size (plan v4 c11: accuracy lever)
+  /** A French initial prompt (plan v4 c11), sent per request ONLY when the
+   * effective language is French or auto, to bias accents/casing/punctuation. */
+  initialPrompt?: string;
   log?: (msg: string) => void;
   /** Engine state for the tray: "warm" = ready, "down" = (re)starting, "error" = gave up. */
   onState?: (state: "warm" | "down" | "error") => void;
@@ -81,6 +85,7 @@ export class WhisperSidecar {
       this.opts.modelPath,
       this.port,
       pickThreads(os.cpus().length),
+      { beamSize: this.opts.beamSize },
     );
     const proc = spawn(this.opts.binaryPath, args, {
       stdio: ["ignore", "ignore", "pipe"],
@@ -167,11 +172,16 @@ export class WhisperSidecar {
     await this.ensureStarted();
     const started = Date.now();
     const boundary = "agrflow-" + crypto.randomBytes(12).toString("hex");
+    const lang = this.opts.language ?? "auto";
+    // The French seed rides only when the effective language is French or auto;
+    // an explicit English/other language omits it (plan v4 chantier 11).
+    const prompt = lang === "fr" || lang === "auto" ? this.opts.initialPrompt : undefined;
     const body = buildInferenceBody(
       boundary,
       wav,
-      this.opts.language ?? "auto",
+      lang,
       computeAudioCtx(wavDurationSec(wav.length)),
+      prompt,
     );
     const raw = await new Promise<string>((resolve, reject) => {
       const req = http.request(

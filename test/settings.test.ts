@@ -47,7 +47,7 @@ test("language accepts auto and short ISO codes only", () => {
   assert.equal(sanitizeSettings({ language: "french" }).language, "auto");
 });
 
-test("defaults are Ctrl+Win and the small multilingual model", () => {
+test("defaults are Ctrl+Win and the large-v3-turbo multilingual model (best French)", () => {
   assert.deepEqual(SETTINGS_DEFAULTS.combo, ["CTRL", "WIN"]);
-  assert.match(SETTINGS_DEFAULTS.model, /^ggml-small/);
+  assert.match(SETTINGS_DEFAULTS.model, /^ggml-large-v3-turbo/);
 });

@@ -12,8 +12,7 @@ import { loadSettings, saveSettings, sanitizeSettings, type FlowSettings } from 
 import { analyzeSpeech, hasSpeech, trimToSpeech } from "../shared/vad";
 import { gateTranscript } from "../shared/textGate";
 import { pcmFromWav, encodeWav } from "../shared/wav";
-import { listOllamaModels, cleanTranscript, warmCleanupModel } from "./llm/ollama";
-import { CLEANUP_MIN_CHARS } from "../shared/cleanup";
+import { listOllamaModels } from "./llm/ollama";
 import { LocalApi } from "./api";
 import { LongRecorder } from "./longform";
 import {
@@ -57,14 +56,13 @@ if (!app.requestSingleInstanceLock()) {
     wireCapture();
     startPtt();
     void warmAsr();
-    if (settings.cleanup && settings.cleanupModel) warmCleanupModel(settings.cleanupModel);
     probe = new FocusProbe(focusProbeScript(), DEV ? (m) => console.log(m) : undefined);
     api = new LocalApi({
       version: app.getVersion(),
       isListening: () => listening,
       isRecording: () => longRec.isBusy,
       isEngineWarm: () => sidecar !== null,
-      transcribe: (wav, cleanup) => processUtterance(wav, cleanup),
+      transcribe: (wav) => processUtterance(wav),
       longState: () => longRec.state(),
       longStart: (opts) => longRec.start({ dir: opts.dir, title: opts.title, keepAudio: !!opts.keepAudio }),
       longStop: () => longRec.stop(),
@@ -131,11 +129,20 @@ function serverBinaryPath(): string {
     : path.join(app.getAppPath(), "resources", "bin", "whisper-server-win32-x64.exe");
 }
 
+// Plan v4 chantier 11 (Roch's call = best French). A short French seed, sent as
+// a per-request UTF-8 prompt only for French/auto, biases whisper toward accents,
+// casing and punctuation. Beam search is the second cheap accuracy lever.
+const FRENCH_PROMPT =
+  "Voici une dictée en français, soignée et bien ponctuée, avec les accents et les majuscules : déjà, préalable, résumé, étudié, français, numéro, être, ça, où.";
+const BEAM_SIZE = 5;
+
 function newSidecar(modelPath: string): WhisperSidecar {
   return new WhisperSidecar({
     binaryPath: serverBinaryPath(),
     modelPath,
     language: settings.language,
+    beamSize: BEAM_SIZE,
+    initialPrompt: FRENCH_PROMPT,
     log: DEV ? (m) => console.log(m) : undefined,
     onState: (state) => {
       if (state === "warm") statusText = "ready";
@@ -204,11 +211,10 @@ const hotkey = new HotkeyAdapter(settings.combo, {
 /** The shared utterance pipeline (PTT loop AND local API): anti-hallucination
  * gate #1 (energy VAD - an accidental press must not insert invented text,
  * and trimming silence shortens the decode), warm ASR, then gates #2/#3
- * (per-segment no-speech in the protocol parser, known-hallucination list),
- * then the optional Ollama pass. Empty text = gated. Nothing is retained. */
+ * (per-segment no-speech in the protocol parser, known-hallucination list).
+ * Empty text = gated. Nothing is retained. */
 async function processUtterance(
   wav: Uint8Array,
-  cleanup: boolean,
 ): Promise<{ text: string; ms: number }> {
   if (!sidecar) throw new Error("speech engine not ready");
   const pcm = pcmFromWav(wav);
@@ -218,16 +224,10 @@ async function processUtterance(
     return { text: "", ms: 0 };
   }
   const { text, ms } = await sidecar.transcribe(encodeWav(trimToSpeech(pcm, speech)));
-  let clean = gateTranscript(text);
+  const clean = gateTranscript(text);
   if (!clean) {
     if (DEV) console.log(`[gate] dropped: ${JSON.stringify(text)}`);
     return { text: "", ms };
-  }
-  // Optional Ollama pass (plan 5.1 step 4): punctuation + spoken formatting
-  // commands. Opt-in, long texts only, falls back to the raw transcript on
-  // any failure - never a gate, never a blocker.
-  if (cleanup && settings.cleanupModel && clean.length > CLEANUP_MIN_CHARS) {
-    clean = await cleanTranscript(settings.cleanupModel, clean);
   }
   return { text: clean, ms };
 }
@@ -239,7 +239,7 @@ function wireCapture() {
     // Every exit path calls overlay.flowDone() so the "Transcribing..." pill
     // never outlives the utterance.
     if (payload.durationMs < 300) return overlay.flowDone();
-    void processUtterance(new Uint8Array(payload.wav), settings.cleanup)
+    void processUtterance(new Uint8Array(payload.wav))
       .then(async ({ text, ms }) => {
         if (!text) return;
         // Probe the focus WHILE nothing else has stolen it, then route and act.
@@ -304,14 +304,11 @@ function applySettings(patch: Partial<FlowSettings>): FlowSettings {
   const comboChanged = JSON.stringify(next.combo) !== JSON.stringify(settings.combo);
   const modelChanged = next.model !== settings.model;
   const langChanged = next.language !== settings.language;
-  const cleanupTurnedOn =
-    next.cleanup && next.cleanupModel && (!settings.cleanup || next.cleanupModel !== settings.cleanupModel);
   Object.assign(settings, next);
   saveSettings(settings);
   if (comboChanged) hotkey.setCombo(settings.combo);
   if (langChanged) sidecar?.setLanguage(settings.language);
   if (modelChanged) void swapModel(settings.model);
-  if (cleanupTurnedOn) warmCleanupModel(settings.cleanupModel);
   return { ...settings, combo: [...settings.combo] };
 }
 

@@ -23,6 +23,24 @@ test("server args: loopback only, model and port pinned", () => {
   ]);
 });
 
+test("server args: beam size appended when set (plan v4 c11)", () => {
+  const args = buildServerArgs("C:/m/m.bin", 8181, 6, { beamSize: 5 });
+  assert.ok(args.includes("--beam-size"));
+  assert.equal(args[args.indexOf("--beam-size") + 1], "5");
+  // A zero/absent beam size leaves the args untouched.
+  assert.ok(!buildServerArgs("C:/m/m.bin", 8181, 6, { beamSize: 0 }).includes("--beam-size"));
+  assert.ok(!buildServerArgs("C:/m/m.bin", 8181, 6).includes("--beam-size"));
+});
+
+test("multipart body: French prompt lands only when provided (plan v4 c11)", () => {
+  const wav = new Uint8Array([1, 2, 3]);
+  const withP = buildInferenceBody("B", wav, "fr", 256, "Voici une dictée en français.").toString("utf8");
+  assert.ok(withP.includes('name="prompt"\r\n\r\nVoici une dictée en français.'));
+  assert.ok(withP.endsWith("--B--\r\n"));
+  const noP = buildInferenceBody("B", wav, "fr", 256).toString("utf8");
+  assert.ok(!noP.includes('name="prompt"'));
+});
+
 test("multipart body: wav bytes intact, fields and closing boundary present", () => {
   const wav = new Uint8Array([82, 73, 70, 70, 0, 255, 128, 1]); // "RIFF" + binary bytes
   const body = buildInferenceBody("BOUND", wav, "auto");
