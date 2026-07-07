@@ -14,6 +14,7 @@ import { gateTranscript } from "../shared/textGate";
 import { pcmFromWav, encodeWav } from "../shared/wav";
 import { listOllamaModels, cleanTranscript, warmCleanupModel } from "./llm/ollama";
 import { CLEANUP_MIN_CHARS } from "../shared/cleanup";
+import { LocalApi } from "./api";
 import {
   CAPTURE_DONE,
   CAPTURE_ERROR,
@@ -64,8 +65,19 @@ if (!app.requestSingleInstanceLock()) {
     void warmAsr();
     if (settings.cleanup && settings.cleanupModel) warmCleanupModel(settings.cleanupModel);
     probe = new FocusProbe(focusProbeScript(), DEV ? (m) => console.log(m) : undefined);
+    api = new LocalApi({
+      version: app.getVersion(),
+      isListening: () => listening,
+      isRecording: () => false, // long-form capture arrives with phase 4
+      isEngineWarm: () => sidecar !== null,
+      transcribe: (wav, cleanup) => processUtterance(wav, cleanup),
+    });
+    api.start().catch((err) => console.error("[api] failed to start:", err));
   });
 }
+
+// Local API for the AGR ecosystem (AGR Pilot's mic, AGR Manager's quiet window).
+let api: LocalApi | null = null;
 
 // Focus probe: decides insert-at-cursor vs leave-on-clipboard per dictation.
 let probe: FocusProbe | null = null;
@@ -126,20 +138,56 @@ const overlay = new OverlayWindow();
 // The dictation loop, main-process side. PTT drives the overlay (which owns the
 // microphone); the finished WAV comes back once per utterance and is handed to
 // the ASR sidecar, then every reference is dropped.
+let listening = false; // dictation capture in flight (drives /update-readiness)
+
 const hotkey = new HotkeyAdapter(settings.combo, {
   onStart() {
+    listening = true;
     tray?.setToolTip("AGR Flow - listening...");
     overlay.startCapture({ sounds: settings.sounds, micDeviceId: settings.micDeviceId });
   },
   onStop() {
+    listening = false;
     tray?.setToolTip("AGR Flow");
     overlay.stopCapture();
   },
   onCancel() {
+    listening = false;
     tray?.setToolTip("AGR Flow");
     overlay.cancelCapture();
   },
 });
+
+/** The shared utterance pipeline (PTT loop AND local API): anti-hallucination
+ * gate #1 (energy VAD - an accidental press must not insert invented text,
+ * and trimming silence shortens the decode), warm ASR, then gates #2/#3
+ * (per-segment no-speech in the protocol parser, known-hallucination list),
+ * then the optional Ollama pass. Empty text = gated. Nothing is retained. */
+async function processUtterance(
+  wav: Uint8Array,
+  cleanup: boolean,
+): Promise<{ text: string; ms: number }> {
+  if (!sidecar) throw new Error("speech engine not ready");
+  const pcm = pcmFromWav(wav);
+  const speech = analyzeSpeech(pcm);
+  if (!hasSpeech(speech)) {
+    if (DEV) console.log(`[vad] dropped: ${speech.voicedMs} ms voiced`);
+    return { text: "", ms: 0 };
+  }
+  const { text, ms } = await sidecar.transcribe(encodeWav(trimToSpeech(pcm, speech)));
+  let clean = gateTranscript(text);
+  if (!clean) {
+    if (DEV) console.log(`[gate] dropped: ${JSON.stringify(text)}`);
+    return { text: "", ms };
+  }
+  // Optional Ollama pass (plan 5.1 step 4): punctuation + spoken formatting
+  // commands. Opt-in, long texts only, falls back to the raw transcript on
+  // any failure - never a gate, never a blocker.
+  if (cleanup && settings.cleanupModel && clean.length > CLEANUP_MIN_CHARS) {
+    clean = await cleanTranscript(settings.cleanupModel, clean);
+  }
+  return { text: clean, ms };
+}
 
 function wireCapture() {
   ipcMain.on(CAPTURE_DONE, (_ev, payload: CaptureDonePayload) => {
@@ -148,49 +196,15 @@ function wireCapture() {
     // Every exit path calls overlay.flowDone() so the "Transcribing..." pill
     // never outlives the utterance.
     if (payload.durationMs < 300) return overlay.flowDone();
-    if (!sidecar) {
-      console.error("[asr] utterance dropped: engine not ready");
-      return overlay.flowDone();
-    }
-    // Anti-hallucination gate #1 (plan 5.9): if the utterance carries no
-    // actual speech energy, it never reaches the model - an accidental press
-    // must not insert invented text. Trimming the surrounding silence also
-    // shortens the decode.
-    let pcm: Int16Array;
-    let speech: ReturnType<typeof analyzeSpeech>;
-    try {
-      pcm = pcmFromWav(new Uint8Array(payload.wav));
-      speech = analyzeSpeech(pcm);
-    } catch (err) {
-      console.error("[vad] malformed capture dropped:", err);
-      return overlay.flowDone();
-    }
-    if (!hasSpeech(speech)) {
-      if (DEV) console.log(`[vad] dropped: ${speech.voicedMs} ms voiced`);
-      return overlay.flowDone();
-    }
-    void sidecar
-      .transcribe(encodeWav(trimToSpeech(pcm, speech)))
+    void processUtterance(new Uint8Array(payload.wav), settings.cleanup)
       .then(async ({ text, ms }) => {
-        // Gates #2 and #3 live upstream and here: per-segment no-speech
-        // filtering in the protocol parser, then the known-hallucination list.
-        let clean = gateTranscript(text);
-        if (!clean) {
-          if (DEV) console.log(`[gate] dropped: ${JSON.stringify(text)}`);
-          return;
-        }
-        // Optional Ollama pass (plan 5.1 step 4): punctuation + spoken
-        // formatting commands. Opt-in, long texts only, falls back to the
-        // raw transcript on any failure - never a gate, never a blocker.
-        if (settings.cleanup && settings.cleanupModel && clean.length > CLEANUP_MIN_CHARS) {
-          clean = await cleanTranscript(settings.cleanupModel, clean);
-        }
+        if (!text) return;
         // Probe the focus WHILE nothing else has stolen it, then route and act.
         const focus = (await probe?.probe()) ?? null;
         const route = decideRoute(focus);
-        if (route === "insert") await insertViaPaste(clean);
-        else leaveOnClipboard(clean);
-        // `clean` goes out of scope here: the dictation is never retained (5.4).
+        if (route === "insert") await insertViaPaste(text);
+        else leaveOnClipboard(text);
+        // `text` goes out of scope here: the dictation is never retained (5.4).
         if (DEV)
           console.log(`[flow] ${ms} ms | focus=${focus?.control ?? "none"} -> ${route}`);
       })
@@ -298,6 +312,7 @@ app.on("before-quit", () => {
   overlay.destroy();
   sidecar?.stop();
   probe?.stop();
+  api?.stop();
 });
 
 function iconPath(): string {

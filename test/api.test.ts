@@ -1,0 +1,130 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import http from "node:http";
+import { LocalApi } from "../src/main/api";
+import { encodeWav } from "../src/shared/wav";
+
+// The local API exercised over real HTTP with a mock transcriber: routes,
+// discovery file, quiet-window semantics, and the transcribe round-trip.
+
+interface Reply {
+  code: number;
+  body: Record<string, unknown>;
+}
+
+// agent:false on every call: Node's default agent keeps sockets alive, and a
+// pooled socket from a previous (closed) server on the same port would die
+// with ECONNRESET instead of reconnecting.
+function get(port: number, p: string): Promise<Reply> {
+  return new Promise((resolve, reject) => {
+    http
+      .get({ hostname: "127.0.0.1", port, path: p, agent: false }, (res) => {
+        let d = "";
+        res.on("data", (c) => (d += c));
+        res.on("end", () =>
+          resolve({ code: res.statusCode ?? 0, body: JSON.parse(d) as Record<string, unknown> }),
+        );
+      })
+      .on("error", reject);
+  });
+}
+
+function post(port: number, p: string, body: Uint8Array): Promise<Reply> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        hostname: "127.0.0.1",
+        port,
+        path: p,
+        method: "POST",
+        agent: false,
+        headers: { "Content-Type": "audio/wav", "Content-Length": body.length },
+      },
+      (res) => {
+        let d = "";
+        res.on("data", (c) => (d += c));
+        res.on("end", () =>
+          resolve({ code: res.statusCode ?? 0, body: JSON.parse(d) as Record<string, unknown> }),
+        );
+      },
+    );
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+test("local API: status, readiness, transcribe, discovery file", async () => {
+  const info = path.join(os.tmpdir(), `agrflow-api-test-${process.pid}.json`);
+  let listening = false;
+  const seen: Array<{ bytes: number; cleanup: boolean }> = [];
+  const api = new LocalApi({
+    version: "9.9.9-test",
+    isListening: () => listening,
+    isRecording: () => false,
+    isEngineWarm: () => true,
+    transcribe: (wav, cleanup) => {
+      seen.push({ bytes: wav.length, cleanup });
+      return Promise.resolve({ text: "bonjour le test", ms: 42 });
+    },
+    infoPathOverride: info,
+  });
+  await api.start();
+  try {
+    const disco = JSON.parse(fs.readFileSync(info, "utf8"));
+    assert.equal(disco.app, "agr-flow");
+    assert.equal(disco.pid, process.pid);
+    const port = disco.port as number;
+
+    const status = await get(port, "/status");
+    assert.equal(status.code, 200);
+    assert.equal(status.body.app, "agr-flow");
+    assert.equal(status.body.version, "9.9.9-test");
+    assert.equal(status.body.engineWarm, true);
+    assert.equal(status.body.listening, false);
+
+    // Quiet window flips with the listening state (plan 8).
+    assert.equal((await get(port, "/update-readiness")).body.ready, true);
+    listening = true;
+    assert.equal((await get(port, "/update-readiness")).body.ready, false);
+    listening = false;
+
+    const wav = encodeWav(new Int16Array(16_000));
+    const t = await post(port, "/transcribe?cleanup=1", wav);
+    assert.equal(t.code, 200);
+    assert.equal(t.body.text, "bonjour le test");
+    assert.equal(t.body.ms, 42);
+    assert.deepEqual(seen, [{ bytes: wav.length, cleanup: true }]);
+
+    assert.equal((await get(port, "/nope")).code, 404);
+  } finally {
+    api.stop();
+  }
+  assert.equal(fs.existsSync(info), false, "stop() must remove its own discovery file");
+});
+
+test("transcribe errors surface as 500, never crash the server", async () => {
+  const info = path.join(os.tmpdir(), `agrflow-api-test2-${process.pid}.json`);
+  const api = new LocalApi({
+    version: "0.0.0",
+    isListening: () => false,
+    isRecording: () => false,
+    isEngineWarm: () => false,
+    transcribe: () => Promise.reject(new Error("engine down")),
+    infoPathOverride: info,
+  });
+  await api.start();
+  try {
+    const port = (JSON.parse(fs.readFileSync(info, "utf8")) as { port: number }).port;
+    const r = await post(port, "/transcribe", encodeWav(new Int16Array(100)));
+    assert.equal(r.code, 500);
+    assert.match(String(r.body.error), /engine down/);
+    // The server is still alive after the failure.
+    assert.equal((await get(port, "/status")).code, 200);
+  } finally {
+    api.stop();
+  }
+});
