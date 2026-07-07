@@ -88,4 +88,25 @@ export function warmCleanupModel(model: string): void {
   });
 }
 
+/** Long-form summaries (plan §6): bigger context window, generous timeout,
+ * null on any failure (the caller then ships the transcript alone). */
+export async function summarize(model: string, prompt: string): Promise<string | null> {
+  try {
+    const body = JSON.stringify({
+      model,
+      prompt,
+      stream: false,
+      keep_alive: "30m",
+      options: { temperature: 0.2, num_ctx: 8192 },
+    });
+    const raw = JSON.parse(await request("/api/generate", "POST", body, 300_000)) as {
+      response?: string;
+    };
+    const text = (raw.response ?? "").trim();
+    return text.length > 0 ? text : null;
+  } catch {
+    return null;
+  }
+}
+
 export { OLLAMA_BASE };

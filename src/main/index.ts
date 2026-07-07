@@ -15,9 +15,14 @@ import { pcmFromWav, encodeWav } from "../shared/wav";
 import { listOllamaModels, cleanTranscript, warmCleanupModel } from "./llm/ollama";
 import { CLEANUP_MIN_CHARS } from "../shared/cleanup";
 import { LocalApi } from "./api";
+import { LongRecorder } from "./longform";
+import type { TemplateId } from "../shared/longform";
+import { SUMMARY_TEMPLATES } from "../shared/longform";
 import {
   CAPTURE_DONE,
   CAPTURE_ERROR,
+  LONG_CHUNK,
+  LONG_ERROR,
   SETTINGS_GET,
   SETTINGS_SET,
   SHORTCUT_RECORD,
@@ -25,6 +30,7 @@ import {
   OLLAMA_MODELS,
   MODEL_STATE,
   type CaptureDonePayload,
+  type LongChunkPayload,
   type ModelStatePayload,
 } from "../shared/ipcContracts";
 
@@ -68,9 +74,18 @@ if (!app.requestSingleInstanceLock()) {
     api = new LocalApi({
       version: app.getVersion(),
       isListening: () => listening,
-      isRecording: () => false, // long-form capture arrives with phase 4
+      isRecording: () => longRec.isBusy,
       isEngineWarm: () => sidecar !== null,
       transcribe: (wav, cleanup) => processUtterance(wav, cleanup),
+      longState: () => longRec.state(),
+      longStart: (opts) => {
+        const template = SUMMARY_TEMPLATES.some((t) => t.id === opts.template)
+          ? (opts.template as TemplateId)
+          : undefined;
+        return longRec.start({ dir: opts.dir, title: opts.title, template });
+      },
+      longStop: () => longRec.stop(),
+      longMark: () => longRec.mark(),
     });
     api.start().catch((err) => console.error("[api] failed to start:", err));
   });
@@ -140,8 +155,26 @@ const overlay = new OverlayWindow();
 // the ASR sidecar, then every reference is dropped.
 let listening = false; // dictation capture in flight (drives /update-readiness)
 
+// Long-form recorder (plan §6): remote-controlled through the local API by
+// AGR Pilot's PWA page. It shares the mic (via the overlay) and the warm ASR
+// with dictation; while it records, push-to-talk is politely refused.
+const longRec = new LongRecorder({
+  getSidecar: () => sidecar,
+  cleanupModel: () => settings.cleanupModel,
+  startCapture: () =>
+    overlay.startLong({ sounds: settings.sounds, micDeviceId: settings.micDeviceId }),
+  stopCapture: () => overlay.stopLong(),
+  log: (m) => (DEV ? console.log(m) : undefined),
+});
+
 const hotkey = new HotkeyAdapter(settings.combo, {
   onStart() {
+    if (longRec.isBusy) {
+      // The mic belongs to the long recording; a dictation mid-meeting would
+      // steal the stream and punch a hole in the transcript.
+      tray?.setToolTip("AGR Flow - long recording in progress (dictation paused)");
+      return;
+    }
     listening = true;
     tray?.setToolTip("AGR Flow - listening...");
     overlay.startCapture({ sounds: settings.sounds, micDeviceId: settings.micDeviceId });
@@ -213,6 +246,15 @@ function wireCapture() {
   });
   ipcMain.on(CAPTURE_ERROR, (_ev, message: string) => {
     console.error("[capture] failed:", message);
+    tray?.setToolTip("AGR Flow - microphone unavailable");
+  });
+  // Long-form stream (plan §6): slices arrive every few seconds; the recorder
+  // owns segmentation, transcription and the incremental transcript writes.
+  ipcMain.on(LONG_CHUNK, (_ev, payload: LongChunkPayload) => {
+    longRec.onChunk(new Int16Array(payload.pcm));
+  });
+  ipcMain.on(LONG_ERROR, (_ev, message: string) => {
+    longRec.abort(message);
     tray?.setToolTip("AGR Flow - microphone unavailable");
   });
 }

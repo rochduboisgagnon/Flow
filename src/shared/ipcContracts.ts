@@ -22,6 +22,18 @@ export interface CaptureDonePayload {
   durationMs: number;
 }
 
+// ---- long-form mode (plan §6): continuous capture, streamed to main ----
+// main -> overlay
+export const LONG_START = "long:start"; // payload: CaptureStartPayload (mic + sounds reused)
+export const LONG_STOP = "long:stop";
+// overlay -> main: one PCM slice every few seconds (bounded renderer memory)
+export const LONG_CHUNK = "long:chunk";
+export const LONG_ERROR = "long:error";
+
+export interface LongChunkPayload {
+  pcm: ArrayBuffer; // raw Int16 mono 16 kHz samples (not WAV-framed)
+}
+
 // settings window <-> main (invoke/handle)
 export const SETTINGS_GET = "settings:get";
 export const SETTINGS_SET = "settings:set";

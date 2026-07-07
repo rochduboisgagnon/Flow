@@ -5,6 +5,10 @@ import {
   CAPTURE_CANCEL,
   CAPTURE_DONE,
   CAPTURE_ERROR,
+  LONG_START,
+  LONG_STOP,
+  LONG_CHUNK,
+  LONG_ERROR,
   SETTINGS_GET,
   SETTINGS_SET,
   SHORTCUT_RECORD,
@@ -41,6 +45,17 @@ const api = {
   },
   sendCaptureError(message: string) {
     ipcRenderer.send(CAPTURE_ERROR, message);
+  },
+  // Long-form mode (plan §6).
+  onLongCommand(cb: (cmd: "start" | "stop", cfg?: CaptureStartPayload) => void) {
+    ipcRenderer.on(LONG_START, (_e, cfg: CaptureStartPayload) => cb("start", cfg));
+    ipcRenderer.on(LONG_STOP, () => cb("stop"));
+  },
+  sendLongChunk(pcm: ArrayBuffer) {
+    ipcRenderer.send(LONG_CHUNK, { pcm });
+  },
+  sendLongError(message: string) {
+    ipcRenderer.send(LONG_ERROR, message);
   },
   // Settings window side.
   getSettings(): Promise<SettingsBundle> {

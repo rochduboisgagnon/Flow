@@ -26,12 +26,39 @@ export interface ApiDeps {
   /** Runs the production pipeline: VAD gate -> ASR -> hallucination gate ->
    * optional cleanup. Empty text = gated silence. */
   transcribe(wav: Uint8Array, cleanup: boolean): Promise<{ text: string; ms: number }>;
+  // Long-form mode (plan §6/§7.2b), driven remotely by AGR Pilot's PWA page.
+  longState(): unknown;
+  longStart(opts: { dir: string; title?: string; template?: string }): unknown;
+  longStop(): unknown;
+  longMark(): unknown;
   /** Tests only: redirect the discovery file away from the real ~/.agr-flow. */
   infoPathOverride?: string;
 }
 
 export function apiInfoPath(): string {
   return path.join(dataDir(), "api.json");
+}
+
+/** Small JSON body reader (loopback control endpoints only). */
+function readJson(req: http.IncomingMessage): Promise<Record<string, unknown> | null> {
+  return new Promise((resolve, reject) => {
+    let data = "";
+    req.on("data", (c) => {
+      data += c;
+      if (data.length > 64 * 1024) {
+        reject(new Error("body too large"));
+        req.destroy();
+      }
+    });
+    req.on("end", () => {
+      try {
+        resolve(data ? (JSON.parse(data) as Record<string, unknown>) : null);
+      } catch {
+        resolve(null);
+      }
+    });
+    req.on("error", reject);
+  });
 }
 
 export class LocalApi {
@@ -95,6 +122,26 @@ export class LocalApi {
         // dictation or a long recording is in flight.
         const ready = !this.deps.isListening() && !this.deps.isRecording();
         return json(200, { ready });
+      }
+      // ---- long-form mode: state / start / stop / mark ----
+      if (req.method === "GET" && url.pathname === "/long/state") {
+        return json(200, this.deps.longState());
+      }
+      if (req.method === "POST" && url.pathname === "/long/start") {
+        const body = await readJson(req);
+        const dir = typeof body?.dir === "string" ? body.dir : "";
+        if (!dir) return json(400, { ok: false, error: "missing dir" });
+        return json(200, this.deps.longStart({
+          dir,
+          title: typeof body?.title === "string" ? body.title : undefined,
+          template: typeof body?.template === "string" ? body.template : undefined,
+        }));
+      }
+      if (req.method === "POST" && url.pathname === "/long/stop") {
+        return json(200, this.deps.longStop());
+      }
+      if (req.method === "POST" && url.pathname === "/long/mark") {
+        return json(200, this.deps.longMark());
       }
       if (req.method === "POST" && url.pathname === "/transcribe") {
         const chunks: Buffer[] = [];
