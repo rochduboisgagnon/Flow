@@ -20,9 +20,18 @@ const runtime = path.join(__dirname, "..", "node_modules", "keyspy", "runtime");
 const exe = path.join(runtime, "WinKeyServer.exe");
 const archive = path.join(runtime, "keyspy-win32-x64.tar.gz");
 
+// CI (lint + tests) never ships binaries and keyspy's own postinstall cannot
+// download its archive on the GitHub runners (observed on every run): warn
+// there instead of failing the install. The guarantee that a SHIPPED build
+// carries WinKeyServer.exe is enforced where it matters: this hard failure on
+// dev/release machines, plus the release gate that inspects the zip.
+const onCi = !!process.env.CI;
+
 if (fs.existsSync(exe)) process.exit(0);
 if (!fs.existsSync(archive)) {
-  console.error("[ensure-keyspy] FATAL: keyspy's archive is missing (its postinstall failed entirely); no push-to-talk possible.");
+  const msg = "[ensure-keyspy] keyspy's archive is missing (its postinstall failed entirely); no push-to-talk possible.";
+  if (onCi) { console.warn(msg + " (CI: continuing, nothing ships from here)"); process.exit(0); }
+  console.error("FATAL: " + msg);
   process.exit(1);
 }
 try {
