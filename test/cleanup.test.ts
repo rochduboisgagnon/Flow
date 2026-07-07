@@ -7,7 +7,8 @@ test("prompt carries the dictation and the voice-command rules", () => {
   assert.ok(p.includes("bonjour nouvelle ligne merci"));
   assert.ok(p.includes("nouvelle ligne"));
   assert.ok(p.includes("scratch that"));
-  assert.ok(p.includes("NEVER add content"));
+  assert.ok(p.includes("never add content"));
+  assert.ok(p.includes("NEVER drop a phrase"));
 });
 
 test("clean answers pass through trimmed", () => {
