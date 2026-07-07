@@ -16,8 +16,6 @@ import { listOllamaModels, cleanTranscript, warmCleanupModel } from "./llm/ollam
 import { CLEANUP_MIN_CHARS } from "../shared/cleanup";
 import { LocalApi } from "./api";
 import { LongRecorder } from "./longform";
-import type { TemplateId } from "../shared/longform";
-import { SUMMARY_TEMPLATES } from "../shared/longform";
 import {
   CAPTURE_DONE,
   CAPTURE_ERROR,
@@ -68,12 +66,7 @@ if (!app.requestSingleInstanceLock()) {
       isEngineWarm: () => sidecar !== null,
       transcribe: (wav, cleanup) => processUtterance(wav, cleanup),
       longState: () => longRec.state(),
-      longStart: (opts) => {
-        const template = SUMMARY_TEMPLATES.some((t) => t.id === opts.template)
-          ? (opts.template as TemplateId)
-          : undefined;
-        return longRec.start({ dir: opts.dir, title: opts.title, template });
-      },
+      longStart: (opts) => longRec.start({ dir: opts.dir, title: opts.title, keepAudio: !!opts.keepAudio }),
       longStop: () => longRec.stop(),
       longMark: () => longRec.mark(),
       longChunk: (pcm) => {
@@ -81,6 +74,7 @@ if (!app.requestSingleInstanceLock()) {
         return { ok: true };
       },
       longGap: (seconds) => longRec.gap(seconds),
+      longTranscript: (since) => longRec.transcriptSince(since),
       // Settings surface for the Manager's AGR Flow view (chantier A).
       getSettings: () => ({
         settings: { ...settings, combo: [...settings.combo] },
@@ -183,6 +177,7 @@ let listening = false; // dictation capture in flight (drives /update-readiness)
 const longRec = new LongRecorder({
   getSidecar: () => sidecar,
   cleanupModel: () => settings.cleanupModel,
+  ollamaModels: () => listOllamaModels(),
   log: (m) => (DEV ? console.log(m) : undefined),
 });
 

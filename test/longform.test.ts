@@ -98,8 +98,7 @@ test("pushRecent caps at RECENT_MAX, newest first", () => {
       title: "t" + i,
       startedIso: "",
       dir: "",
-      transcriptPath: "",
-      notesPath: "",
+      docPath: "",
       audioPath: "",
       durationMs: 0,
     });
@@ -117,7 +116,7 @@ test("summaryPrompt carries the transcript, template shape and marks", () => {
   assert.ok(c.includes("Engagements"));
 });
 
-test("LongRecorder end to end with a mock engine (raw template)", async () => {
+test("LongRecorder end to end with a mock engine (one document, audio kept)", async () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-long-"));
   const recent = path.join(work, "recent.json");
   const seen: number[] = [];
@@ -133,7 +132,7 @@ test("LongRecorder end to end with a mock engine (raw template)", async () => {
     recentPathOverride: recent,
   });
 
-  const started = rec.start({ dir: work, title: "Test Meeting", template: "raw" });
+  const started = rec.start({ dir: work, title: "Test Meeting", keepAudio: true });
   assert.equal(started.ok, true, started.error);
   assert.ok(started.audioPath && started.audioPath.endsWith(".wav"), "start must hand out the audio path");
   assert.equal(rec.isBusy, true);
@@ -148,7 +147,7 @@ test("LongRecorder end to end with a mock engine (raw template)", async () => {
   rec.onChunk(speechy(4000));
   const stopped = rec.stop();
   assert.equal(stopped.ok, true);
-  assert.equal(stopped.notesPath, "", "raw template writes no notes");
+  assert.ok(stopped.docPath.endsWith(".md"), "stop returns the one document path");
 
   // finalizing drains in the background; poll it out.
   for (let i = 0; i < 100 && rec.isBusy; i++) await new Promise((r) => setTimeout(r, 50));
@@ -157,8 +156,8 @@ test("LongRecorder end to end with a mock engine (raw template)", async () => {
   const st = rec.state();
   assert.ok(st.segments >= 2, `segments=${st.segments}`);
   assert.equal(st.pending, 0);
-  const transcript = fs.readFileSync(stopped.transcriptPath, "utf8");
-  assert.ok(transcript.includes("# Test Meeting - transcript"));
+  const transcript = fs.readFileSync(stopped.docPath, "utf8");
+  assert.ok(transcript.includes("# Test Meeting"));
   assert.ok(transcript.includes("[00:00:00] Bonjour tout le monde."));
   assert.ok(transcript.includes("Moment marked at"));
   assert.ok(transcript.includes("Recording paused ~7s"), "the gap must be marked honestly");
@@ -167,7 +166,6 @@ test("LongRecorder end to end with a mock engine (raw template)", async () => {
   const recentList = JSON.parse(fs.readFileSync(recent, "utf8"));
   assert.equal(recentList.length, 1);
   assert.equal(recentList[0].title, "Test Meeting");
-  assert.equal(recentList[0].notesPath, "");
   assert.ok(String(recentList[0].audioPath).endsWith(".wav"), "recent entries carry the audio path");
   fs.rmSync(work, { recursive: true, force: true });
 });
@@ -178,11 +176,11 @@ test("LongRecorder refuses a missing folder and double starts", () => {
     cleanupModel: () => "",
     recentPathOverride: path.join(os.tmpdir(), "agrflow-long-none.json"),
   });
-  const bad = rec.start({ dir: path.join(os.tmpdir(), "does-not-exist-agrflow"), template: "raw" });
+  const bad = rec.start({ dir: path.join(os.tmpdir(), "does-not-exist-agrflow") });
   assert.equal(bad.ok, false);
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-long2-"));
-  assert.equal(rec.start({ dir: work, template: "raw" }).ok, true);
-  assert.equal(rec.start({ dir: work, template: "raw" }).ok, false, "second start must refuse");
+  assert.equal(rec.start({ dir: work }).ok, true);
+  assert.equal(rec.start({ dir: work }).ok, false, "second start must refuse");
   rec.stop();
   fs.rmSync(work, { recursive: true, force: true });
 });

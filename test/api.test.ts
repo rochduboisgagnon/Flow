@@ -82,8 +82,8 @@ function longDepsStub() {
       calls.push("state");
       return { active: false };
     },
-    longStart: (o: { dir: string; title?: string; template?: string }) => {
-      calls.push("start:" + o.dir + ":" + (o.template ?? ""));
+    longStart: (o: { dir: string; title?: string; keepAudio?: boolean }) => {
+      calls.push("start:" + o.dir + ":" + (o.keepAudio ? "audio" : "noaudio"));
       return { ok: true };
     },
     longStop: () => {
@@ -101,6 +101,10 @@ function longDepsStub() {
     longGap: (seconds: number) => {
       calls.push("gap:" + seconds);
       return { ok: true };
+    },
+    longTranscript: (since: number) => {
+      calls.push("transcript:" + since);
+      return { text: "hello", nextSince: 5 };
     },
   };
 }
@@ -179,7 +183,7 @@ test("long-form routes reach their deps with parsed arguments", async () => {
   try {
     const port = (JSON.parse(fs.readFileSync(info, "utf8")) as { port: number }).port;
     assert.equal((await get(port, "/long/state")).code, 200);
-    const startBody = Buffer.from(JSON.stringify({ dir: "C:\\tmp", template: "client" }));
+    const startBody = Buffer.from(JSON.stringify({ dir: "C:\\tmp", keepAudio: true }));
     assert.equal((await post(port, "/long/start", startBody)).code, 200);
     assert.equal((await post(port, "/long/start", Buffer.from("{}"))).code, 400, "missing dir -> 400");
     assert.equal((await post(port, "/long/mark", new Uint8Array(0))).code, 200);
@@ -188,7 +192,7 @@ test("long-form routes reach their deps with parsed arguments", async () => {
     assert.equal((await post(port, "/long/chunk", pcm)).code, 200);
     assert.equal((await post(port, "/long/gap", Buffer.from(JSON.stringify({ seconds: 4.2 })))).code, 200);
     assert.equal((await post(port, "/long/stop", new Uint8Array(0))).code, 200);
-    assert.deepEqual(stub.calls, ["state", "start:C:\\tmp:client", "mark", "chunk:100", "gap:4.2", "stop"]);
+    assert.deepEqual(stub.calls, ["state", "start:C:\\tmp:audio", "mark", "chunk:100", "gap:4.2", "stop"]);
     // A long recording flips the quiet window (plan 8).
     assert.equal((await get(port, "/update-readiness")).body.ready, false);
   } finally {

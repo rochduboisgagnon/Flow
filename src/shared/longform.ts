@@ -75,8 +75,10 @@ export function hms(ms: number): string {
   return p(h) + ":" + p(m) + ":" + p(sec);
 }
 
+// v3 chantier 4: the recording produces ONE document (summary + transcript).
+// This header opens it; the summary is spliced in at finalize.
 export function transcriptHeader(title: string, startedIso: string): string {
-  return `# ${title} - transcript\n\n- started: ${startedIso}\n- engine: AGR Flow (100% local)\n\n`;
+  return `# ${title}\n\n- recorded: ${startedIso}\n- engine: AGR Flow (100% local)\n\n`;
 }
 
 export function transcriptLine(offsetMs: number, text: string): string {
@@ -164,9 +166,8 @@ export interface RecentEntry {
   title: string;
   startedIso: string;
   dir: string;
-  transcriptPath: string;
-  notesPath: string; // "" when the raw template skipped the summary
-  audioPath: string; // "" for pre-v2 recordings (no audio kept)
+  docPath: string; // the ONE document (summary + transcript), v3 chantier 4
+  audioPath: string; // "" unless the user chose to keep the full audio
   durationMs: number;
 }
 

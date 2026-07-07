@@ -30,11 +30,12 @@ export interface ApiDeps {
   // The AUDIO comes from the recording DEVICE (phone or PC browser) through
   // /long/chunk (plan v2 chantier C) - AGR Flow never opens a mic for it.
   longState(): unknown;
-  longStart(opts: { dir: string; title?: string; template?: string }): unknown;
+  longStart(opts: { dir: string; title?: string; keepAudio?: boolean }): unknown;
   longStop(): unknown;
   longMark(): unknown;
   longChunk(pcm: Int16Array): unknown;
   longGap(seconds: number): unknown;
+  longTranscript(since: number): unknown;
   // Settings surface (plan v2 chantier A): AGR Flow is headless; AGR Manager's
   // AGR Flow view is the ONLY user-facing settings UI and drives it through
   // these endpoints.
@@ -171,8 +172,12 @@ export class LocalApi {
         return json(200, this.deps.longStart({
           dir,
           title: typeof body?.title === "string" ? body.title : undefined,
-          template: typeof body?.template === "string" ? body.template : undefined,
+          keepAudio: body?.keepAudio === true,
         }));
+      }
+      if (req.method === "GET" && url.pathname === "/long/transcript") {
+        const since = Number(url.searchParams.get("since") || "0") || 0;
+        return json(200, this.deps.longTranscript(since));
       }
       if (req.method === "POST" && url.pathname === "/long/stop") {
         return json(200, this.deps.longStop());

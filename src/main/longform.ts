@@ -5,7 +5,7 @@ import { dataDir } from "./settings";
 import { encodeWav } from "../shared/wav";
 import { analyzeSpeech } from "../shared/vad";
 import { gateTranscript } from "../shared/textGate";
-import { summarize, listOllamaModels } from "./llm/ollama";
+import { summarize } from "./llm/ollama";
 import {
   SAMPLE_RATE,
   SEGMENT_TARGET_MS,
@@ -20,7 +20,6 @@ import {
   summaryPrompt,
   chunkTranscript,
   pushRecent,
-  type TemplateId,
   type RecentEntry,
 } from "../shared/longform";
 
@@ -39,7 +38,7 @@ import {
 export interface LongStartOpts {
   dir: string;
   title?: string;
-  template?: TemplateId;
+  keepAudio?: boolean; // v3 chantier 4: keep the listenable .wav (default off)
 }
 
 export interface LongStateSnapshot {
@@ -52,8 +51,7 @@ export interface LongStateSnapshot {
   marks: number;
   title: string;
   dir: string;
-  transcriptPath: string;
-  notesPath: string;
+  docPath: string;
   audioPath: string;
   lastError: string;
   recent: RecentEntry[];
@@ -62,6 +60,9 @@ export interface LongStateSnapshot {
 export interface LongDeps {
   getSidecar(): WhisperSidecar | null;
   cleanupModel(): string; // settings.cleanupModel ("" = none configured)
+  /** Installed Ollama models, used to auto-pick a summary model when the user
+   * did not configure one. Injectable so tests don't hit a real Ollama. */
+  ollamaModels?: () => Promise<string[] | null>;
   log?: (msg: string) => void;
   /** Tests only: keep the recent-list file away from the real ~/.agr-flow. */
   recentPathOverride?: string;
@@ -101,10 +102,10 @@ export class LongRecorder {
   private startedIso = "";
   private title = "";
   private dir = "";
-  private template: TemplateId = "meeting";
-  private transcriptPath = "";
-  private notesPath = "";
+  private transcriptPath = ""; // the ONE document (summary spliced in at finalize)
   private audioPath = "";
+  private keepAudio = false;
+  private headerStr = "";
   private marks: number[] = [];
   private lastError = "";
   // Current (open) segment + its start offset in samples since recording start.
@@ -123,7 +124,7 @@ export class LongRecorder {
     return this.active || this.finalizing;
   }
 
-  start(opts: LongStartOpts): { ok: boolean; error?: string; transcriptPath?: string; audioPath?: string } {
+  start(opts: LongStartOpts): { ok: boolean; error?: string; docPath?: string; audioPath?: string } {
     if (this.active || this.finalizing) return { ok: false, error: "a recording is already in progress" };
     let stat: fs.Stats;
     try {
@@ -134,15 +135,14 @@ export class LongRecorder {
     if (!stat.isDirectory()) return { ok: false, error: "destination is not a folder" };
     const now = new Date();
     this.title = (opts.title || "").trim() || "Recording";
-    this.template = opts.template ?? "meeting";
+    this.keepAudio = !!opts.keepAudio;
     this.dir = opts.dir;
     const base = recordingBaseName(this.title, now);
-    this.transcriptPath = path.join(opts.dir, base + "-transcript.md");
-    this.notesPath = path.join(opts.dir, base + "-notes.md");
-    // The AUDIO file (plan v2: the recording must be listenable afterwards) is
-    // WRITTEN BY THE PILOT SERVER as the chunks stream in; we only own the
-    // path so it lands next to the transcript and reaches the recent list.
-    this.audioPath = path.join(opts.dir, base + ".wav");
+    this.transcriptPath = path.join(opts.dir, base + ".md");
+    // The .wav is written by the Pilot server as chunks stream in, ONLY when the
+    // user chose to keep the audio (v3 chantier 4). We own the path; an empty
+    // path tells the server not to open a file.
+    this.audioPath = this.keepAudio ? path.join(opts.dir, base + ".wav") : "";
     this.startedAt = Date.now();
     this.startedIso = now.toISOString();
     this.marks = [];
@@ -152,14 +152,15 @@ export class LongRecorder {
     this.queue = [];
     this.segments = 0;
     this.lastError = "";
+    this.headerStr = transcriptHeader(this.title, this.startedIso);
     try {
-      fs.writeFileSync(this.transcriptPath, transcriptHeader(this.title, this.startedIso));
+      fs.writeFileSync(this.transcriptPath, this.headerStr);
     } catch (err) {
       return { ok: false, error: "cannot write in the folder: " + String(err) };
     }
     this.active = true;
     this.deps.log?.(`[long] recording started -> ${this.transcriptPath}`);
-    return { ok: true, transcriptPath: this.transcriptPath, audioPath: this.audioPath };
+    return { ok: true, docPath: this.transcriptPath, audioPath: this.audioPath };
   }
 
   /** One streamed PCM slice (~5 s, Int16 16 kHz) from the recording device. */
@@ -205,16 +206,27 @@ export class LongRecorder {
 
   /** Stops the capture; transcription of the backlog + the summary continue in
    * the background (state shows finalizing until done). */
-  stop(): { ok: boolean; transcriptPath: string; notesPath: string } {
-    if (!this.active) return { ok: false, transcriptPath: "", notesPath: "" };
+  stop(): { ok: boolean; docPath: string } {
+    if (!this.active) return { ok: false, docPath: "" };
     this.active = false;
     this.finalizing = true;
     const joined = this.joinCurrent();
     if (joined.length > 0) this.closeSegment(joined, joined.length);
     const t = this.transcriptPath;
-    const n = this.template === "raw" ? "" : this.notesPath;
     void this.finalize();
-    return { ok: true, transcriptPath: t, notesPath: n };
+    return { ok: true, docPath: t };
+  }
+
+  /** Live transcript tail for the PWA page (v3 chantier 5): the document
+   * content from byte `since` onward, plus the new byte offset to poll from. */
+  transcriptSince(since: number): { text: string; nextSince: number } {
+    try {
+      const buf = fs.readFileSync(this.transcriptPath);
+      const from = Math.max(0, Math.min(since | 0, buf.length));
+      return { text: buf.toString("utf8", from), nextSince: buf.length };
+    } catch {
+      return { text: "", nextSince: since | 0 };
+    }
   }
 
   state(): LongStateSnapshot {
@@ -228,8 +240,7 @@ export class LongRecorder {
       marks: this.marks.length,
       title: this.title,
       dir: this.dir,
-      transcriptPath: this.transcriptPath,
-      notesPath: this.template === "raw" ? "" : this.notesPath,
+      docPath: this.transcriptPath,
       audioPath: this.audioPath,
       lastError: this.lastError,
       recent: loadRecent(this.deps.recentPathOverride),
@@ -313,53 +324,51 @@ export class LongRecorder {
         await this.pump();
         await new Promise((r) => setTimeout(r, 200));
       }
-      let notes = "";
-      if (this.template !== "raw") {
-        const model = this.deps.cleanupModel() || (await listOllamaModels())?.[0] || "";
-        if (model) {
-          const transcript = fs.readFileSync(this.transcriptPath, "utf8");
-          const parts = chunkTranscript(transcript);
-          if (parts.length === 1) {
-            notes = (await summarize(model, summaryPrompt(this.template, parts[0], this.marks))) ?? "";
-          } else {
-            // Map-reduce: summarize each chunk, then the joined summaries.
-            const partials: string[] = [];
-            for (const p of parts) {
-              const s = await summarize(model, summaryPrompt(this.template, p, []));
-              if (s) partials.push(s);
-            }
-            notes =
-              (await summarize(
-                model,
-                summaryPrompt(this.template, partials.join("\n\n---\n\n"), this.marks),
-              )) ?? partials.join("\n\n---\n\n");
+      // v3 chantier 4: always attempt a summary and splice it into the SAME
+      // document at the top (no template chooser anymore). If no local LLM is
+      // available, the document is the transcript alone.
+      let summary = "";
+      const model = this.deps.cleanupModel() || (this.deps.ollamaModels ? (await this.deps.ollamaModels())?.[0] : undefined) || "";
+      if (model) {
+        const doc = fs.readFileSync(this.transcriptPath, "utf8");
+        const body = doc.startsWith(this.headerStr) ? doc.slice(this.headerStr.length) : doc;
+        const parts = chunkTranscript(body);
+        if (parts.length === 1) {
+          summary = (await summarize(model, summaryPrompt("meeting", parts[0], this.marks))) ?? "";
+        } else {
+          // Map-reduce: summarize each chunk, then the joined summaries.
+          const partials: string[] = [];
+          for (const p of parts) {
+            const x = await summarize(model, summaryPrompt("meeting", p, []));
+            if (x) partials.push(x);
           }
+          summary =
+            (await summarize(model, summaryPrompt("meeting", partials.join("\n\n---\n\n"), this.marks))) ??
+            partials.join("\n\n---\n\n");
         }
-        if (notes) {
+        if (summary) {
           fs.writeFileSync(
-            this.notesPath,
-            `# ${this.title} - notes\n\n- recorded: ${this.startedIso}\n- engine: AGR Flow (100% local)\n\n${notes}\n`,
+            this.transcriptPath,
+            this.headerStr + "## Summary\n\n" + summary.trim() + "\n\n## Transcript\n\n" + body.replace(/^\s+/, ""),
           );
         } else {
-          this.notesPath = ""; // no local LLM available: the transcript stands alone
-          this.deps.log?.("[long] no Ollama model available: transcript only, no summary");
+          this.deps.log?.("[long] summary empty: transcript stands alone");
         }
       } else {
-        this.notesPath = "";
+        this.deps.log?.("[long] no Ollama model available: transcript only, no summary");
       }
       saveRecent(
         pushRecent(loadRecent(this.deps.recentPathOverride), {
           title: this.title,
           startedIso: this.startedIso,
           dir: this.dir,
-          transcriptPath: this.transcriptPath,
-          notesPath: this.notesPath,
+          docPath: this.transcriptPath,
           audioPath: this.audioPath,
           durationMs: Math.round((this.consumed / SAMPLE_RATE) * 1000),
         }),
         this.deps.recentPathOverride,
       );
-      this.deps.log?.(`[long] done: ${this.transcriptPath}${this.notesPath ? " + notes" : ""}`);
+      this.deps.log?.(`[long] done: ${this.transcriptPath}${summary ? " (with summary)" : ""}`);
     } catch (err) {
       this.lastError = String(err);
       this.deps.log?.(`[long] finalize failed: ${err}`);

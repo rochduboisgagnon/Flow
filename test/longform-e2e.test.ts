@@ -59,7 +59,7 @@ test(
       recentPathOverride: path.join(work, "recent.json"),
     });
     try {
-      const started = rec.start({ dir: work, title: "Sprint Review", template: "raw" });
+      const started = rec.start({ dir: work, title: "Sprint Review" });
       assert.equal(started.ok, true, started.error);
       const a = tts("The first topic today is the quarterly budget review.");
       const b = tts("The second topic is the hiring plan for the new team.");
@@ -77,7 +77,7 @@ test(
       assert.equal(stopped.ok, true);
       for (let i = 0; i < 600 && rec.isBusy; i++) await new Promise((r) => setTimeout(r, 100));
       assert.equal(rec.isBusy, false, "finalize must complete");
-      const transcript = fs.readFileSync(stopped.transcriptPath, "utf8").toLowerCase();
+      const transcript = fs.readFileSync(stopped.docPath, "utf8").toLowerCase();
       assert.ok(transcript.includes("budget"), transcript);
       assert.ok(transcript.includes("hiring"), transcript);
       assert.ok(
