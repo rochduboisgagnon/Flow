@@ -5,6 +5,7 @@ import {
   CAPTURE_CANCEL,
   CAPTURE_DONE,
   CAPTURE_ERROR,
+  type CaptureStartPayload,
 } from "../shared/ipcContracts";
 
 export type CaptureCommand = "start" | "stop" | "cancel";
@@ -16,8 +17,8 @@ const api = {
     electron: process.versions.electron,
     node: process.versions.node,
   },
-  onCaptureCommand(cb: (cmd: CaptureCommand) => void) {
-    ipcRenderer.on(CAPTURE_START, () => cb("start"));
+  onCaptureCommand(cb: (cmd: CaptureCommand, cfg?: CaptureStartPayload) => void) {
+    ipcRenderer.on(CAPTURE_START, (_e, cfg: CaptureStartPayload) => cb("start", cfg));
     ipcRenderer.on(CAPTURE_STOP, () => cb("stop"));
     ipcRenderer.on(CAPTURE_CANCEL, () => cb("cancel"));
   },

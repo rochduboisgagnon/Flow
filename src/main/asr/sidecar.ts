@@ -29,13 +29,23 @@ export interface SidecarOptions {
   modelPath: string;
   language?: string; // "auto" lets the model detect French/English per utterance
   log?: (msg: string) => void;
+  /** Engine state for the tray: "warm" = ready, "down" = (re)starting, "error" = gave up. */
+  onState?: (state: "warm" | "down" | "error") => void;
 }
+
+// Watchdog guard: a crash-looping server (bad model, OOM) must not respawn
+// forever. Past this many auto-respawns in the window, we stop trying eagerly
+// (a later transcribe() still attempts a lazy start).
+const RESPAWN_MAX = 3;
+const RESPAWN_WINDOW_MS = 5 * 60_000;
+const RESPAWN_DELAY_MS = 1_000;
 
 export class WhisperSidecar {
   private proc: ChildProcess | null = null;
   private port = 0;
   private starting: Promise<void> | null = null;
   private stopped = false;
+  private respawns: number[] = []; // timestamps of recent auto-respawns
   private opts: SidecarOptions;
 
   constructor(opts: SidecarOptions) {
@@ -76,13 +86,33 @@ export class WhisperSidecar {
     proc.on("exit", (code) => {
       this.proc = null;
       this.port = 0;
-      // A crash of the warm server must not kill dictation for the session:
-      // the next transcribe() re-runs ensureStarted() and respawns it.
-      if (!this.stopped) this.opts.log?.(`[whisper-server] exited (${code}); will respawn on next use`);
+      if (this.stopped) return;
+      // Watchdog (plan 5.9): a crash of the warm server must not kill
+      // dictation for the session. Respawn eagerly (so the NEXT utterance is
+      // fast again), with a crash-loop guard; past the guard, transcribe()
+      // still lazy-starts.
+      this.opts.log?.(`[whisper-server] exited (${code})`);
+      const now = Date.now();
+      this.respawns = this.respawns.filter((t) => now - t < RESPAWN_WINDOW_MS);
+      if (this.respawns.length >= RESPAWN_MAX) {
+        this.opts.log?.("[whisper-server] crash-looping; eager respawn paused");
+        this.opts.onState?.("error");
+        return;
+      }
+      this.respawns.push(now);
+      this.opts.onState?.("down");
+      setTimeout(() => {
+        if (!this.stopped && !this.proc) {
+          this.ensureStarted().catch((e) =>
+            this.opts.log?.(`[whisper-server] respawn failed: ${e}`),
+          );
+        }
+      }, RESPAWN_DELAY_MS);
     });
     this.proc = proc;
     await this.waitReady();
     this.opts.log?.(`[whisper-server] warm on 127.0.0.1:${this.port}`);
+    this.opts.onState?.("warm");
   }
 
   private async waitReady(): Promise<void> {
@@ -110,8 +140,23 @@ export class WhisperSidecar {
     throw new Error("whisper-server did not become ready in 30 s (model load)");
   }
 
-  /** One utterance in, clean text out. The WAV is never written anywhere. */
+  /** One utterance in, clean text out. The WAV is never written anywhere.
+   * If the warm server died mid-flight, ONE respawn+retry; a second failure
+   * surfaces (and the loop inserts nothing - never text from a broken run). */
   async transcribe(wav: Uint8Array): Promise<{ text: string; ms: number }> {
+    try {
+      return await this.inferOnce(wav);
+    } catch (err) {
+      if (this.stopped) throw err;
+      this.opts.log?.(`[whisper-server] inference failed (${err}); one retry`);
+      this.proc?.kill();
+      this.proc = null;
+      this.port = 0;
+      return await this.inferOnce(wav);
+    }
+  }
+
+  private async inferOnce(wav: Uint8Array): Promise<{ text: string; ms: number }> {
     await this.ensureStarted();
     const started = Date.now();
     const boundary = "agrflow-" + crypto.randomBytes(12).toString("hex");

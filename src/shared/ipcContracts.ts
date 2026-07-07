@@ -10,6 +10,12 @@ export const CAPTURE_CANCEL = "capture:cancel"; // discard everything
 export const CAPTURE_DONE = "capture:done";
 export const CAPTURE_ERROR = "capture:error";
 
+export interface CaptureStartPayload {
+  // Per-capture config so the overlay never holds stale settings.
+  sounds: boolean; // audible start/stop cues
+  micDeviceId: string; // "" = system default microphone
+}
+
 export interface CaptureDonePayload {
   // 16 kHz mono 16-bit WAV, alive only for this one utterance (never stored).
   wav: ArrayBuffer;

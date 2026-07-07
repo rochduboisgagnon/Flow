@@ -87,6 +87,12 @@ async function warmAsr() {
       modelPath: model,
       language: settings.language,
       log: DEV ? (m) => console.log(m) : undefined,
+      onState: (state) => {
+        // Tray = the plan's status indicator (ready / listening / error).
+        if (state === "warm") tray?.setToolTip("AGR Flow");
+        else if (state === "down") tray?.setToolTip("AGR Flow - speech engine restarting...");
+        else tray?.setToolTip("AGR Flow - speech engine failed (see Settings)");
+      },
     });
     await sidecar.ensureStarted();
     tray?.setToolTip("AGR Flow");
@@ -104,7 +110,7 @@ const overlay = new OverlayWindow();
 const hotkey = new HotkeyAdapter(settings.combo, {
   onStart() {
     tray?.setToolTip("AGR Flow - listening...");
-    overlay.startCapture();
+    overlay.startCapture({ sounds: settings.sounds, micDeviceId: settings.micDeviceId });
   },
   onStop() {
     tray?.setToolTip("AGR Flow");

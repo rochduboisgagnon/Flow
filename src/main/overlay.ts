@@ -4,6 +4,7 @@ import {
   CAPTURE_START,
   CAPTURE_STOP,
   CAPTURE_CANCEL,
+  type CaptureStartPayload,
 } from "../shared/ipcContracts";
 
 // The overlay window: a small transparent strip near the bottom of the screen,
@@ -17,7 +18,7 @@ export class OverlayWindow {
   // dictation. Defer the last START until did-finish-load; a stop/cancel that
   // arrives meanwhile clears it (nothing was captured, nothing to deliver).
   private ready = false;
-  private pendingStart = false;
+  private pendingStart: CaptureStartPayload | null = null;
 
   create(dev: boolean) {
     const { width, height } = screen.getPrimaryDisplay().workAreaSize;
@@ -47,33 +48,34 @@ export class OverlayWindow {
     this.win.webContents.on("did-finish-load", () => {
       this.ready = true;
       if (this.pendingStart) {
-        this.pendingStart = false;
-        this.startCapture();
+        const cfg = this.pendingStart;
+        this.pendingStart = null;
+        this.startCapture(cfg);
       }
     });
     if (dev) this.win.loadURL("http://localhost:5183/overlay.html");
     else this.win.loadFile(path.join(__dirname, "..", "renderer", "overlay.html"));
   }
 
-  startCapture() {
+  startCapture(cfg: CaptureStartPayload) {
     if (!this.win || this.win.isDestroyed()) return;
     if (!this.ready) {
-      this.pendingStart = true;
+      this.pendingStart = cfg;
       return;
     }
     this.win.showInactive(); // show WITHOUT focusing
-    this.win.webContents.send(CAPTURE_START);
+    this.win.webContents.send(CAPTURE_START, cfg);
   }
 
   stopCapture() {
-    this.pendingStart = false;
+    this.pendingStart = null;
     if (!this.win || this.win.isDestroyed()) return;
     this.win.webContents.send(CAPTURE_STOP);
     this.win.hide();
   }
 
   cancelCapture() {
-    this.pendingStart = false;
+    this.pendingStart = null;
     if (!this.win || this.win.isDestroyed()) return;
     this.win.webContents.send(CAPTURE_CANCEL);
     this.win.hide();

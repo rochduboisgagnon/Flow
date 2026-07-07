@@ -6,6 +6,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { floatTo16BitPcm, encodeWav, durationMs, SAMPLE_RATE } from "../shared/wav";
+import type { CaptureStartPayload } from "../shared/ipcContracts";
 
 // The worklet forwards raw input frames to the page. Inlined via Blob so no
 // extra bundler entry or asset path is needed.
@@ -21,6 +22,37 @@ registerProcessor("agrflow-capture", CaptureProcessor);
 `;
 
 type Phase = "idle" | "listening" | "error";
+
+// Audible start/stop cues (plan 5.9): know it is listening without looking.
+// Synthesized on the fly (two-tone blips), so no audio assets to ship. A
+// dedicated AudioContext at the device rate, NEVER the capture context (which
+// is 16 kHz and has no output).
+let cueCtx: AudioContext | null = null;
+function playCue(kind: "start" | "stop") {
+  try {
+    cueCtx ??= new AudioContext();
+    void cueCtx.resume();
+    const t0 = cueCtx.currentTime;
+    const osc = cueCtx.createOscillator();
+    const gain = cueCtx.createGain();
+    osc.type = "sine";
+    if (kind === "start") {
+      osc.frequency.setValueAtTime(620, t0);
+      osc.frequency.exponentialRampToValueAtTime(880, t0 + 0.07);
+    } else {
+      osc.frequency.setValueAtTime(880, t0);
+      osc.frequency.exponentialRampToValueAtTime(540, t0 + 0.09);
+    }
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(0.12, t0 + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.12);
+    osc.connect(gain).connect(cueCtx.destination);
+    osc.start(t0);
+    osc.stop(t0 + 0.14);
+  } catch {
+    /* a failed cue must never break the capture */
+  }
+}
 
 function Overlay() {
   const [phase, setPhase] = useState<Phase>("idle");
@@ -41,13 +73,17 @@ function Overlay() {
     // teardown() bumps the generation; start() re-checks it after every await.
     let gen = 0;
 
-    async function start() {
+    async function start(cfg?: CaptureStartPayload) {
       const my = ++gen;
       let stream: MediaStream | null = null;
       let ctx: AudioContext | null = null;
+      if (cfg?.sounds) playCue("start");
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           audio: {
+            // "ideal": a picked-then-unplugged microphone silently falls back
+            // to the system default instead of failing the capture.
+            ...(cfg?.micDeviceId ? { deviceId: { ideal: cfg.micDeviceId } } : {}),
             channelCount: 1,
             echoCancellation: true,
             noiseSuppression: true,
@@ -106,7 +142,10 @@ function Overlay() {
       return chunks;
     }
 
+    let lastCfg: CaptureStartPayload | undefined;
+
     function stop() {
+      if (lastCfg?.sounds) playCue("stop");
       const chunks = teardown();
       const pcm = floatTo16BitPcm(chunks);
       chunks.length = 0; // release every audio reference immediately
@@ -118,9 +157,11 @@ function Overlay() {
       teardown(); // chunks go out of scope unconsumed: nothing leaves this window
     }
 
-    api.onCaptureCommand((cmd) => {
-      if (cmd === "start") void start();
-      else if (cmd === "stop") stop();
+    api.onCaptureCommand((cmd, cfg) => {
+      if (cmd === "start") {
+        lastCfg = cfg;
+        void start(cfg);
+      } else if (cmd === "stop") stop();
       else if (cmd === "cancel") cancel();
     });
   }, []);
