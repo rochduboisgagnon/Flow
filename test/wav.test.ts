@@ -59,3 +59,23 @@ test("pcmFromWav rejects non-WAV bytes", () => {
   const junk = new Uint8Array(64).fill(65);
   assert.throws(() => pcmFromWav(junk));
 });
+
+test("pcmFromWav walks extra RIFF chunks (SAPI-style LIST before data)", () => {
+  const pcm = new Int16Array([7, -7, 300]);
+  const base = encodeWav(pcm);
+  // Rebuild with a LIST chunk squeezed between fmt and data.
+  const list = new Uint8Array(8 + 4);
+  list.set([0x4c, 0x49, 0x53, 0x54]); // "LIST"
+  new DataView(list.buffer).setUint32(4, 4, true);
+  const out = new Uint8Array(base.length + list.length);
+  out.set(base.subarray(0, 36), 0); // RIFF..fmt chunk
+  out.set(list, 36);
+  out.set(base.subarray(36), 36 + list.length); // data chunk
+  new DataView(out.buffer).setUint32(4, out.length - 8, true);
+  assert.deepEqual([...pcmFromWav(out)], [...pcm]);
+});
+
+test("pcmFromWav refuses the wrong sample rate with a clear message", () => {
+  const wrong = encodeWav(new Int16Array(100), 44_100);
+  assert.throws(() => pcmFromWav(wrong), /16 kHz mono/);
+});

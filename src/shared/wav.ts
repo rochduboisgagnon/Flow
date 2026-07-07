@@ -47,19 +47,39 @@ export function durationMs(sampleCount: number, sampleRate = SAMPLE_RATE): numbe
   return Math.round((sampleCount / sampleRate) * 1000);
 }
 
-/** Reads back the Int16 samples of a WAV produced by encodeWav (canonical
- * 44-byte header). Used by the VAD gate in the main process. Throws on
- * anything that is not our own format: the overlay is the only producer. */
+/** Reads back the Int16 samples of a 16 kHz mono 16-bit PCM WAV. Walks the
+ * RIFF chunks (writers like SAPI add LIST/fact chunks before data, so a
+ * fixed-44-byte assumption breaks on anything but our own encoder - learned
+ * when /transcribe 500'd on perfectly valid external WAVs). Throws with a
+ * clear message on any other format: the API contract is explicit. */
 export function pcmFromWav(wav: Uint8Array): Int16Array {
   if (wav.length < 44) throw new Error("WAV too short");
   const tag = (off: number, s: string) =>
     Array.from(s).every((c, i) => wav[off + i] === c.charCodeAt(0));
-  if (!tag(0, "RIFF") || !tag(8, "WAVE") || !tag(36, "data")) {
-    throw new Error("not a canonical AGR Flow WAV");
-  }
+  if (!tag(0, "RIFF") || !tag(8, "WAVE")) throw new Error("not a WAV file");
   const v = new DataView(wav.buffer, wav.byteOffset, wav.byteLength);
-  const dataBytes = Math.min(v.getUint32(40, true), wav.length - 44);
-  const out = new Int16Array(Math.floor(dataBytes / 2));
-  for (let i = 0; i < out.length; i++) out[i] = v.getInt16(44 + i * 2, true);
-  return out;
+  let off = 12;
+  let fmtOk = false;
+  while (off + 8 <= wav.length) {
+    const id = String.fromCharCode(wav[off], wav[off + 1], wav[off + 2], wav[off + 3]);
+    const size = v.getUint32(off + 4, true);
+    if (id === "fmt ") {
+      const format = v.getUint16(off + 8, true);
+      const channels = v.getUint16(off + 10, true);
+      const rate = v.getUint32(off + 12, true);
+      const bits = v.getUint16(off + 22, true);
+      if (format !== 1 || channels !== 1 || rate !== SAMPLE_RATE || bits !== 16) {
+        throw new Error(`expected 16 kHz mono 16-bit PCM WAV (got fmt=${format} ch=${channels} rate=${rate} bits=${bits})`);
+      }
+      fmtOk = true;
+    } else if (id === "data") {
+      if (!fmtOk) throw new Error("WAV data chunk before fmt");
+      const dataBytes = Math.min(size, wav.length - off - 8);
+      const out = new Int16Array(Math.floor(dataBytes / 2));
+      for (let i = 0; i < out.length; i++) out[i] = v.getInt16(off + 8 + i * 2, true);
+      return out;
+    }
+    off += 8 + size + (size % 2); // chunks are word-aligned
+  }
+  throw new Error("WAV has no data chunk");
 }
