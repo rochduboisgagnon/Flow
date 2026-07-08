@@ -10,7 +10,7 @@ import { FocusProbe } from "./focus/probe";
 import { insertViaPaste, leaveOnClipboard } from "./insert";
 import { decideRoute } from "../shared/route";
 import { comboLabel } from "../shared/combo";
-import { loadSettings, saveSettings, sanitizeSettings, type FlowSettings } from "./settings";
+import { loadSettings, saveSettings, sanitizeSettings, dataDir, type FlowSettings } from "./settings";
 import { analyzeSpeech, hasSpeech, trimToSpeech } from "../shared/vad";
 import { gateTranscript } from "../shared/textGate";
 import { pcmFromWav, encodeWav } from "../shared/wav";
@@ -142,10 +142,44 @@ function serverBinaryPaths(): string[] {
   const dir = app.isPackaged
     ? path.join(process.resourcesPath, "bin")
     : path.join(app.getAppPath(), "resources", "bin");
-  return [
-    path.join(dir, "whisper-server-win32-x64-vulkan.exe"),
-    path.join(dir, "whisper-server-win32-x64-cpu.exe"),
-  ];
+  const vulkan = path.join(dir, "whisper-server-win32-x64-vulkan.exe");
+  const cpu = path.join(dir, "whisper-server-win32-x64-cpu.exe");
+  // R1: escape hatch for a capricious GPU. FLOW_FORCE_CPU (env) or the forceCpu
+  // setting drops the Vulkan build entirely and runs CPU only.
+  const forceCpu = /^(1|true|yes|on)$/i.test(process.env.FLOW_FORCE_CPU ?? "") || settings.forceCpu === true;
+  return forceCpu ? [cpu] : [vulkan, cpu];
+}
+
+// R1: a resources-bundled known-speech WAV; the sidecar requires a backend to
+// decode it to non-empty text before trusting it (so a GPU build that loads but
+// cannot decode is skipped for CPU). Absent = the readiness check is the only gate.
+function loadProbeWav(): Uint8Array | undefined {
+  try {
+    const p = app.isPackaged
+      ? path.join(process.resourcesPath, "probe.wav")
+      : path.join(app.getAppPath(), "resources", "probe.wav");
+    return fs.existsSync(p) ? new Uint8Array(fs.readFileSync(p)) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// R1: engine diagnostics must be visible in a BUILT app (no dev console). Append to
+// a small rotating log in AGR Flow's data folder; whisper-server stderr, backend
+// choices and fallbacks all land here. Never throws (logging must not break the app).
+function flowLog(msg: string): void {
+  if (DEV) console.log(msg);
+  try {
+    const p = path.join(dataDir(), "flow.log");
+    try {
+      if (fs.statSync(p).size > 1_000_000) fs.renameSync(p, p + ".1");
+    } catch {
+      /* no file yet, or rename raced: append anyway */
+    }
+    fs.appendFileSync(p, new Date().toISOString() + " " + msg + "\n");
+  } catch {
+    /* diagnostics are best-effort */
+  }
 }
 
 // v5 c1: a SHORT, clean French seed (no word list, which whisper injected into short clips),
@@ -161,11 +195,14 @@ function newSidecar(modelPath: string): WhisperSidecar {
     language: settings.language,
     beamSize: BEAM_SIZE,
     initialPrompt: FRENCH_PROMPT,
-    log: DEV ? (m) => console.log(m) : undefined,
-    onState: (state) => {
+    probeWav: loadProbeWav(), // R1: real decode gate at backend selection
+    log: flowLog, // R1: always-on log file (dev also echoes to console)
+    onState: (state, detail) => {
+      // R1: keep the detail (which backend, why it switched) in the status the
+      // Manager shows, so a silent fallback is no longer invisible.
       if (state === "warm") statusText = "ready";
-      else if (state === "down") statusText = "speech engine restarting...";
-      else statusText = "speech engine failed";
+      else if (state === "down") statusText = detail ? "speech engine: " + detail : "speech engine restarting...";
+      else statusText = detail ? "speech engine failed: " + detail : "speech engine failed";
     },
   });
 }
@@ -184,7 +221,8 @@ async function warmAsr() {
     statusText = "ready";
   } catch (err) {
     console.error("[asr] warm-up failed:", err);
-    statusText = "speech engine unavailable";
+    flowLog(`[asr] warm-up failed: ${err}`); // R1: visible in a built app
+    statusText = "speech engine unavailable: " + String(err instanceof Error ? err.message : err);
   }
 }
 
@@ -203,7 +241,7 @@ const longRec = new LongRecorder({
   getSidecar: () => sidecar,
   cleanupModel: () => settings.cleanupModel,
   ollamaModels: () => listOllamaModels(),
-  log: (m) => (DEV ? console.log(m) : undefined),
+  log: flowLog, // R1: long-recording diagnostics visible in a built app too
 });
 
 // v5 c2: the "open AGR Pilot" shortcut. Flow's keyspy runs on a DEDICATED thread

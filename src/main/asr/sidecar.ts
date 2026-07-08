@@ -38,9 +38,19 @@ export interface SidecarOptions {
   /** A French initial prompt (plan v4 c11), sent per request ONLY when the
    * effective language is French or auto, to bias accents/casing/punctuation. */
   initialPrompt?: string;
+  /** R1: a short known-speech WAV. When set, a backend must actually DECODE it to
+   * non-empty text before it is trusted (freezes it); a Vulkan build that loads but
+   * cannot decode (weak/quirky GPU) is skipped in favour of CPU at SELECTION time.
+   * Absent (e.g. in unit tests) = the readiness GET is the only gate, as before. */
+  probeWav?: Uint8Array;
+  /** Tests only: inject a fake process spawner so backend selection and the
+   * inference-time fallback can be exercised without real whisper-server binaries. */
+  spawnProc?: (command: string, args: string[]) => ChildProcess;
   log?: (msg: string) => void;
-  /** Engine state for the tray: "warm" = ready, "down" = (re)starting, "error" = gave up. */
-  onState?: (state: "warm" | "down" | "error") => void;
+  /** Engine state for the tray: "warm" = ready, "down" = (re)starting, "error" = gave up.
+   * R1: `detail` carries a human-readable reason (which backend, why) so a build with no
+   * dev console can still surface it (statusText / log file / Manager). */
+  onState?: (state: "warm" | "down" | "error", detail?: string) => void;
 }
 
 // Watchdog guard: a crash-looping server (bad model, OOM) must not respawn
@@ -49,6 +59,16 @@ export interface SidecarOptions {
 const RESPAWN_MAX = 3;
 const RESPAWN_WINDOW_MS = 5 * 60_000;
 const RESPAWN_DELAY_MS = 1_000;
+// R1: the decode probe (real inference of a known WAV) runs AFTER the model has
+// loaded (readiness already passed), so it is normally fast; a generous cap still
+// lets a slow CPU load finish while catching a GPU that hangs on inference.
+const PROBE_TIMEOUT_MS = 30_000;
+// R1: after this many consecutive EMPTY results during DICTATION (the "animation
+// plays but nothing writes" symptom), the current backend is demoted and the next
+// candidate (CPU) takes over. Set high enough that a real user never trips it by
+// chance (empty dictations in a row are essentially never legitimate), but a broken
+// backend - empty on EVERY utterance - still falls back within a few seconds.
+const EMPTY_DEMOTE_STREAK = 5;
 
 export class WhisperSidecar {
   private proc: ChildProcess | null = null;
@@ -56,7 +76,9 @@ export class WhisperSidecar {
   private starting: Promise<void> | null = null;
   private stopped = false;
   private respawns: number[] = []; // timestamps of recent auto-respawns
-  private binPath = ""; // the backend that became ready (frozen for respawns)
+  private binPath = ""; // the backend that became ready (frozen for respawns); "" while (re)selecting
+  private badBackends = new Set<string>(); // R1: backends that failed the probe or degraded at inference
+  private emptyStreak = 0; // R1: consecutive empty results on the frozen backend
   private opts: SidecarOptions;
 
   constructor(opts: SidecarOptions) {
@@ -83,29 +105,43 @@ export class WhisperSidecar {
     if (!fs.existsSync(this.opts.modelPath))
       throw new Error(`ASR model missing: ${this.opts.modelPath}`);
     this.stopped = false;
-    // Respawn of an already-chosen backend: reuse it directly.
-    if (this.binPath) return this.startWith(this.binPath);
-    // First start: try the candidates in order (Vulkan GPU -> CPU fallback).
-    const cands = this.opts.binaryPaths.filter((b) => fs.existsSync(b));
-    if (!cands.length) throw new Error("no whisper-server binary present");
+    // Respawn of an already-chosen backend: reuse it directly (no re-probe).
+    if (this.binPath) return this.startWith(this.binPath, false);
+    // First start / after a demotion: try the candidates in order (Vulkan GPU ->
+    // CPU fallback), skipping any backend already known bad (probe/inference failure).
+    const cands = this.opts.binaryPaths.filter((b) => fs.existsSync(b) && !this.badBackends.has(b));
+    if (!cands.length) {
+      throw new Error(
+        this.badBackends.size
+          ? "every whisper-server backend failed (GPU and CPU); check the model and the GPU drivers"
+          : "no whisper-server binary present",
+      );
+    }
     let lastErr: unknown;
-    for (const bin of cands) {
+    for (let i = 0; i < cands.length; i++) {
+      const bin = cands[i];
+      // R1 (review fix): the decode probe only makes sense when there is ANOTHER
+      // backend to fall back to. On the LAST/sole candidate it can only hurt - a slow
+      // CPU decode of the big model can exceed the probe timeout and would then mark
+      // the only working backend bad, bricking dictation. So the last candidate is
+      // trusted on readiness alone (the inference-time fallback still guards runtime).
+      const probe = i < cands.length - 1;
       try {
-        await this.startWith(bin);
-        this.binPath = bin; // freeze the winner for the session
-        this.opts.log?.(`[whisper-server] backend: ${path.basename(bin)}`);
+        await this.startWith(bin, probe); // freezes binPath + (maybe) runs the decode probe
         return;
       } catch (e) {
         lastErr = e;
+        this.badBackends.add(bin); // do not retry a backend that could not start or decode
         this.opts.log?.(`[whisper-server] ${path.basename(bin)} unavailable (${e}); trying next backend`);
       }
     }
     throw lastErr ?? new Error("no whisper-server backend could start");
   }
 
-  /** Spawn ONE binary and wait for readiness. During this trial the exit only
-   * clears state (no respawn); the respawn watchdog is attached only once warm. */
-  private async startWith(bin: string): Promise<void> {
+  /** Spawn ONE binary, wait for readiness, and (when `probe` and a fallback exists)
+   * require it to actually DECODE the probe WAV. During this trial the exit only
+   * clears state (no respawn); the respawn watchdog is attached only once trusted. */
+  private async startWith(bin: string, probe: boolean): Promise<void> {
     this.port = await findFreePort(PORT_START, PORT_END);
     const args = buildServerArgs(
       this.opts.modelPath,
@@ -113,12 +149,17 @@ export class WhisperSidecar {
       pickThreads(os.cpus().length),
       { beamSize: this.opts.beamSize },
     );
-    const proc = spawn(bin, args, { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+    const proc = this.opts.spawnProc
+      ? this.opts.spawnProc(bin, args)
+      : spawn(bin, args, { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
     proc.stderr?.on("data", (d: Buffer) => {
-      // whisper-server logs to stderr; keep the tail visible in dev only.
+      // whisper-server logs to stderr; route the tail to the log (file in prod).
       this.opts.log?.(`[whisper-server] ${String(d).trim().slice(0, 300)}`);
     });
+    // Guard on identity: a demotion/respawn can leave an OLD proc's delayed exit
+    // event to fire AFTER a newer proc was installed; it must not clobber the new one.
     const onTrialExit = () => {
+      if (this.proc !== proc) return;
       this.proc = null;
       this.port = 0;
     };
@@ -126,24 +167,46 @@ export class WhisperSidecar {
     this.proc = proc;
     try {
       await this.waitReady();
+      // R1: real decode gate, ONLY when a fallback backend exists (never on the last
+      // candidate) and never on a plain respawn of the already-trusted winner.
+      if (probe && this.opts.probeWav) await this.decodeProbe(bin);
     } catch (e) {
       proc.removeListener("exit", onTrialExit);
       this.hardStopProc();
       throw e;
     }
-    // Warm: swap the trial listener for the respawn watchdog.
+    // Trusted: freeze the winner BEFORE attaching the watchdog (so onRunningExit,
+    // which bails when binPath is "", never fires against an unfrozen backend).
+    this.binPath = bin;
+    this.emptyStreak = 0;
     proc.removeListener("exit", onTrialExit);
-    proc.on("exit", (code) => this.onRunningExit(code));
-    this.opts.log?.(`[whisper-server] warm on 127.0.0.1:${this.port}`);
-    this.opts.onState?.("warm");
+    proc.on("exit", (code) => this.onRunningExit(proc, code));
+    this.opts.log?.(`[whisper-server] backend ${path.basename(bin)} warm on 127.0.0.1:${this.port}`);
+    this.opts.onState?.("warm", `speech backend: ${path.basename(bin)}`);
+  }
+
+  /** R1: POST the known probe WAV and require non-empty text. A GPU build that loads
+   * but returns nothing (or hangs) fails here and the caller falls back to CPU. */
+  private async decodeProbe(bin: string): Promise<void> {
+    const { text } = await this.inferOnce(this.opts.probeWav!, PROBE_TIMEOUT_MS);
+    if (text.trim().length === 0) {
+      throw new Error(`${path.basename(bin)} loaded but decoded no text (unusable GPU build?)`);
+    }
+    this.opts.log?.(`[whisper-server] ${path.basename(bin)} decode probe OK`);
   }
 
   // Watchdog (plan 5.9): a crash of the WARM server must not kill dictation for
   // the session. Respawn eagerly (the chosen backend), with a crash-loop guard.
-  private onRunningExit(code: number | null) {
+  private onRunningExit(proc: ChildProcess, code: number | null) {
+    // A stale exit from an OLD backend (demoted/replaced) must not touch the state of
+    // the newer proc that has since taken over.
+    if (this.proc !== proc) return;
     this.proc = null;
     this.port = 0;
     if (this.stopped) return;
+    // R1: a demotion cleared binPath and is driving the switch to the next backend;
+    // do NOT eagerly respawn the (now bad) one here.
+    if (!this.binPath) return;
     this.opts.log?.(`[whisper-server] exited (${code})`);
     const now = Date.now();
     this.respawns = this.respawns.filter((t) => now - t < RESPAWN_WINDOW_MS);
@@ -199,9 +262,43 @@ export class WhisperSidecar {
   }
 
   /** One utterance in, clean text out. The WAV is never written anywhere.
-   * If the warm server died mid-flight, ONE respawn+retry; a second failure
-   * surfaces (and the loop inserts nothing - never text from a broken run). */
-  async transcribe(wav: Uint8Array): Promise<{ text: string; ms: number }> {
+   * R1: layered recovery - (1) if the warm server died mid-flight, one respawn+retry
+   * on the SAME backend; (2) if that still fails, or the frozen backend keeps
+   * returning EMPTY on voiced speech, demote it and re-run on the next backend (CPU).
+   * So "the animation plays but nothing writes" self-heals to CPU instead of staying
+   * silent forever. */
+  async transcribe(wav: Uint8Array, opts: { allowEmptyDemote?: boolean } = {}): Promise<{ text: string; ms: number }> {
+    // Empty text is a reliable "this backend is broken" signal ONLY for dictation
+    // (the user definitely spoke). For long-form auto-segments an empty is often
+    // GENUINE non-speech (music, applause, ambience); demoting a healthy GPU on that
+    // is a silent speed regression, so the long-form caller opts out (hard failures
+    // still demote either way).
+    const allowEmptyDemote = opts.allowEmptyDemote !== false;
+    let r: { text: string; ms: number };
+    try {
+      r = await this.attemptInfer(wav);
+    } catch (err) {
+      if (this.stopped || !this.hasFallbackBackend()) throw err;
+      this.demote(`inference failed (${err})`);
+      return await this.attemptInfer(wav); // on the next backend (CPU)
+    }
+    if (r.text.trim().length === 0) {
+      if (allowEmptyDemote) {
+        this.emptyStreak++;
+        if (this.emptyStreak >= EMPTY_DEMOTE_STREAK && this.hasFallbackBackend()) {
+          this.demote(`${this.emptyStreak} empty results in a row`);
+          this.emptyStreak = 0;
+          return await this.attemptInfer(wav); // re-decode this utterance on CPU
+        }
+      }
+    } else {
+      this.emptyStreak = 0;
+    }
+    return r;
+  }
+
+  /** One inference with a single same-backend respawn+retry on a mid-flight death. */
+  private async attemptInfer(wav: Uint8Array): Promise<{ text: string; ms: number }> {
     try {
       return await this.inferOnce(wav);
     } catch (err) {
@@ -214,7 +311,26 @@ export class WhisperSidecar {
     }
   }
 
-  private async inferOnce(wav: Uint8Array): Promise<{ text: string; ms: number }> {
+  /** R1: is there another usable backend to fall back to (present, not already bad,
+   * not the one currently frozen)? */
+  private hasFallbackBackend(): boolean {
+    return this.opts.binaryPaths.some(
+      (b) => b !== this.binPath && fs.existsSync(b) && !this.badBackends.has(b),
+    );
+  }
+
+  /** R1: mark the current backend bad, unfreeze, and kill it. binPath="" makes
+   * onRunningExit stand down; the next ensureStarted() re-selects (-> CPU). */
+  private demote(reason: string): void {
+    const was = this.binPath;
+    if (was) this.badBackends.add(was);
+    this.opts.log?.(`[whisper-server] demoting ${path.basename(was)}: ${reason}`);
+    this.opts.onState?.("down", `switching speech backend (${path.basename(was)}: ${reason})`);
+    this.binPath = "";
+    this.hardStopProc();
+  }
+
+  private async inferOnce(wav: Uint8Array, timeoutMs = INFERENCE_TIMEOUT_MS): Promise<{ text: string; ms: number }> {
     await this.ensureStarted();
     const started = Date.now();
     const boundary = "agrflow-" + crypto.randomBytes(12).toString("hex");
@@ -239,7 +355,7 @@ export class WhisperSidecar {
             "Content-Type": `multipart/form-data; boundary=${boundary}`,
             "Content-Length": body.length,
           },
-          timeout: INFERENCE_TIMEOUT_MS,
+          timeout: timeoutMs,
         },
         (res) => {
           let data = "";
@@ -260,6 +376,11 @@ export class WhisperSidecar {
       req.end();
     });
     return { text: parseInferenceResponse(raw), ms: Date.now() - started };
+  }
+
+  /** R1: the backend currently in use ("" while (re)selecting), for the status surface. */
+  activeBackend(): string {
+    return this.binPath;
   }
 
   stop() {

@@ -246,7 +246,11 @@ export class LongRecorder {
     if (endsInPause(joined)) {
       this.closeSegment(joined, joined.length);
     } else if (curMs >= SEGMENT_TARGET_MS) {
-      this.closeSegment(joined, findCutPoint(joined));
+      // R5 (review fix): search for the quietest cut ONLY in the tail past the
+      // minimum length, so the front segment stays >= SEGMENT_MIN_MS. Without this,
+      // a cut window wider than the buffer could slice off a sub-250ms fragment (that
+      // pump drops) and split a word mid-utterance.
+      this.closeSegment(joined, findCutPoint(joined, SEGMENT_TARGET_MS - SEGMENT_MIN_MS));
     }
   }
 
@@ -455,7 +459,9 @@ export class LongRecorder {
           if (speech.voicedMs >= 250) {
             const sc = this.deps.getSidecar();
             if (!sc) throw new Error("speech engine not ready");
-            const { text } = await sc.transcribe(encodeWav(item.pcm));
+            // Long-form auto-segments legitimately contain non-speech (music, applause);
+            // an empty decode must NOT demote a healthy GPU (only a hard failure does).
+            const { text } = await sc.transcribe(encodeWav(item.pcm), { allowEmptyDemote: false });
             const clean = gateTranscript(text);
             if (clean) fs.appendFileSync(this.transcriptPath, transcriptLine(item.offsetMs, clean));
           }

@@ -9,10 +9,12 @@
 export const SAMPLE_RATE = 16_000;
 
 // Segments aim for this length; a natural pause closes one earlier, a hard cap
-// forces a cut at the quietest point of the tail. Small enough for steady
-// transcript growth, large enough for whisper to keep context.
-export const SEGMENT_TARGET_MS = 25_000;
-export const SEGMENT_MIN_MS = 8_000; // don't close before this unless stopped
+// forces a cut at the quietest point of the tail. R5: shrunk so the transcript
+// tumbles out by short phrases a few seconds after speech (first words in ~3-8 s
+// instead of ~10-27 s). whisper runs far faster than real time (GPU especially),
+// so decoding 3-4x more often is essentially free while feeling live.
+export const SEGMENT_TARGET_MS = 7_000;
+export const SEGMENT_MIN_MS = 2_500; // don't close before this unless a pause/stop
 const PAUSE_MS = 1_100; // trailing silence that closes a segment naturally
 const FRAME_MS = 30;
 const ABS_MIN_RMS = 130; // same speech floor as the dictation VAD

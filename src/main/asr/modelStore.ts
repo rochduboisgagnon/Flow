@@ -36,16 +36,52 @@ export function modelPath(file = DEFAULT_MODEL_FILE): string {
   return path.join(modelsDir(), file);
 }
 
-/** Downloads the model on first run (atomic: .part then rename). */
+// R1: the smallest real model (tiny-q5_1) is ~32 MB. Anything under this floor is
+// a truncated download or an HTML error/blocking page, never a usable model. A
+// grossly-short .bin that slips through would make whisper-server fail to load and
+// the user would see "the animation plays but nothing writes".
+const MIN_MODEL_BYTES = 20 * 1024 * 1024;
+
+/** Downloads the model on first run (atomic: .part then rename). R1: a partial or
+ * blocked download is NEVER kept - the size is validated against Content-Length
+ * before the rename, and an existing but grossly-truncated .bin is re-fetched. */
 export async function ensureModel(
   file = DEFAULT_MODEL_FILE,
   onProgress?: (pct: number) => void,
 ): Promise<string> {
   const dest = modelPath(file);
-  if (fs.existsSync(dest)) return dest;
+  if (fs.existsSync(dest)) {
+    // R1: an earlier run may have left a truncated .bin (download cut, HTML stub).
+    // existsSync used to short-circuit it FOREVER; validate a plausible size first.
+    try {
+      if (fs.statSync(dest).size >= MIN_MODEL_BYTES) return dest;
+    } catch {
+      return dest; // stat failed but the file is there: leave it, don't loop
+    }
+    try {
+      fs.unlinkSync(dest);
+    } catch {
+      /* fall through: the download below will overwrite the .part and rename */
+    }
+  }
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   const tmp = dest + ".part";
   await download(HF_BASE + file, tmp, onProgress);
+  // R1: refuse a suspiciously small result even if the server sent no Content-Length.
+  let size = 0;
+  try {
+    size = fs.statSync(tmp).size;
+  } catch {
+    /* handled below */
+  }
+  if (size < MIN_MODEL_BYTES) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      /* best effort */
+    }
+    throw new Error(`model download too small (${size} bytes): not a usable model, refusing to keep it`);
+  }
   fs.renameSync(tmp, dest);
   return dest;
 }
@@ -71,7 +107,21 @@ function download(url: string, dest: string, onProgress?: (pct: number) => void,
           if (total && onProgress) onProgress(Math.round((got / total) * 100));
         });
         res.pipe(out);
-        out.on("finish", () => out.close(() => resolve()));
+        out.on("finish", () =>
+          out.close(() => {
+            // R1: a cut connection can end the stream cleanly with a short file. If the
+            // server told us the length, insist on getting all of it before we accept it.
+            if (total > 0 && got !== total) {
+              try {
+                fs.unlinkSync(dest);
+              } catch {
+                /* best effort */
+              }
+              return reject(new Error(`model download truncated: got ${got} of ${total} bytes`));
+            }
+            resolve();
+          }),
+        );
         out.on("error", (e) => {
           try {
             fs.unlinkSync(dest);

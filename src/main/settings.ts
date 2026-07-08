@@ -20,6 +20,7 @@ export interface FlowSettings {
   cleanup: boolean; // optional Ollama pass (punctuation + voice commands)
   cleanupModel: string; // Ollama model name, e.g. "gemma3:4b"
   openPilotCombo: string[]; // v5 c2: global shortcut to open AGR Pilot ([] = off)
+  forceCpu: boolean; // R1: escape hatch for capricious GPUs (skip the Vulkan backend)
 }
 
 export const SETTINGS_DEFAULTS: FlowSettings = {
@@ -31,6 +32,7 @@ export const SETTINGS_DEFAULTS: FlowSettings = {
   cleanup: false, // dictation never needs the LLM (plan: optional, off)
   cleanupModel: "",
   openPilotCombo: [], // v5 c2: off until the user records one
+  forceCpu: false, // R1: Vulkan first by default; on = CPU only
 };
 
 export function dataDir(): string {
@@ -63,6 +65,7 @@ export function sanitizeSettings(raw: unknown): FlowSettings {
   }
   if (typeof r.micDeviceId === "string") out.micDeviceId = r.micDeviceId;
   if (typeof r.sounds === "boolean") out.sounds = r.sounds;
+  if (typeof r.forceCpu === "boolean") out.forceCpu = r.forceCpu;
   if (typeof r.cleanup === "boolean") out.cleanup = r.cleanup;
   if (typeof r.cleanupModel === "string" && /^[\w.:-]*$/.test(r.cleanupModel)) {
     out.cleanupModel = r.cleanupModel;

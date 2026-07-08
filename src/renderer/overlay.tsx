@@ -72,12 +72,12 @@ function makeStrands(n: number): Strand[] {
   const arr: Strand[] = [];
   for (let i = 0; i < n; i++) {
     arr.push({
-      amp: 0.12 + 0.88 * Math.pow(r(), 1.6), // many small strands, a few big
+      amp: 0.20 + 0.80 * Math.pow(r(), 1.5), // R2: fewer, fuller filaments
       freq: 0.85 + r() * 1.7,
       phase: r() * Math.PI * 2,
       speed: 0.55 + r() * 0.9,
       bob: r() * 2 - 1,
-      alpha: 0.16 + 0.26 * r(),
+      alpha: 0.55 + 0.45 * r(),
       sign: r() < 0.5 ? -1 : 1,
     });
   }
@@ -85,13 +85,13 @@ function makeStrands(n: number): Strand[] {
 }
 
 const RIBBON = {
-  strokeWidth: 0.55, // thin strands (validated style)
-  maxAmp: 13, // v3: more imposing (Roch), still slimmer than the raw prototype
-  lengthScale: 0.8, // "20% shorter"
-  strandCount: 30,
+  lengthScale: 0.86, // R2: emerald filament span
+  strandCount: 6, // R2: six fuller filaments (was 30 thin ones)
   skew: 0.86, // crest slightly left of center
   baseSpeed: 0.55,
 };
+// R2: the same emerald AGR gradient as AGR Pilot's ribbon (kept in sync).
+const RIBBON_STOPS = ["#17e0a8", "#34e3a0", "#21c9d6", "#2ec7a0", "#7ef0c8"];
 
 function Ribbon({
   levelRef,
@@ -118,40 +118,58 @@ function Ribbon({
     cv.width = Math.round(W * dpr);
     cv.height = Math.round(H * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const maxAmp = H * 0.34; // R2: proportional to height (parity with AGR Pilot)
+    const spanW = W * RIBBON.lengthScale;
+    const x0 = (W - spanW) / 2;
+    const grad = ctx.createLinearGradient(x0, 0, x0 + spanW, 0);
+    RIBBON_STOPS.forEach((s, i) => grad.addColorStop(i / (RIBBON_STOPS.length - 1), s));
 
     const draw = (now: number) => {
       const t = now / 1000;
       const p = phaseRef.current;
-      // Listening: amplitude follows the mic (a floor keeps it alive between
-      // words). Transcribing: collapse toward a breathing wire. Idle: flat.
+      // Listening: amplitude follows the mic (a breathing floor keeps it visible
+      // between words). Transcribing: a calmer breathing wire. Idle: still present.
       level += (levelRef.current - level) * 0.25;
       const target =
-        p === "listening" ? 0.3 + 0.7 * Math.min(1, level * 1.6) : p === "transcribing" ? 0.12 : 0;
+        p === "listening"
+          ? 0.45 + 0.55 * Math.min(1, level * 1.7)
+          : p === "transcribing"
+            ? 0.3
+            : 0.28;
       activation += (target - activation) * 0.08;
 
       ctx.clearRect(0, 0, W, H);
       const midY = H / 2;
-      const spanW = W * RIBBON.lengthScale;
-      const x0 = (W - spanW) / 2;
       const steps = 90;
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
-      ctx.lineWidth = RIBBON.strokeWidth;
+      ctx.strokeStyle = grad;
+      ctx.globalCompositeOperation = "lighter"; // additive: filaments bloom where they cross
       for (const s of strands) {
-        ctx.beginPath();
-        for (let k = 0; k <= steps; k++) {
-          const tt = k / steps;
-          const x = x0 + tt * spanW;
-          const env = Math.pow(Math.sin(Math.PI * Math.pow(tt, RIBBON.skew)), 1.12);
-          const wave = Math.sin(tt * s.freq * Math.PI * 2 + s.phase + t * s.speed * RIBBON.baseSpeed * 2.2);
-          const bob = Math.sin(t * 0.45 + s.phase) * 0.32 * s.bob;
-          const y = midY + env * (RIBBON.maxAmp * activation) * (s.amp * s.sign * wave * 0.9 + bob);
-          if (k === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
-        }
-        ctx.strokeStyle = `rgba(40, 40, 40, ${s.alpha.toFixed(3)})`;
-        ctx.stroke();
+        const trace = () => {
+          ctx.beginPath();
+          for (let k = 0; k <= steps; k++) {
+            const tt = k / steps;
+            const x = x0 + tt * spanW;
+            const env = Math.pow(Math.sin(Math.PI * Math.pow(tt, RIBBON.skew)), 1.12);
+            const wave = Math.sin(tt * s.freq * Math.PI * 2 + s.phase + t * s.speed * 1.2);
+            const bob = Math.sin(t * 0.45 + s.phase) * 0.32 * s.bob;
+            const y = midY + env * (maxAmp * activation) * (s.amp * s.sign * wave * 0.9 + bob);
+            if (k === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+        };
+        trace();
+        ctx.globalAlpha = 0.1;
+        ctx.lineWidth = 3.4;
+        ctx.stroke(); // wide low-alpha halo
+        trace();
+        ctx.globalAlpha = Math.min(1, (0.42 + 0.42 * activation) * s.alpha);
+        ctx.lineWidth = 1.3;
+        ctx.stroke(); // bright core
       }
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = "source-over";
       raf = requestAnimationFrame(draw);
     };
     raf = requestAnimationFrame(draw);
@@ -291,14 +309,14 @@ function Overlay() {
         height: 40,
         padding: "0 17px",
         borderRadius: 20,
-        background: "linear-gradient(180deg, rgba(255,255,255,0.82), rgba(255,255,255,0.64))",
-        border: "1px solid rgba(255,255,255,0.70)",
-        boxShadow: "0 12px 32px rgba(17,24,39,0.24), inset 0 1px 0 rgba(255,255,255,0.95)",
+        background: "linear-gradient(180deg, rgba(14,17,22,0.82), rgba(10,12,16,0.72))",
+        border: "1px solid rgba(255,255,255,0.10)",
+        boxShadow: "0 12px 32px rgba(0,0,0,0.42), inset 0 1px 0 rgba(255,255,255,0.06)",
         backdropFilter: "blur(16px) saturate(1.2)",
         WebkitBackdropFilter: "blur(16px) saturate(1.2)",
-        color: "#1a1916",
+        color: "#e9ecf0",
         fontFamily: "'Segoe UI', system-ui, sans-serif",
-        fontSize: 10.5,
+        fontSize: 8.9, // R8: text -15%
         width: "fit-content",
         margin: "7px auto",
       }}
@@ -308,8 +326,8 @@ function Overlay() {
           width: 7,
           height: 7,
           borderRadius: "50%",
-          background: phase === "error" ? "#c0392b" : "#1d6f5c",
-          boxShadow: phase === "listening" ? "0 0 7px rgba(29, 111, 92, 0.7)" : "none",
+          background: phase === "error" ? "#ff6b6b" : "#34e3a0",
+          boxShadow: phase === "listening" ? "0 0 8px rgba(52, 227, 160, 0.75)" : "none",
           flexShrink: 0,
         }}
       />
@@ -319,7 +337,7 @@ function Overlay() {
         <>
           <Ribbon levelRef={levelRef} phase={phase} />
           {phase === "transcribing" && (
-            <span style={{ color: "#6b6960" }}>Transcribing...</span>
+            <span style={{ color: "#9aa0a8" }}>Transcribing...</span>
           )}
         </>
       )}

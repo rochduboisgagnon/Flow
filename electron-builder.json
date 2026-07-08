@@ -7,6 +7,7 @@
   "extraResources": [
     { "from": "resources/icon.png", "to": "icon.png" },
     { "from": "resources/focus-probe.ps1", "to": "focus-probe.ps1" },
+    { "from": "resources/probe.wav", "to": "probe.wav" },
     { "from": "resources/bin", "to": "bin", "filter": ["**/*"] }
   ],
   "win": {
