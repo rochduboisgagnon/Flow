@@ -23,8 +23,11 @@ export class OverlayWindow {
 
   create(dev: boolean) {
     const { width, height } = screen.getPrimaryDisplay().workAreaSize;
-    const W = 400;
-    const H = 68;
+    // C1: the overlay is now just the (bigger, 360x72) animation, no pill. The window
+    // must be large enough to hold the canvas + its drop-shadow halo without clipping,
+    // and it stays transparent + click-through so the extra size is invisible.
+    const W = 440;
+    const H = 112;
     this.win = new BrowserWindow({
       width: W,
       height: H,

@@ -13,6 +13,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         overlay: "src/renderer/overlay.html",
+        capture: "src/renderer/capture.html", // C2: hidden native-capture window
       },
     },
   },

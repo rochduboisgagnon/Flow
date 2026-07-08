@@ -5,7 +5,14 @@ import {
   CAPTURE_CANCEL,
   CAPTURE_DONE,
   CAPTURE_ERROR,
+  NATIVE_START,
+  NATIVE_STOP,
+  NATIVE_CHUNK,
+  NATIVE_ERROR,
+  NATIVE_READY,
+  NATIVE_DONE,
   type CaptureStartPayload,
+  type NativeStartPayload,
 } from "../shared/ipcContracts";
 
 export type CaptureCommand = "start" | "stop" | "cancel";
@@ -27,6 +34,23 @@ const api = {
   },
   sendCaptureError(message: string) {
     ipcRenderer.send(CAPTURE_ERROR, message);
+  },
+  // C2: native loopback capture bridge (used only by the hidden capture window).
+  onNativeCommand(cb: (cmd: "start" | "stop", cfg?: NativeStartPayload) => void) {
+    ipcRenderer.on(NATIVE_START, (_e, cfg: NativeStartPayload) => cb("start", cfg));
+    ipcRenderer.on(NATIVE_STOP, () => cb("stop"));
+  },
+  sendNativeChunk(pcm: ArrayBuffer) {
+    ipcRenderer.send(NATIVE_CHUNK, pcm);
+  },
+  sendNativeReady() {
+    ipcRenderer.send(NATIVE_READY);
+  },
+  sendNativeDone() {
+    ipcRenderer.send(NATIVE_DONE);
+  },
+  sendNativeError(message: string) {
+    ipcRenderer.send(NATIVE_ERROR, message);
   },
 };
 

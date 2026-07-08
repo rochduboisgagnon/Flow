@@ -23,6 +23,27 @@ import {
   type RecentEntry,
 } from "../shared/longform";
 
+// C2: a 44-byte canonical WAV header (16 kHz mono 16-bit). Written with a
+// placeholder size at native-capture start, then patched with the real sizes when
+// the stream closes (streaming lets a multi-hour recording never sit in RAM).
+function wavHeader(dataBytes: number): Buffer {
+  const b = Buffer.alloc(44);
+  b.write("RIFF", 0);
+  b.writeUInt32LE(36 + dataBytes, 4);
+  b.write("WAVE", 8);
+  b.write("fmt ", 12);
+  b.writeUInt32LE(16, 16);
+  b.writeUInt16LE(1, 20); // PCM
+  b.writeUInt16LE(1, 22); // mono
+  b.writeUInt32LE(SAMPLE_RATE, 24);
+  b.writeUInt32LE(SAMPLE_RATE * 2, 28); // byte rate
+  b.writeUInt16LE(2, 32); // block align
+  b.writeUInt16LE(16, 34); // bits per sample
+  b.write("data", 36);
+  b.writeUInt32LE(dataBytes, 40);
+  return b;
+}
+
 // The long-form recorder (plan §6 + plan v2 chantier C): continuous capture
 // streamed from the DEVICE running AGR Pilot's PWA (phone or PC browser),
 // arriving through the local API (/long/chunk) - never the host mic. Pause-
@@ -43,6 +64,7 @@ export interface LongStartOpts {
   dir?: string;
   title?: string;
   keepAudio?: boolean; // v3 chantier 4: keep the listenable .wav (default off)
+  native?: boolean; // C2: the engine captures the audio itself, so IT writes the .wav
 }
 
 export interface LongStateSnapshot {
@@ -157,6 +179,10 @@ export class LongRecorder {
   private transcriptPath = ""; // the ONE document (summary spliced in at finalize)
   private audioPath = "";
   private keepAudio = false;
+  private native = false; // C2: engine-captured -> engine writes the .wav
+  private audioStream: fs.WriteStream | null = null; // C2 native .wav (device mode: Pilot writes it)
+  private audioBytes = 0; // C2 PCM bytes written to the native .wav (for the header patch)
+  private audioFailed = false; // C2: a .wav I/O error occurred; stop writing but keep transcribing
   private headerStr = "";
   private marks: number[] = [];
   private lastError = "";
@@ -215,6 +241,30 @@ export class LongRecorder {
     // user chose to keep the audio (v3 chantier 4). We own the path; an empty
     // path tells the server not to open a file.
     this.audioPath = this.keepAudio ? path.join(dir, base + ".wav") : "";
+    // C2: in NATIVE mode the engine captures the audio, so the engine writes the .wav
+    // (in device mode the Pilot server writes it as chunks stream in). Open a growing
+    // WAV with a placeholder header; writeNativeAudio appends, close patches the sizes.
+    this.native = !!opts.native;
+    this.audioStream = null;
+    this.audioBytes = 0;
+    this.audioFailed = false;
+    if (this.native && this.keepAudio && this.audioPath) {
+      try {
+        const s = fs.createWriteStream(this.audioPath);
+        // Without this handler an async write failure (disk full, volume removed, AV
+        // lock) is an uncaught 'error' event that would CRASH the whole engine. Absorb
+        // it: stop writing audio but let the transcript still finalize.
+        s.on("error", (err) => {
+          this.audioFailed = true;
+          this.deps.log?.(`[long] native .wav stream error: ${err}`);
+        });
+        s.write(wavHeader(0));
+        this.audioStream = s;
+      } catch (err) {
+        this.deps.log?.(`[long] cannot open the .wav for native capture: ${err}`);
+        this.audioStream = null;
+      }
+    }
     this.startedAt = Date.now();
     this.startedIso = now.toISOString();
     this.marks = [];
@@ -233,6 +283,78 @@ export class LongRecorder {
     this.active = true;
     this.deps.log?.(`[long] recording started -> ${this.transcriptPath}`);
     return { ok: true, docPath: this.transcriptPath, audioPath: this.audioPath };
+  }
+
+  /** C2 native mode: append the engine-captured PCM to the .wav (no-op in device
+   * mode, where the Pilot server writes it). Called alongside onChunk. */
+  writeNativeAudio(pcm: Int16Array): void {
+    const s = this.audioStream;
+    if (!s || this.audioFailed) return;
+    try {
+      s.write(Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength));
+      this.audioBytes += pcm.byteLength;
+    } catch (err) {
+      this.audioFailed = true;
+      this.deps.log?.(`[long] native .wav write failed: ${err}`);
+    }
+  }
+
+  /** Patch a native .wav's RIFF/data sizes to `bytes` in place. Best effort. */
+  private patchWavSizes(p: string, bytes: number): void {
+    try {
+      const fd = fs.openSync(p, "r+");
+      const patch = Buffer.alloc(4);
+      patch.writeUInt32LE(36 + bytes, 0);
+      fs.writeSync(fd, patch, 0, 4, 4); // RIFF chunk size
+      patch.writeUInt32LE(bytes, 0);
+      fs.writeSync(fd, patch, 0, 4, 40); // data chunk size
+      fs.closeSync(fd);
+    } catch (err) {
+      this.deps.log?.(`[long] native .wav header patch failed: ${err}`);
+    }
+  }
+
+  /** Close the native .wav (if any) and patch its sizes. Awaited by finalize so
+   * save() never moves a half-written file. NEVER hangs: an errored/wedged stream
+   * still resolves (via its 'error' event or a safety timer) so finalize can't stick. */
+  private closeNativeAudio(): Promise<void> {
+    const stream = this.audioStream;
+    this.audioStream = null;
+    if (!stream) return Promise.resolve();
+    const bytes = this.audioBytes;
+    const p = this.audioPath;
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        this.patchWavSizes(p, bytes);
+        resolve();
+      };
+      const timer = setTimeout(finish, 3000); // never await a wedged stream forever
+      stream.on("error", () => {
+        clearTimeout(timer);
+        finish();
+      });
+      stream.end(() => {
+        clearTimeout(timer);
+        finish();
+      });
+    });
+  }
+
+  /** C2: best-effort SYNCHRONOUS close for an abrupt engine quit, so a native .wav
+   * left open still gets a valid size header instead of looking empty (data size 0). */
+  flushNativeAudioSync(): void {
+    const stream = this.audioStream;
+    if (!stream) return;
+    this.audioStream = null;
+    try {
+      stream.destroy();
+    } catch {
+      /* best effort */
+    }
+    this.patchWavSizes(this.audioPath, this.audioBytes);
   }
 
   /** One streamed PCM slice (~5 s, Int16 16 kHz) from the recording device. */
@@ -483,6 +605,9 @@ export class LongRecorder {
 
   private async finalize(): Promise<void> {
     try {
+      // C2: close + size-patch the native .wav BEFORE the recording is filable, so
+      // save() never moves a half-written audio file (no-op in device mode).
+      await this.closeNativeAudio();
       // Drain the backlog (pump may already be running; wait it out).
       while (this.queue.length > 0 || this.pumping) {
         await this.pump();

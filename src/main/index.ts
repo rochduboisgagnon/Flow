@@ -4,6 +4,7 @@ import fs from "node:fs";
 import { spawn } from "node:child_process";
 import { HotkeyAdapter } from "./hotkey";
 import { OverlayWindow } from "./overlay";
+import { NativeCapture } from "./capture";
 import { WhisperSidecar } from "./asr/sidecar";
 import { ensureModel, DEFAULT_MODEL_FILE, AVAILABLE_MODELS } from "./asr/modelStore";
 import { FocusProbe } from "./focus/probe";
@@ -55,6 +56,7 @@ if (!app.requestSingleInstanceLock()) {
       cb(permission === "media");
     });
     overlay.create(DEV);
+    if (NativeCapture.available()) nativeCapture.create(DEV); // C2: Windows loopback window
     wireCapture();
     startPtt();
     void warmAsr();
@@ -64,10 +66,46 @@ if (!app.requestSingleInstanceLock()) {
       isListening: () => listening,
       isRecording: () => longRec.isBusy,
       isEngineWarm: () => sidecar !== null,
+      canLoopback: () => NativeCapture.available(),
       transcribe: (wav) => processUtterance(wav),
       longState: () => longRec.state(),
       longStart: (opts) => longRec.start({ dir: opts.dir, title: opts.title, keepAudio: !!opts.keepAudio }),
-      longStop: () => longRec.stop(),
+      longStartNative: (opts) => {
+        // C2: engine captures the PC's sound + mic natively (no picker), then feeds
+        // the long recorder directly. Windows-only barrier.
+        if (!NativeCapture.available()) return { ok: false, error: "native capture is only available on a Windows PC" };
+        const started = longRec.start({ title: opts.title, keepAudio: !!opts.keepAudio, native: true });
+        if (!started.ok) return started;
+        nativeActive = true;
+        nativeCapture.start(
+          { micDeviceId: settings.micDeviceId, captureSystem: !!opts.captureSystem },
+          (pcm) => {
+            longRec.onChunk(pcm);
+            longRec.writeNativeAudio(pcm);
+          },
+          (msg) => {
+            flowLog(`[native] capture error: ${msg}`);
+            statusText = "native capture failed: " + msg;
+            if (nativeActive) {
+              nativeActive = false;
+              nativeCapture.stop(() => longRec.stop());
+            }
+          },
+        );
+        return started;
+      },
+      longStop: () => {
+        // C2: native mode finalizes the recorder AFTER the renderer flushes its tail
+        // (nativeCapture.stop's callback), so the last ~1 s is not lost. Report success
+        // now; the PWA polls /long/state (rec -> finalizing -> setup).
+        if (nativeActive) {
+          nativeActive = false;
+          const snap = longRec.state();
+          nativeCapture.stop(() => longRec.stop());
+          return { ok: true, docPath: snap.docPath };
+        }
+        return longRec.stop();
+      },
       longSave: (dir) => longRec.save(dir), // v6 c7: file the recording at Stop
       longMark: () => longRec.mark(),
       longChunk: (pcm) => {
@@ -83,6 +121,9 @@ if (!app.requestSingleInstanceLock()) {
         models: AVAILABLE_MODELS,
         modelState: lastModelState,
         status: statusText,
+        // C2: the PWA shows "Capture everything on this PC" only when the engine can
+        // do native loopback capture (Windows). Absent/false on a phone.
+        canLoopback: NativeCapture.available(),
       }),
       setSettings: (patch) => {
         const applied = applySettings(patch);
@@ -227,6 +268,10 @@ async function warmAsr() {
 }
 
 const overlay = new OverlayWindow();
+// C2: the hidden native-capture window (Windows-only). Created at startup so
+// getDisplayMedia is instant on the first native recording; idle until asked.
+const nativeCapture = new NativeCapture();
+let nativeActive = false; // a native (engine-side) capture is feeding the long recorder
 
 // The dictation loop, main-process side. PTT drives the overlay (which owns the
 // microphone); the finished WAV comes back once per utterance and is handed to
@@ -401,6 +446,11 @@ async function startPtt() {
 app.on("before-quit", () => {
   hotkey.stop();
   overlay.destroy();
+  // C2: an abrupt quit mid native-recording would otherwise leave a size-0 .wav
+  // header (file looks empty). Patch it synchronously so the kept audio is valid.
+  nativeActive = false;
+  longRec.flushNativeAudioSync();
+  nativeCapture.destroy();
   sidecar?.stop();
   probe?.stop();
   api?.stop();

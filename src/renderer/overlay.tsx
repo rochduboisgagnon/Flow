@@ -179,7 +179,10 @@ function Ribbon({
   return (
     <canvas
       ref={canvasRef}
-      style={{ width: 216, height: 40, display: "block" }}
+      // C1: bigger + more imposing (was 216x40); maxAmp = H*0.34 follows the height.
+      // A soft dark drop-shadow is the ONLY backdrop now (no pill), so the emerald
+      // filaments still read on a light desktop.
+      style={{ width: 360, height: 72, display: "block", filter: "drop-shadow(0 0 7px rgba(0,0,0,0.6))" }}
       aria-hidden
     />
   );
@@ -227,9 +230,12 @@ function Overlay() {
         // Chromium resamples the device rate to the context rate: asking the
         // context for 16 kHz gives us ASR-ready PCM with zero conversion step.
         ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
-        await ctx.audioWorklet.addModule(
-          URL.createObjectURL(new Blob([WORKLET], { type: "text/javascript" })),
-        );
+        const workletUrl = URL.createObjectURL(new Blob([WORKLET], { type: "text/javascript" }));
+        try {
+          await ctx.audioWorklet.addModule(workletUrl);
+        } finally {
+          URL.revokeObjectURL(workletUrl); // one blob URL leaked per dictation otherwise
+        }
         if (my !== gen) {
           stream.getTracks().forEach((t) => t.stop());
           void ctx.close();
@@ -270,8 +276,6 @@ function Overlay() {
       return chunks;
     }
 
-    let lastCfg: CaptureStartPayload | undefined;
-
     function stop() {
       const chunks = teardown();
       setPhase("transcribing"); // the overlay stays up until main says flowDone
@@ -288,7 +292,6 @@ function Overlay() {
 
     api.onCaptureCommand((cmd, cfg) => {
       if (cmd === "start") {
-        lastCfg = cfg;
         void start(cfg);
       } else if (cmd === "stop") stop();
       else if (cmd === "cancel") cancel();
@@ -297,49 +300,36 @@ function Overlay() {
   }, []);
 
   return (
+    // C1: the overlay is now JUST the animation - no green dot, no glass pill. The
+    // wrapper only centers the canvas (transparent). The error state keeps its own
+    // minimal readable chip (errors are rare).
     <div
       style={{
-        // Plan v3 chantier 3: frosted-glass pill. Translucency is the alpha of a
-        // white gradient (backdrop-filter can't blur the desktop behind a
-        // transparent Electron window); the inset top highlight + soft shadow
-        // read as glass. Bigger + more imposing than v2 (Roch).
         display: "flex",
         alignItems: "center",
-        gap: 10,
-        height: 40,
-        padding: "0 17px",
-        borderRadius: 20,
-        background: "linear-gradient(180deg, rgba(14,17,22,0.82), rgba(10,12,16,0.72))",
-        border: "1px solid rgba(255,255,255,0.10)",
-        boxShadow: "0 12px 32px rgba(0,0,0,0.42), inset 0 1px 0 rgba(255,255,255,0.06)",
-        backdropFilter: "blur(16px) saturate(1.2)",
-        WebkitBackdropFilter: "blur(16px) saturate(1.2)",
-        color: "#e9ecf0",
+        justifyContent: "center",
+        width: "100%",
+        height: "100%",
         fontFamily: "'Segoe UI', system-ui, sans-serif",
-        fontSize: 8.9, // R8: text -15%
-        width: "fit-content",
-        margin: "7px auto",
+        fontSize: 8.9,
       }}
     >
-      <span
-        style={{
-          width: 7,
-          height: 7,
-          borderRadius: "50%",
-          background: phase === "error" ? "#ff6b6b" : "#34e3a0",
-          boxShadow: phase === "listening" ? "0 0 8px rgba(52, 227, 160, 0.75)" : "none",
-          flexShrink: 0,
-        }}
-      />
       {phase === "error" ? (
-        <span>Microphone unavailable</span>
+        <span
+          style={{
+            color: "#e9ecf0",
+            background: "rgba(10,12,16,0.78)",
+            border: "1px solid rgba(255,255,255,0.10)",
+            borderRadius: 12,
+            padding: "6px 13px",
+            backdropFilter: "blur(10px)",
+            WebkitBackdropFilter: "blur(10px)",
+          }}
+        >
+          Microphone unavailable
+        </span>
       ) : (
-        <>
-          <Ribbon levelRef={levelRef} phase={phase} />
-          {phase === "transcribing" && (
-            <span style={{ color: "#9aa0a8" }}>Transcribing...</span>
-          )}
-        </>
+        <Ribbon levelRef={levelRef} phase={phase} />
       )}
     </div>
   );

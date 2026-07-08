@@ -23,6 +23,7 @@ export interface ApiDeps {
   isListening(): boolean;
   isRecording(): boolean; // long-form capture (phase 4)
   isEngineWarm(): boolean;
+  canLoopback(): boolean; // C2: engine can capture the PC's own sound natively (Windows)
   /** Runs the production pipeline: VAD gate -> ASR -> hallucination gate ->
    * optional cleanup. Empty text = gated silence. */
   transcribe(wav: Uint8Array, cleanup: boolean): Promise<{ text: string; ms: number }>;
@@ -31,6 +32,9 @@ export interface ApiDeps {
   // /long/chunk (plan v2 chantier C) - AGR Flow never opens a mic for it.
   longState(): unknown;
   longStart(opts: { dir?: string; title?: string; keepAudio?: boolean }): unknown;
+  // C2 (Windows-only): the ENGINE captures the PC's own sound + the mic natively
+  // (no picker, no PWA audio). The PWA is only a remote control + live transcript.
+  longStartNative(opts: { title?: string; keepAudio?: boolean; captureSystem?: boolean }): unknown;
   longStop(): unknown;
   longSave(dir: string): unknown; // v6 c7: file the finished recording at Stop
   longMark(): unknown;
@@ -131,6 +135,7 @@ export class LocalApi {
           engineWarm: this.deps.isEngineWarm(),
           listening: this.deps.isListening(),
           recording: this.deps.isRecording(),
+          canLoopback: this.deps.canLoopback(), // C2
         });
       }
       if (req.method === "GET" && url.pathname === "/update-readiness") {
@@ -179,6 +184,16 @@ export class LocalApi {
           dir: typeof body?.dir === "string" ? body.dir : undefined,
           title: typeof body?.title === "string" ? body.title : undefined,
           keepAudio: body?.keepAudio === true,
+        }));
+      }
+      if (req.method === "POST" && url.pathname === "/long/start-native") {
+        // C2: engine-side native capture (loopback + mic, no picker). Windows only;
+        // index.ts returns { ok:false } elsewhere.
+        const body = await readJson(req);
+        return json(200, this.deps.longStartNative({
+          title: typeof body?.title === "string" ? body.title : undefined,
+          keepAudio: body?.keepAudio === true,
+          captureSystem: body?.captureSystem === true,
         }));
       }
       if (req.method === "POST" && url.pathname === "/long/save") {

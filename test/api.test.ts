@@ -110,6 +110,11 @@ function longDepsStub() {
       calls.push("transcript:" + since);
       return { text: "hello", nextSince: 5 };
     },
+    longStartNative: (o: { title?: string; keepAudio?: boolean; captureSystem?: boolean }) => {
+      calls.push("start-native:" + (o.captureSystem ? "sys" : "mic") + ":" + (o.keepAudio ? "audio" : "noaudio"));
+      return { ok: true };
+    },
+    canLoopback: () => true,
   };
 }
 
