@@ -311,7 +311,7 @@ function Overlay() {
         width: "100%",
         height: "100%",
         fontFamily: "'Segoe UI', system-ui, sans-serif",
-        fontSize: 8.9,
+        fontSize: 10.7, // C1 (v15): text +20% (R8 had shrunk it value-by-value)
       }}
     >
       {phase === "error" ? (
