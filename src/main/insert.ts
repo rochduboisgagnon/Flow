@@ -19,8 +19,17 @@ interface PriorClip {
 
 function snapshotClipboard(): PriorClip {
   const text = clipboard.readText();
-  const image = clipboard.readImage();
-  return { text: text || null, image: image.isEmpty() ? null : image };
+  // Audit 2026-07-11 (P2): guard readImage. A malformed image on the clipboard can throw here (and on
+  // older Electron trigger the readImage crash CVE). The snapshot is best-effort, so degrade to
+  // text-only rather than take the engine down mid-dictation. (Full CVE fix = a major Electron bump.)
+  let image: NativeImage | null = null;
+  try {
+    const img = clipboard.readImage();
+    image = img.isEmpty() ? null : img;
+  } catch {
+    image = null;
+  }
+  return { text: text || null, image };
 }
 
 function restoreClipboard(prior: PriorClip) {

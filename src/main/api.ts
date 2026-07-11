@@ -127,6 +127,17 @@ export class LocalApi {
       res.writeHead(code, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) });
       res.end(data);
     };
+    // CSRF / drive-by guard (audit 2026-07-11, S1). The ports are fixed and enumerable, so any web
+    // page the user opens could otherwise POST /quit, /long/start, /settings... to this loopback API
+    // (a CORS "simple" request needs no preflight). The sibling apps (AGR Pilot server, AGR Manager)
+    // call it SERVER-TO-SERVER and never set Origin or any Sec-Fetch-* header; a browser ALWAYS sets
+    // them on a cross-origin request (and this API serves no HTML, so every browser request to it is
+    // cross-origin). So on any state-changing method we refuse a request that carries either header.
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      if (req.headers["origin"] !== undefined || req.headers["sec-fetch-site"] !== undefined) {
+        return json(403, { error: "cross-origin request refused (loopback control API)" });
+      }
+    }
     try {
       if (req.method === "GET" && url.pathname === "/status") {
         return json(200, {

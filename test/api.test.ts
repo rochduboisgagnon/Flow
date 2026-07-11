@@ -73,6 +73,10 @@ function longDepsStub() {
       calls.push("record");
       return Promise.resolve({ combo: ["CTRL", "WIN"] });
     },
+    recordOpenShortcut: () => {
+      calls.push("record-open");
+      return Promise.resolve({ openPilotCombo: ["CTRL", "ALT", "P"] });
+    },
     listMics: () => Promise.resolve([{ id: "m1", label: "Mic" }]),
     ollamaModels: () => Promise.resolve(["gemma3:4b"]),
     quit: () => {
@@ -210,6 +214,57 @@ test("long-form routes reach their deps with parsed arguments", async () => {
     ]);
     // A long recording flips the quiet window (plan 8).
     assert.equal((await get(port, "/update-readiness")).body.ready, false);
+  } finally {
+    api.stop();
+  }
+});
+
+// Audit 2026-07-11 (S1): a POST carrying a browser Origin / Sec-Fetch-Site header is a drive-by
+// cross-origin request and must be refused; sibling apps (server-to-server) send neither header.
+function postHdr(port: number, p: string, extra: Record<string, string>): Promise<Reply> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { hostname: "127.0.0.1", port, path: p, method: "POST", agent: false,
+        headers: { "Content-Type": "application/json", "Content-Length": 2, ...extra } },
+      (res) => {
+        let d = "";
+        res.on("data", (c) => (d += c));
+        res.on("end", () => resolve({ code: res.statusCode ?? 0, body: JSON.parse(d) as Record<string, unknown> }));
+      },
+    );
+    req.on("error", reject);
+    req.write("{}");
+    req.end();
+  });
+}
+
+test("CSRF guard: a browser Origin / Sec-Fetch-Site on a POST is refused (403)", async () => {
+  const info = path.join(os.tmpdir(), `agrflow-api-csrf-${process.pid}.json`);
+  const stub = longDepsStub();
+  const api = new LocalApi({
+    version: "0.0.0",
+    isListening: () => false,
+    isRecording: () => false,
+    isEngineWarm: () => true,
+    transcribe: () => Promise.resolve({ text: "", ms: 0 }),
+    ...stub,
+    infoPathOverride: info,
+  });
+  await api.start();
+  try {
+    const port = (JSON.parse(fs.readFileSync(info, "utf8")) as { port: number }).port;
+    // A drive-by page: fetch() always attaches Origin cross-origin -> refused, dep never runs.
+    const withOrigin = await postHdr(port, "/quit", { Origin: "https://evil.example" });
+    assert.equal(withOrigin.code, 403);
+    // Modern browsers also attach Sec-Fetch-Site on every request -> refused.
+    const withSecFetch = await postHdr(port, "/settings", { "Sec-Fetch-Site": "cross-site" });
+    assert.equal(withSecFetch.code, 403);
+    assert.deepEqual(stub.calls, [], "no state-changing dep must run for a refused request");
+    // A GET status stays reachable (reads are not state-changing).
+    assert.equal((await get(port, "/status")).code, 200);
+    // A sibling app (no Origin / Sec-Fetch header) is unaffected.
+    assert.equal((await post(port, "/long/stop", new Uint8Array(0))).code, 200);
+    assert.deepEqual(stub.calls, ["stop"]);
   } finally {
     api.stop();
   }

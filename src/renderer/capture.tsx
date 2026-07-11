@@ -53,6 +53,12 @@ function flush(force: boolean): void {
 
 async function start(cfg: NativeStartPayload): Promise<void> {
   const my = ++gen;
+  // Audit 2026-07-11 (C1): pending/pendingLen are module-level and were cleared only in stop().
+  // A worklet message queued before the previous ctx.close() can land AFTER stop() cleared them,
+  // leaving a sub-slice fragment behind; without this reset the NEXT recording's first slice would
+  // begin with the previous recording's audio (cross-session contamination of the saved .wav).
+  pending = [];
+  pendingLen = 0;
   const streams: MediaStream[] = [];
   let ctx: AudioContext | null = null;
   const bail = () => {
@@ -99,6 +105,7 @@ async function start(cfg: NativeStartPayload): Promise<void> {
     }
     const node = new AudioWorkletNode(ctx, "agrflow-capture");
     node.port.onmessage = (ev: MessageEvent<Float32Array>) => {
+      if (my !== gen) return; // ignore late messages once this session was superseded (C1)
       pending.push(ev.data);
       pendingLen += ev.data.length;
       flush(false);
