@@ -1,6 +1,6 @@
 {
   "name": "agr-flow",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Local, on-device voice dictation for any app. Hold a key, speak, release: the text lands at your cursor. Nothing ever leaves your machine, nothing is ever stored.",
   "license": "MIT",
   "author": "AGR Labs",
@@ -32,7 +32,7 @@
     "@vitejs/plugin-react": "^4.6.0",
     "concurrently": "^9.2.0",
     "cross-env": "^7.0.3",
-    "electron": "^38.8.6",
+    "electron": "^43.1.0",
     "electron-builder": "^26.0.12",
     "eslint": "^9.30.0",
     "tsx": "^4.20.0",
