@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="1024" height="1024">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#12463a"/><stop offset="1" stop-color="#09201a"/>
+    </linearGradient>
+    <filter id="cg" x="-70%" y="-70%" width="240%" height="240%"><feGaussianBlur stdDeviation="9"/></filter>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#tile)"/>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="none" stroke="#5cbfa3" stroke-opacity=".16" stroke-width="2.5"/>
+  <g transform="translate(4,0)">
+    <!-- onde : 4 barres asymetriques, montee vers le curseur (centre y=256) -->
+    <g fill="#5cbfa3">
+      <rect x="140" y="206" width="30" height="100" rx="15"/>
+      <rect x="186" y="161" width="30" height="190" rx="15"/>
+      <rect x="232" y="191" width="30" height="130" rx="15"/>
+      <rect x="278" y="146" width="30" height="220" rx="15"/>
+    </g>
+    <!-- halo curseur actif -->
+    <rect x="330" y="168" width="18" height="176" rx="9" fill="#bdeadd" filter="url(#cg)" opacity=".5"/>
+    <!-- curseur texte I-beam (sortie = le texte) -->
+    <g fill="#d6f2e8">
+      <rect x="331" y="176" width="16" height="160" rx="8"/>
+      <rect x="318" y="176" width="42" height="14" rx="7"/>
+      <rect x="318" y="322" width="42" height="14" rx="7"/>
+    </g>
+  </g>
+</svg>
