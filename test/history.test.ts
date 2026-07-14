@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { LongRecorder, historyRoot } from "../src/main/longform";
+import { LongRecorder, historyRoot, listHistory, resolveHistoryEntry } from "../src/main/longform";
 import type { WhisperSidecar } from "../src/main/asr/sidecar";
 
 // C10: recording history (3-month retention). A staged recording (no
@@ -293,4 +293,164 @@ test("C10: historyRoot() defaults under dataDir(), and settings.historyDir overr
   assert.ok(historyRoot("").endsWith(path.join(".agr-flow", "history")), "default lives under ~/.agr-flow/history");
   assert.equal(historyRoot("D:\\Recordings\\History"), "D:\\Recordings\\History", "a configured historyDir wins");
   assert.equal(historyRoot("  "), historyRoot(""), "a blank/whitespace-only override falls back to the default");
+});
+
+// ---- Archive 2026-07-14: history browsing (listHistory + resolveHistoryEntry) ----
+
+test("Archive: listHistory enumerates a marked root's dated/title recordings, empty for an unmarked root", () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-list-"));
+  const history = path.join(work, "history");
+  fs.mkdirSync(history, { recursive: true });
+
+  // Unmarked root: never enumerated, even with a perfectly shaped dated folder.
+  const unmarkedRec = path.join(history, "2026-02-01", "some-meeting");
+  fs.mkdirSync(unmarkedRec, { recursive: true });
+  fs.writeFileSync(path.join(unmarkedRec, "some-meeting.md"), "# hi");
+  assert.deepEqual(listHistory(history), [], "no marker file = never enumerated");
+
+  // Mark the root (same marker fileIntoHistory writes) and add a real recording.
+  fs.writeFileSync(path.join(history, ".agr-flow-history"), "marker\n");
+  const recDir = path.join(history, "2026-03-05", "client-kickoff");
+  fs.mkdirSync(recDir, { recursive: true });
+  fs.writeFileSync(path.join(recDir, "client-kickoff.md"), "# Client Kickoff\n\nHello.");
+  fs.writeFileSync(path.join(recDir, "client-kickoff.wav"), Buffer.from("RIFF0000WAVE"));
+
+  // Marking the root does not retroactively hide the folder created before the
+  // marker existed - the gate is on the root, not on per-item creation time -
+  // so both recordings are now enumerated.
+  const items = listHistory(history);
+  assert.equal(items.length, 2);
+  const kickoff = items.find((it) => it.title === "client-kickoff");
+  assert.ok(kickoff, "the freshly added recording is enumerated");
+  assert.equal(kickoff!.date, "2026-03-05");
+  assert.equal(kickoff!.hasAudio, true);
+  assert.ok(kickoff!.audioBytes > 0, "audioBytes reflects the .wav size");
+  assert.ok(kickoff!.docBytes > 0, "docBytes reflects the .md size");
+  assert.ok(kickoff!.id.length > 0);
+  assert.ok(!kickoff!.id.includes("client-kickoff"), "the id is opaque, never the raw folder name");
+
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+test("Archive: listHistory sorts newest first and skips a recording folder with no transcript", () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-list2-"));
+  const history = path.join(work, "history");
+  fs.mkdirSync(history, { recursive: true });
+  fs.writeFileSync(path.join(history, ".agr-flow-history"), "marker\n");
+
+  const older = path.join(history, "2026-01-01", "older-meeting");
+  fs.mkdirSync(older, { recursive: true });
+  fs.writeFileSync(path.join(older, "older-meeting.md"), "# older");
+
+  const newer = path.join(history, "2026-06-01", "newer-meeting");
+  fs.mkdirSync(newer, { recursive: true });
+  fs.writeFileSync(path.join(newer, "newer-meeting.md"), "# newer");
+
+  // A recording folder with no .md at all must be skipped, not crash the scan.
+  const noDoc = path.join(history, "2026-06-01", "audio-only-no-transcript");
+  fs.mkdirSync(noDoc, { recursive: true });
+  fs.writeFileSync(path.join(noDoc, "audio-only-no-transcript.wav"), Buffer.from("RIFF"));
+
+  const items = listHistory(history);
+  assert.equal(items.length, 2, "the doc-less folder is skipped");
+  assert.equal(items[0].title, "newer-meeting", "newest first");
+  assert.equal(items[1].title, "older-meeting");
+
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+test("Archive: resolveHistoryEntry accepts a real id and resolves the doc + audio paths, inside historyRoot", () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-resolve-"));
+  const history = path.join(work, "history");
+  fs.mkdirSync(history, { recursive: true });
+  fs.writeFileSync(path.join(history, ".agr-flow-history"), "marker\n");
+  const recDir = path.join(history, "2026-04-10", "weekly-sync");
+  fs.mkdirSync(recDir, { recursive: true });
+  fs.writeFileSync(path.join(recDir, "weekly-sync.md"), "# Weekly Sync");
+  fs.writeFileSync(path.join(recDir, "weekly-sync.wav"), Buffer.from("RIFF0000WAVE"));
+
+  const items = listHistory(history);
+  assert.equal(items.length, 1);
+  const entry = resolveHistoryEntry(items[0].id, history);
+  assert.ok(entry, "a real id resolves");
+  assert.equal(path.resolve(entry!.dir), path.resolve(recDir));
+  assert.equal(entry!.doc, path.join(recDir, "weekly-sync.md"));
+  assert.equal(entry!.audio, path.join(recDir, "weekly-sync.wav"));
+  const resolvedRoot = path.resolve(history);
+  assert.ok(
+    path.resolve(entry!.doc!).startsWith(resolvedRoot + path.sep),
+    "the resolved doc path stays contained inside historyRoot",
+  );
+
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+test("Archive: resolveHistoryEntry rejects a traversal id (../../etc), an unmarked root, and a stale/unknown id", () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-resolve-bad-"));
+  const history = path.join(work, "history");
+  fs.mkdirSync(history, { recursive: true });
+  fs.writeFileSync(path.join(history, ".agr-flow-history"), "marker\n");
+  const recDir = path.join(history, "2026-05-01", "real-one");
+  fs.mkdirSync(recDir, { recursive: true });
+  fs.writeFileSync(path.join(recDir, "real-one.md"), "# real");
+
+  const traversal = Buffer.from("../../etc", "utf8").toString("base64url");
+  assert.equal(resolveHistoryEntry(traversal, history), null, "a base64url of ../../etc is rejected");
+
+  const dotdotFolder = Buffer.from("2026-01-01/..", "utf8").toString("base64url");
+  assert.equal(resolveHistoryEntry(dotdotFolder, history), null, "a folder segment of .. is rejected");
+
+  const backslash = Buffer.from("2026-05-01\\real-one", "utf8").toString("base64url");
+  assert.equal(resolveHistoryEntry(backslash, history), null, "a backslash-separated id is rejected");
+
+  const drive = Buffer.from("2026-05-01/C:\\Windows", "utf8").toString("base64url");
+  assert.equal(resolveHistoryEntry(drive, history), null, "a drive-prefixed segment is rejected");
+
+  assert.equal(resolveHistoryEntry("not-valid-base64url-id", history), null, "a garbage id is rejected");
+  assert.equal(resolveHistoryEntry("", history), null, "an empty id is rejected");
+
+  // A syntactically valid id for a folder that does not exist on disk.
+  const nonExistent = Buffer.from("2026-05-01/does-not-exist", "utf8").toString("base64url");
+  assert.equal(resolveHistoryEntry(nonExistent, history), null, "a stale/unknown id is rejected");
+
+  // A real, well-formed id but against an UNMARKED root: must never resolve.
+  const unmarked = path.join(work, "unmarked-history");
+  const unmarkedRec = path.join(unmarked, "2026-05-01", "real-one");
+  fs.mkdirSync(unmarkedRec, { recursive: true });
+  fs.writeFileSync(path.join(unmarkedRec, "real-one.md"), "# real");
+  const realId = Buffer.from("2026-05-01/real-one", "utf8").toString("base64url");
+  assert.equal(resolveHistoryEntry(realId, unmarked), null, "an unmarked root never resolves, marker gate applies here too");
+  // But the SAME id resolves fine against the real, marked root.
+  assert.ok(resolveHistoryEntry(realId, history), "the identical id resolves against the marked root");
+
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+test("Archive: a symlinked date directory is neither enumerated by listHistory nor resolvable", () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-symlink-"));
+  const history = path.join(work, "history");
+  fs.mkdirSync(history, { recursive: true });
+  fs.writeFileSync(path.join(history, ".agr-flow-history"), "marker\n");
+
+  const target = path.join(work, "sensitive-target");
+  const targetRec = path.join(target, "linked-meeting");
+  fs.mkdirSync(targetRec, { recursive: true });
+  fs.writeFileSync(path.join(targetRec, "linked-meeting.md"), "# should never be served");
+
+  const linkPath = path.join(history, "2026-06-15"); // named like a legit date dir
+  let symlinked = true;
+  try {
+    fs.symlinkSync(target, linkPath, "junction");
+  } catch {
+    symlinked = false; // not every environment permits creating a link; skip gracefully
+  }
+
+  if (symlinked) {
+    assert.deepEqual(listHistory(history), [], "a symlinked date dir is never enumerated");
+    const forgedId = Buffer.from("2026-06-15/linked-meeting", "utf8").toString("base64url");
+    assert.equal(resolveHistoryEntry(forgedId, history), null, "a symlinked date dir never resolves either");
+  }
+
+  fs.rmSync(target, { recursive: true, force: true });
+  fs.rmSync(work, { recursive: true, force: true });
 });

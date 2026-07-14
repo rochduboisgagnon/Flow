@@ -17,7 +17,7 @@ import { gateTranscript } from "../shared/textGate";
 import { pcmFromWav, encodeWav } from "../shared/wav";
 import { listOllamaModels } from "./llm/ollama";
 import { LocalApi } from "./api";
-import { LongRecorder } from "./longform";
+import { LongRecorder, historyRoot, listHistory, resolveHistoryEntry } from "./longform";
 import {
   CAPTURE_DONE,
   CAPTURE_ERROR,
@@ -115,6 +115,11 @@ if (!app.requestSingleInstanceLock()) {
       },
       longGap: (seconds) => longRec.gap(seconds),
       longTranscript: (since) => longRec.transcriptSince(since),
+      // Archive 2026-07-14: same historyDir resolution as the recorder itself
+      // (settings.historyDir, read lazily), so the archive always reflects
+      // wherever recordings are actually being filed right now.
+      listHistory: () => listHistory(historyRoot(settings.historyDir), flowLog),
+      resolveHistoryEntry: (id) => resolveHistoryEntry(id, historyRoot(settings.historyDir)),
       // Settings surface for the Manager's AGR Flow view (chantier A).
       getSettings: () => ({
         settings: { ...settings, combo: [...settings.combo] },

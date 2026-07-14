@@ -289,6 +289,215 @@ function purgeHistoryDirs(root: string, log?: (msg: string) => void): void {
   }
 }
 
+// ---- Archive 2026-07-14: history browsing (list + resolve) ----
+//
+// The PWA never sends a filesystem path. Every history entry is addressed by
+// an OPAQUE id (base64url of "<date>/<titleFolder>", both single path
+// segments). On every request the engine re-enumerates the real history dirs
+// and only ever serves a directory that (a) decodes to two clean segments,
+// (b) resolves, via path.resolve, INSIDE historyRoot, and (c) still shows up
+// in a fresh listHistory() scan. A forged/stale id is a 404, never a read
+// outside historyRoot (security review: this is the whole point of the id
+// scheme, not an incidental detail).
+
+export interface HistoryItem {
+  id: string;
+  date: string;
+  title: string;
+  hasAudio: boolean;
+  audioBytes: number;
+  docBytes: number;
+  savedMs: number;
+}
+
+// A runaway history (misconfigured historyDir pointed at a huge folder, or
+// years of unattended recordings) must never make the archive view stall the
+// engine's single-threaded API. Bounded, like the ASR queue.
+const MAX_HISTORY_ITEMS = 2000;
+
+/** Enumerate `<root>/<YYYY-MM-DD>/<title>/` recordings, newest first. Marker-gated
+ * like the purge (never lists a folder AGR Flow did not itself establish as a
+ * history root). Never follows a symlinked date or title folder - lstat decides,
+ * matching purgeHistoryDirs' discipline. `log` is optional (tests/pure callers
+ * don't need one); when given, a truncated listing logs once instead of failing
+ * silently. */
+export function listHistory(root: string = historyRoot(), log?: (msg: string) => void): HistoryItem[] {
+  const items: HistoryItem[] = [];
+  try {
+    if (!fs.existsSync(path.join(root, HISTORY_MARKER))) return [];
+    let dateEntries: fs.Dirent[];
+    try {
+      dateEntries = fs.readdirSync(root, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    // Newest date first, so the cap below keeps the most recent recordings
+    // rather than an arbitrary directory-listing order.
+    const dateNames = dateEntries
+      .filter((e) => DATE_DIR_RE.test(e.name))
+      .map((e) => e.name)
+      .sort()
+      .reverse();
+    let truncated = false;
+    for (const dateName of dateNames) {
+      if (items.length >= MAX_HISTORY_ITEMS) {
+        truncated = true;
+        break;
+      }
+      const dateDir = path.join(root, dateName);
+      let dateStat: fs.Stats;
+      try {
+        dateStat = fs.lstatSync(dateDir); // lstat: never follow a linked date dir
+      } catch {
+        continue;
+      }
+      if (dateStat.isSymbolicLink() || !dateStat.isDirectory()) continue;
+      let subEntries: fs.Dirent[];
+      try {
+        subEntries = fs.readdirSync(dateDir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      const dayItems: HistoryItem[] = [];
+      for (const sub of subEntries) {
+        const folderDir = path.join(dateDir, sub.name);
+        let folderStat: fs.Stats;
+        try {
+          folderStat = fs.lstatSync(folderDir); // lstat: never follow a linked title dir
+        } catch {
+          continue;
+        }
+        if (folderStat.isSymbolicLink() || !folderStat.isDirectory()) continue;
+        let files: fs.Dirent[];
+        try {
+          files = fs.readdirSync(folderDir, { withFileTypes: true });
+        } catch {
+          continue;
+        }
+        let docFile = "";
+        let audioFile = "";
+        for (const f of files) {
+          if (!f.isFile()) continue;
+          if (!docFile && f.name.toLowerCase().endsWith(".md")) docFile = f.name;
+          else if (!audioFile && f.name.toLowerCase().endsWith(".wav")) audioFile = f.name;
+        }
+        if (!docFile) continue; // no transcript: nothing worth surfacing
+        let docStat: fs.Stats;
+        try {
+          docStat = fs.statSync(path.join(folderDir, docFile));
+        } catch {
+          continue;
+        }
+        let audioBytes = 0;
+        let hasAudio = false;
+        if (audioFile) {
+          try {
+            audioBytes = fs.statSync(path.join(folderDir, audioFile)).size;
+            hasAudio = true;
+          } catch {
+            hasAudio = false;
+          }
+        }
+        dayItems.push({
+          id: Buffer.from(`${dateName}/${sub.name}`, "utf8").toString("base64url"),
+          date: dateName,
+          title: sub.name,
+          hasAudio,
+          audioBytes,
+          docBytes: docStat.size,
+          savedMs: docStat.mtimeMs,
+        });
+      }
+      dayItems.sort((a, b) => b.savedMs - a.savedMs);
+      for (const item of dayItems) {
+        if (items.length >= MAX_HISTORY_ITEMS) {
+          truncated = true;
+          break;
+        }
+        items.push(item);
+      }
+    }
+    if (truncated) log?.(`[long] history listing truncated at ${MAX_HISTORY_ITEMS} entries`);
+  } catch (err) {
+    log?.(`[long] history listing failed: ${err}`);
+  }
+  return items;
+}
+
+/** True when `s` is anything other than a single clean path segment: empty,
+ * contains a separator of either flavor, an embedded "..", or a drive/UNC
+ * prefix. Applied to BOTH decoded segments of a history id - the whole point
+ * of the id scheme is that neither segment can smuggle a path out of
+ * historyRoot. */
+function isUnsafePathSegment(s: string): boolean {
+  if (!s) return true;
+  if (s.includes("\\") || s.includes("/")) return true;
+  if (s.includes("..")) return true;
+  if (/^[a-zA-Z]:/.test(s)) return true; // drive prefix, e.g. "C:"
+  return false;
+}
+
+/** Decode an opaque history id and resolve it to the on-disk recording folder,
+ * re-enumerating history (via listHistory) to confirm the id names a REAL,
+ * currently-listed entry before returning anything. Returns null on any
+ * failure - a forged id, a stale id whose folder was purged, a symlink, or a
+ * path that would resolve outside historyRoot - never partial information. */
+export function resolveHistoryEntry(
+  id: string,
+  root: string = historyRoot(),
+): { dir: string; doc: string | null; audio: string | null } | null {
+  if (!id) return null;
+  let rel: string;
+  try {
+    const buf = Buffer.from(id, "base64url");
+    // base64url decoding never throws on garbage input (invalid characters are
+    // just dropped), so a roundtrip check is the actual "did this decode
+    // cleanly" gate: a forged/truncated id will not re-encode to itself.
+    if (buf.toString("base64url") !== id) return null;
+    rel = buf.toString("utf8");
+  } catch {
+    return null;
+  }
+  const slash = rel.indexOf("/");
+  if (slash <= 0 || slash === rel.length - 1) return null;
+  const date = rel.slice(0, slash);
+  const folder = rel.slice(slash + 1);
+  if (isUnsafePathSegment(date) || isUnsafePathSegment(folder)) return null;
+  if (!DATE_DIR_RE.test(date)) return null;
+  const resolvedRoot = path.resolve(root);
+  const dir = path.join(resolvedRoot, date, folder);
+  const resolvedDir = path.resolve(dir);
+  // Containment check (non-negotiable): the resolved dir must sit strictly
+  // inside historyRoot, never AT it (that would mean an empty folder name).
+  if (!resolvedDir.startsWith(resolvedRoot + path.sep)) return null;
+  let dirStat: fs.Stats;
+  try {
+    dirStat = fs.lstatSync(resolvedDir); // lstat: never follow a symlinked entry
+  } catch {
+    return null;
+  }
+  if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) return null;
+  // Re-enumerate: the id must name an entry a fresh scan actually finds. This
+  // is what turns "syntactically clean id" into "a real, currently-listed
+  // history entry" - closes the gap between path-safety and existence.
+  const found = listHistory(root).find((it) => it.id === id);
+  if (!found) return null;
+  let doc: string | null = null;
+  let audio: string | null = null;
+  try {
+    const files = fs.readdirSync(resolvedDir, { withFileTypes: true });
+    for (const f of files) {
+      if (!f.isFile()) continue;
+      if (!doc && f.name.toLowerCase().endsWith(".md")) doc = path.join(resolvedDir, f.name);
+      else if (!audio && f.name.toLowerCase().endsWith(".wav")) audio = path.join(resolvedDir, f.name);
+    }
+  } catch {
+    return null;
+  }
+  if (!doc) return null;
+  return { dir: resolvedDir, doc, audio };
+}
+
 export function loadRecent(file = recentPath()): RecentEntry[] {
   try {
     const raw = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;

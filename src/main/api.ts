@@ -2,6 +2,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { dataDir } from "./settings";
+import type { HistoryItem } from "./longform";
 
 // AGR Flow's local API (plan 7.2): how the rest of the AGR ecosystem talks to
 // the app WITHOUT reimplementing it. AGR Pilot's PWA posts phone-recorded
@@ -41,6 +42,12 @@ export interface ApiDeps {
   longChunk(pcm: Int16Array): unknown;
   longGap(seconds: number): unknown;
   longTranscript(since: number): unknown;
+  // Archive 2026-07-14: recording history browser (C10's history folder, now
+  // readable from the PWA). listHistory re-enumerates the real dirs on every
+  // call; resolveHistoryEntry turns an opaque id back into on-disk paths, or
+  // null if the id is forged/stale (see longform.ts for the path-safety).
+  listHistory(): HistoryItem[];
+  resolveHistoryEntry(id: string): { dir: string; doc: string | null; audio: string | null } | null;
   // Settings surface (plan v2 chantier A): AGR Flow is headless; AGR Manager's
   // AGR Flow view is the ONLY user-facing settings UI and drives it through
   // these endpoints.
@@ -253,6 +260,38 @@ export class LocalApi {
         const seconds = typeof body?.seconds === "number" ? body.seconds : 0;
         return json(200, this.deps.longGap(seconds));
       }
+      // ---- Archive 2026-07-14: recording history browser ----
+      if (req.method === "GET" && url.pathname === "/long/history") {
+        return json(200, { items: this.deps.listHistory() });
+      }
+      if (req.method === "GET" && url.pathname === "/long/history/doc") {
+        const id = url.searchParams.get("id") || "";
+        const entry = this.deps.resolveHistoryEntry(id);
+        if (!entry || !entry.doc) return json(404, { error: "not found" });
+        let text: string;
+        try {
+          const buf = fs.readFileSync(entry.doc);
+          const cap = 5 * 1024 * 1024; // ~5 MB: a transcript this long is already pathological
+          text = (buf.length > cap ? buf.subarray(0, cap) : buf).toString("utf8");
+        } catch {
+          return json(404, { error: "not found" });
+        }
+        // Reconstruct date/title from the resolved dir (built as root/date/folder
+        // by resolveHistoryEntry) rather than re-deriving them from the id.
+        const date = path.basename(path.dirname(entry.dir));
+        const title = path.basename(entry.dir);
+        return json(200, { title, date, text });
+      }
+      if (req.method === "GET" && url.pathname === "/long/history/audio") {
+        const id = url.searchParams.get("id") || "";
+        const entry = this.deps.resolveHistoryEntry(id);
+        if (!entry || !entry.audio) return json(404, { error: "not found" });
+        // Raw bytes, not the json() helper: this response is streamed straight
+        // through writeHead/pipe below, then we return before falling into the
+        // JSON branches.
+        this.streamAudioFile(entry.audio, req, res);
+        return;
+      }
       if (req.method === "POST" && url.pathname === "/transcribe") {
         const chunks: Buffer[] = [];
         let size = 0;
@@ -278,6 +317,50 @@ export class LocalApi {
     } catch (err) {
       json(500, { error: String(err) });
     }
+  }
+
+  /** Archive 2026-07-14: stream a history .wav in raw bytes, honoring a Range
+   * header so the phone's <audio> element can seek. Always a pipe from disk,
+   * never a full read into RAM - a multi-hour capture must not balloon the
+   * engine's memory just because someone opens the archive. */
+  private streamAudioFile(file: string, req: http.IncomingMessage, res: http.ServerResponse): void {
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(file);
+    } catch {
+      const body = JSON.stringify({ error: "not found" });
+      res.writeHead(404, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) });
+      res.end(body);
+      return;
+    }
+    const total = stat.size;
+    const range = req.headers.range;
+    const m = typeof range === "string" ? /^bytes=(\d*)-(\d*)$/.exec(range) : null;
+    if (m) {
+      const start = m[1] ? parseInt(m[1], 10) : 0;
+      const end = m[2] ? parseInt(m[2], 10) : total - 1;
+      if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start < 0 || end >= total) {
+        res.writeHead(416, { "Content-Range": `bytes */${total}` });
+        res.end();
+        return;
+      }
+      res.writeHead(206, {
+        "Content-Type": "audio/wav",
+        "Accept-Ranges": "bytes",
+        "Content-Range": `bytes ${start}-${end}/${total}`,
+        "Content-Length": end - start + 1,
+      });
+      const stream = fs.createReadStream(file, { start, end });
+      stream.on("error", () => res.end());
+      stream.pipe(res);
+      return;
+    }
+    // Fallback: a plain 200 full-body response is acceptable per spec when
+    // there is no (valid) Range header.
+    res.writeHead(200, { "Content-Type": "audio/wav", "Accept-Ranges": "bytes", "Content-Length": total });
+    const stream = fs.createReadStream(file);
+    stream.on("error", () => res.end());
+    stream.pipe(res);
   }
 
   stop() {
