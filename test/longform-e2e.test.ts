@@ -60,6 +60,8 @@ test(
       getSidecar: () => sc,
       cleanupModel: () => "",
       recentPathOverride: path.join(work, "recent.json"),
+      // C10: start() now runs a retention purge; keep it off the real ~/.agr-flow.
+      historyRootOverride: path.join(work, "history"),
     });
     try {
       const started = rec.start({ dir: work, title: "Sprint Review" });

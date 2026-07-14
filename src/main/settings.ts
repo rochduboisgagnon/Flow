@@ -21,6 +21,7 @@ export interface FlowSettings {
   cleanupModel: string; // Ollama model name, e.g. "gemma3:4b"
   openPilotCombo: string[]; // v5 c2: global shortcut to open AGR Pilot ([] = off)
   forceCpu: boolean; // R1: escape hatch for capricious GPUs (skip the Vulkan backend)
+  historyDir: string; // C10: recording history root; "" = default (dataDir()/history)
 }
 
 export const SETTINGS_DEFAULTS: FlowSettings = {
@@ -33,6 +34,7 @@ export const SETTINGS_DEFAULTS: FlowSettings = {
   cleanupModel: "",
   openPilotCombo: [], // v5 c2: off until the user records one
   forceCpu: false, // R1: Vulkan first by default; on = CPU only
+  historyDir: "", // C10: default location (dataDir()/history)
 };
 
 export function dataDir(): string {
@@ -64,6 +66,7 @@ export function sanitizeSettings(raw: unknown): FlowSettings {
     out.model = r.model;
   }
   if (typeof r.micDeviceId === "string") out.micDeviceId = r.micDeviceId;
+  if (typeof r.historyDir === "string") out.historyDir = r.historyDir; // C10: same permissiveness as micDeviceId
   if (typeof r.sounds === "boolean") out.sounds = r.sounds;
   if (typeof r.forceCpu === "boolean") out.forceCpu = r.forceCpu;
   if (typeof r.cleanup === "boolean") out.cleanup = r.cleanup;

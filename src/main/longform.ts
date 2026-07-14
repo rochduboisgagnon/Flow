@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { WhisperSidecar } from "./asr/sidecar";
 import { dataDir } from "./settings";
@@ -94,6 +95,12 @@ export interface LongDeps {
   recentPathOverride?: string;
   /** Tests only: keep the app-owned staging folder away from the real ~/.agr-flow. */
   stagingRootOverride?: string;
+  /** C10: settings.historyDir ("" = default under dataDir()/history). Read lazily
+   * (like cleanupModel) so a live settings change applies on the next call
+   * without restarting the engine. */
+  historyDir?: () => string;
+  /** Tests only: keep the retention history away from the real ~/.agr-flow. */
+  historyRootOverride?: string;
 }
 
 const MAX_QUEUE = 240; // ~100 min of backlog before we refuse to grow (safety)
@@ -106,6 +113,15 @@ export function recentPath(): string {
 // in a per-session subfolder here; save() moves it out into the user's folder.
 export function stagingRoot(): string {
   return path.join(dataDir(), "staging");
+}
+
+// C10: a recording nobody explicitly filed at Stop still gets a home instead
+// of sitting invisible in staging forever - it lands here, bucketed by date,
+// and is purged after RETENTION_DAYS. Configurable via settings.historyDir
+// ("" = default).
+export function historyRoot(customDir?: string): string {
+  const c = (customDir || "").trim();
+  return c || path.join(dataDir(), "history");
 }
 
 /** Copy a file INTO destDir without ever clobbering an existing user file: a
@@ -135,15 +151,141 @@ function copyFileInto(destDir: string, src: string): string {
   return dest;
 }
 
-/** Remove a now-empty staging subfolder. NEVER touches anything outside the
- * app-owned staging root (a user's own folder is left exactly as it is). */
-function cleanStagingDir(root: string, dir: string): void {
+/** Remove `dir` and any now-empty ancestor directories, up to but never
+ * including `root`. Generalizes the old single-level staging cleanup (v6 c7)
+ * to also cover history's two-level layout (C10: <root>/<date>/<title>/,
+ * cleaning both the emptied recording folder AND the emptied date folder).
+ * NEVER touches anything outside `root` (a user's own folder, or root itself,
+ * is left exactly as it is). */
+function cleanEmptyHoldingDirs(root: string, dir: string): void {
+  let cur = dir;
+  for (;;) {
+    try {
+      const rel = path.relative(root, cur);
+      if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return; // outside (or IS) root: stop
+      if (fs.readdirSync(cur).length > 0) return; // not empty: nothing more to clean
+      fs.rmdirSync(cur);
+    } catch {
+      return; // best effort: a leftover folder costs a little disk, never data
+    }
+    cur = path.dirname(cur);
+  }
+}
+
+/** Create a fresh subfolder under `parent`: a name clash (same title within
+ * the same minute, or a stray leftover) gets a "-1", "-2"... suffix rather
+ * than reusing someone else's folder. Same collision discipline as
+ * copyFileInto, one level up. */
+function uniqueDir(parent: string, name: string): string {
+  let dir = path.join(parent, name);
+  for (let i = 1; fs.existsSync(dir); i++) dir = path.join(parent, name + "-" + i);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/** Local YYYY-MM-DD for a Date, matching the stamp style used elsewhere
+ * (recordingBaseName): the folder name purgeHistory later parses back. */
+function ymd(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+}
+
+// ---- C10: retention purge ----
+
+const RETENTION_DAYS = 90;
+const DATE_DIR_RE = /^\d{4}-\d{2}-\d{2}$/; // must match ymd() exactly
+
+/** True when `p` resolves to a filesystem/volume root (e.g. "C:\", "/"), the
+ * user's own profile root, or an IMMEDIATE child of the profile (Documents,
+ * Desktop, OneDrive-redirected folders...) - the purge must refuse to operate
+ * there even if historyDir was ever misconfigured to point at one
+ * (non-negotiable guardrail: a wrong setting must never turn into deleting
+ * real folders). Review C10 F1: the profile-child rule still allows the
+ * default ~/.agr-flow/history (parent is .agr-flow) and any dedicated folder
+ * on another drive. */
+function isDangerousPurgeRoot(p: string): boolean {
+  const resolved = path.resolve(p);
+  if (path.dirname(resolved) === resolved) return true; // a volume/filesystem root
+  const home = path.resolve(os.homedir());
+  if (resolved === home) return true; // the user's profile root
+  if (path.dirname(resolved) === home) return true; // Documents, Desktop, OneDrive... never purge grounds
+  return false;
+}
+
+/** Review C10 F1 (marker gate): the purge only ever operates on a folder AGR
+ * Flow itself established as a history root. fileIntoHistory drops this marker
+ * when it creates the root; purgeHistoryDirs bails when it is absent. A
+ * historyDir pointed at ANY pre-existing folder (the vault, an export dir)
+ * therefore can never be purged, no matter what dated subfolders it holds. */
+const HISTORY_MARKER = ".agr-flow-history";
+function ensureHistoryRoot(root: string): void {
+  fs.mkdirSync(root, { recursive: true });
+  const m = path.join(root, HISTORY_MARKER);
+  if (!fs.existsSync(m))
+    fs.writeFileSync(m, "AGR Flow history root. The retention purge only operates on folders carrying this marker.\n");
+}
+
+/** Delete date-named (YYYY-MM-DD) subfolders of `root` older than
+ * RETENTION_DAYS. Guardrails, all non-negotiable (design review):
+ *  - only an entry whose NAME matches DATE_DIR_RE is ever considered; age is
+ *    judged by that name, never by mtime, and no other entry is touched.
+ *  - lstat before acting: a symlink/junction entry is never followed into -
+ *    only the link itself may be removed (unlink, never a recursive rm), so
+ *    its target is never touched no matter what it points at.
+ *  - refuses outright if `root` resolves to a volume root or the user's
+ *    profile root.
+ * Best-effort and silent beyond one summary log line: a purge failure must
+ * NEVER block a recording from starting. */
+function purgeHistoryDirs(root: string, log?: (msg: string) => void): void {
   try {
-    const rel = path.relative(root, dir);
-    if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return; // not inside staging
-    if (fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
-  } catch {
-    /* best effort: leftover staging costs a little disk, never data */
+    if (isDangerousPurgeRoot(root)) {
+      log?.(`[long] history purge refused: root looks unsafe (${root})`);
+      return;
+    }
+    // Review C10 F1: no marker = not a folder this app established -> never purge.
+    // Covers both "no history yet" and "historyDir points at someone's real folder".
+    if (!fs.existsSync(path.join(root, HISTORY_MARKER))) return;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(root, { withFileTypes: true });
+    } catch {
+      return; // no history folder yet: nothing to purge
+    }
+    const cutoff = Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000;
+    let removed = 0;
+    for (const entry of entries) {
+      if (!DATE_DIR_RE.test(entry.name)) continue; // name must match exactly; never touch anything else
+      const full = path.join(root, entry.name);
+      const folderDate = new Date(entry.name + "T00:00:00");
+      if (Number.isNaN(folderDate.getTime()) || folderDate.getTime() >= cutoff) continue; // within retention
+      let st: fs.Stats;
+      try {
+        st = fs.lstatSync(full); // lstat: decide WITHOUT ever following a symlink/junction
+      } catch {
+        continue;
+      }
+      if (st.isSymbolicLink()) {
+        // The stale link entry is app-owned bookkeeping and may be removed,
+        // but its target is never touched: unlink the link, never rm -r it.
+        try {
+          fs.unlinkSync(full);
+          removed++;
+        } catch {
+          /* best effort */
+        }
+        continue;
+      }
+      if (!st.isDirectory()) continue; // a stray file named like a date: leave it alone
+      try {
+        fs.rmSync(full, { recursive: true, force: true });
+        removed++;
+      } catch {
+        /* best effort: a locked file just waits for the next purge */
+      }
+    }
+    if (removed > 0) log?.(`[long] history purge: removed ${removed} folder(s) older than ${RETENTION_DAYS} days`);
+  } catch (err) {
+    log?.(`[long] history purge failed: ${err}`);
   }
 }
 
@@ -154,6 +296,15 @@ export function loadRecent(file = recentPath()): RecentEntry[] {
   } catch {
     return [];
   }
+}
+
+/** C10: recent.json can still point at an entry the retention purge already
+ * removed (a staged recording nobody saved within the window). Filter those
+ * out only when SERVING the list to a caller - recent.json on disk is left
+ * untouched, and save()'s own bookkeeping keeps reading the raw list via
+ * loadRecent() so it can give an accurate "already gone" error instead. */
+function existingRecent(list: RecentEntry[]): RecentEntry[] {
+  return list.filter((e) => e.docPath && fs.existsSync(e.docPath));
 }
 
 function saveRecent(list: RecentEntry[], file = recentPath()): void {
@@ -206,8 +357,106 @@ export class LongRecorder {
     return this.deps.stagingRootOverride ?? stagingRoot();
   }
 
+  private historyBase(): string {
+    return this.deps.historyRootOverride ?? historyRoot(this.deps.historyDir?.());
+  }
+
+  /** C10: a recording being saved may currently sit in EITHER the app-owned
+   * staging folder (freshly stopped, not yet filed) or the history folder (the
+   * retention safety net, already relocated once by fileIntoHistory). Picks
+   * the matching root so the emptied session/date folder is cleaned up bounded
+   * to wherever it actually lives - never wanders outside either app-owned root. */
+  private holdingRootFor(dir: string): string {
+    const hist = this.historyBase();
+    const rel = path.relative(hist, dir);
+    if (rel && !rel.startsWith("..") && !path.isAbsolute(rel)) return hist;
+    return this.stagingBase();
+  }
+
+  /** Best-effort retention purge (C10 §5): call at engine startup and at the
+   * top of every start() so history never grows unbounded. Never throws -
+   * purgeHistoryDirs already swallows its own errors - so a failure here can
+   * never stop a recording from starting. */
+  purgeHistory(): void {
+    purgeHistoryDirs(this.historyBase(), this.deps.log);
+  }
+
+  /** File a STAGED recording out of the app-owned staging folder into the
+   * date-bucketed history (C10): a recording nobody explicitly saved still
+   * gets a home for RETENTION_DAYS instead of sitting invisible in staging
+   * forever. Same two-phase discipline as save(): copy first, delete the
+   * staging sources only once the copies are safely in place. Best effort:
+   * any failure just leaves the recording in staging - nothing is lost,
+   * nothing blocks the recording (it is already finished by the time this
+   * runs, inside finalize()). */
+  private fileIntoHistory(): void {
+    const root = this.historyBase();
+    let destDir: string;
+    try {
+      ensureHistoryRoot(root); // review C10 F1: the marker makes the root purgeable
+      const dateDir = path.join(root, ymd(new Date(this.startedAt)));
+      fs.mkdirSync(dateDir, { recursive: true });
+      destDir = uniqueDir(dateDir, path.basename(this.transcriptPath, ".md"));
+    } catch (err) {
+      this.deps.log?.(`[long] cannot prepare the history folder: ${err}`);
+      return;
+    }
+    const madeDest: string[] = [];
+    let newDoc: string;
+    let newAudio = "";
+    try {
+      newDoc = copyFileInto(destDir, this.transcriptPath);
+      madeDest.push(newDoc);
+      // C10: a staged recording keeps its .wav in history EVEN when the
+      // keepAudio setting is off - start() hands out an audio path for every
+      // staged recording precisely so this safety net has something to keep
+      // (see start()). The .wav may still be legitimately absent (the writer
+      // never got a chunk before Stop), which must not fail the filing.
+      if (this.audioPath && fs.existsSync(this.audioPath)) {
+        newAudio = copyFileInto(destDir, this.audioPath);
+        madeDest.push(newAudio);
+      }
+    } catch (err) {
+      for (const p of madeDest) {
+        try {
+          fs.rmSync(p);
+        } catch {
+          /* leave a partial copy rather than risk touching more */
+        }
+      }
+      try {
+        fs.rmdirSync(destDir);
+      } catch {
+        /* best effort */
+      }
+      this.deps.log?.(`[long] could not file the recording into history: ${err}`);
+      return;
+    }
+    const oldDir = this.dir;
+    const oldDoc = this.transcriptPath;
+    const oldAudio = this.audioPath;
+    this.dir = destDir;
+    this.transcriptPath = newDoc;
+    this.audioPath = newAudio;
+    try {
+      fs.rmSync(oldDoc);
+    } catch {
+      /* */
+    }
+    if (oldAudio) {
+      try {
+        fs.rmSync(oldAudio);
+      } catch {
+        /* */
+      }
+    }
+    cleanEmptyHoldingDirs(this.stagingBase(), oldDir);
+    this.deps.log?.(`[long] filed into history -> ${newDoc}`);
+  }
+
   start(opts: LongStartOpts): { ok: boolean; error?: string; docPath?: string; audioPath?: string } {
     if (this.active || this.finalizing) return { ok: false, error: "a recording is already in progress" };
+    this.purgeHistory(); // C10: retention purge on every start(), best effort, never blocking
     const now = new Date();
     this.title = (opts.title || "").trim() || "Recording";
     this.keepAudio = !!opts.keepAudio;
@@ -237,10 +486,16 @@ export class LongRecorder {
     this.dir = dir;
     const base = recordingBaseName(this.title, now);
     this.transcriptPath = path.join(dir, base + ".md");
-    // The .wav is written by the Pilot server as chunks stream in, ONLY when the
+    // The .wav is written by the Pilot server as chunks stream in, when the
     // user chose to keep the audio (v3 chantier 4). We own the path; an empty
     // path tells the server not to open a file.
-    this.audioPath = this.keepAudio ? path.join(dir, base + ".wav") : "";
+    // C10: a STAGED recording (no destination chosen) gets an audio path
+    // regardless of keepAudio - it is filed into History as a safety net at
+    // finalize, and the user hasn't decided yet whether they want the audio;
+    // by the time they'd open History the capture is long gone if we hadn't
+    // kept it. A recording with an explicit destination keeps the existing
+    // behaviour (keepAudio alone decides).
+    this.audioPath = this.keepAudio || this.staged ? path.join(dir, base + ".wav") : "";
     // C2: in NATIVE mode the engine captures the audio, so the engine writes the .wav
     // (in device mode the Pilot server writes it as chunks stream in). Open a growing
     // WAV with a placeholder header; writeNativeAudio appends, close patches the sizes.
@@ -248,7 +503,10 @@ export class LongRecorder {
     this.audioStream = null;
     this.audioBytes = 0;
     this.audioFailed = false;
-    if (this.native && this.keepAudio && this.audioPath) {
+    // C10: this.audioPath is now the single source of truth for "should the
+    // wav be written" (it already folds in keepAudio OR staged above), so the
+    // native-capture gate no longer re-checks keepAudio separately.
+    if (this.native && this.audioPath) {
       try {
         const s = fs.createWriteStream(this.audioPath);
         // Without this handler an async write failure (disk full, volume removed, AV
@@ -440,7 +698,10 @@ export class LongRecorder {
     const list = loadRecent(this.deps.recentPathOverride);
     const entry = list[0];
     if (!entry || !entry.docPath) return { ok: false, error: "no finished recording to save" };
-    if (!fs.existsSync(entry.docPath)) return { ok: false, error: "the recording is no longer in staging (already saved?)" };
+    // C10: the entry can be missing because it was already saved, OR because
+    // the retention purge removed it (a staged recording nobody saved within
+    // the window) - either way, refuse cleanly rather than half-committing.
+    if (!fs.existsSync(entry.docPath)) return { ok: false, error: "the recording is no longer available (already saved, or removed by the history purge)" };
     // Two-phase commit so a mid-way failure never orphans the recording:
     // (1) COPY the document (and the .wav if it really exists) into the chosen
     //     folder; on ANY error, delete the copies made and leave staging
@@ -496,7 +757,9 @@ export class LongRecorder {
         /* */
       }
     }
-    cleanStagingDir(this.stagingBase(), stagedFrom);
+    // C10: the recording may be leaving staging OR history - clean whichever
+    // app-owned root it actually came from (bounded, never wanders outside it).
+    cleanEmptyHoldingDirs(this.holdingRootFor(stagedFrom), stagedFrom);
     this.deps.log?.(`[long] saved -> ${newDoc}`);
     return { ok: true, docPath: newDoc, audioPath: newAudio };
   }
@@ -527,7 +790,9 @@ export class LongRecorder {
       docPath: this.transcriptPath,
       audioPath: this.audioPath,
       lastError: this.lastError,
-      recent: loadRecent(this.deps.recentPathOverride),
+      // C10: entries the retention purge already removed are hidden here
+      // (recent.json on disk is untouched; save() still reads it raw).
+      recent: existingRecent(loadRecent(this.deps.recentPathOverride)),
     };
   }
 
@@ -651,6 +916,12 @@ export class LongRecorder {
       } else {
         this.deps.log?.("[long] no Ollama model available: transcript only, no summary");
       }
+      // C10: a recording with no chosen destination is the history mechanism's
+      // default landing spot, not a second write path (design invariant) - move
+      // it out of staging into <historyRoot>/<date>/<title>/ NOW, so recent.json
+      // below points at the history location straight away. staged stays true:
+      // the user still hasn't filed it into a folder of their own choosing.
+      if (this.staged) this.fileIntoHistory();
       saveRecent(
         pushRecent(loadRecent(this.deps.recentPathOverride), {
           title: this.title,

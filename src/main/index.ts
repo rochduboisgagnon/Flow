@@ -61,6 +61,7 @@ if (!app.requestSingleInstanceLock()) {
     startPtt();
     void warmAsr();
     probe = new FocusProbe(focusProbeScript(), DEV ? (m) => console.log(m) : undefined);
+    longRec.purgeHistory(); // C10: retention purge at engine startup, best effort
     api = new LocalApi({
       version: app.getVersion(),
       isListening: () => listening,
@@ -287,6 +288,7 @@ const longRec = new LongRecorder({
   cleanupModel: () => settings.cleanupModel,
   ollamaModels: () => listOllamaModels(),
   log: flowLog, // R1: long-recording diagnostics visible in a built app too
+  historyDir: () => settings.historyDir, // C10: read lazily, so a live settings change applies immediately
 });
 
 // v5 c2: the "open AGR Pilot" shortcut. Flow's keyspy runs on a DEDICATED thread

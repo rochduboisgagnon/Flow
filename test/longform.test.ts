@@ -130,6 +130,8 @@ test("LongRecorder end to end with a mock engine (one document, audio kept)", as
     getSidecar: () => mockSidecar,
     cleanupModel: () => "",
     recentPathOverride: recent,
+    // C10: start() now runs a retention purge; keep it off the real ~/.agr-flow.
+    historyRootOverride: path.join(work, "history"),
   });
 
   const started = rec.start({ dir: work, title: "Test Meeting", keepAudio: true });
@@ -175,6 +177,8 @@ test("LongRecorder refuses a missing folder and double starts", () => {
     getSidecar: () => null,
     cleanupModel: () => "",
     recentPathOverride: path.join(os.tmpdir(), "agrflow-long-none.json"),
+    // C10: start() now runs a retention purge; keep it off the real ~/.agr-flow.
+    historyRootOverride: path.join(os.tmpdir(), "agrflow-long-none-history"),
   });
   const bad = rec.start({ dir: path.join(os.tmpdir(), "does-not-exist-agrflow") });
   assert.equal(bad.ok, false);
@@ -195,9 +199,10 @@ test("v6 c8: only the last recording is remembered (RECENT_MAX=1)", () => {
   assert.equal(list[0].title, "c", "the last capture replaces the previous one");
 });
 
-test("v6 c7: no dir -> stage under the app-owned root, then save() files it out (nothing deleted)", async () => {
+test("v6 c7 + C10: no dir -> stage, finalize files it into history, then save() files it out (nothing deleted)", async () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-stage-"));
   const staging = path.join(work, "staging");
+  const history = path.join(work, "history");
   const dest = path.join(work, "dest");
   fs.mkdirSync(dest);
   const recent = path.join(work, "recent.json");
@@ -209,30 +214,37 @@ test("v6 c7: no dir -> stage under the app-owned root, then save() files it out 
     cleanupModel: () => "",
     recentPathOverride: recent,
     stagingRootOverride: staging,
+    historyRootOverride: history,
   });
   // No dir given: the engine records into staging (v6 c7).
   const started = rec.start({ title: "Client kickoff", keepAudio: true });
   assert.equal(started.ok, true, started.error);
-  assert.ok(started.docPath!.startsWith(staging), "the document must live under the staging root");
+  assert.ok(started.docPath!.startsWith(staging), "the document must live under the staging root while recording");
   rec.onChunk(speechy(5000));
   rec.onChunk(speechy(5000));
   rec.onChunk(concat(speechy(2000), silence(1500)));
   const stopped = rec.stop();
+  // The .wav is normally written by the Pilot server as chunks stream; stand in for it here,
+  // BEFORE finalize files the recording away (C10 moves the doc AND the .wav together).
+  fs.writeFileSync(started.audioPath!, Buffer.from("RIFF0000WAVE"));
   for (let i = 0; i < 100 && rec.isBusy; i++) await new Promise((r) => setTimeout(r, 50));
   assert.equal(rec.isBusy, false, "finalize must complete");
   let list = JSON.parse(fs.readFileSync(recent, "utf8"));
   assert.equal(list.length, 1);
-  assert.equal(list[0].staged, true, "an unsaved recording is marked staged");
-  assert.ok(fs.existsSync(stopped.docPath), "the document sits in staging");
-  // The .wav is normally written by the Pilot server as chunks stream; stand in for it here.
-  fs.writeFileSync(list[0].audioPath, Buffer.from("RIFF0000WAVE"));
-  // File it into the user's folder.
+  assert.equal(list[0].staged, true, "not yet filed by the user - still needs a Save");
+  // C10: finalize() files a staged recording OUT of staging and INTO history as
+  // its default landing spot - it no longer sits in staging indefinitely.
+  assert.equal(fs.existsSync(stopped.docPath), false, "the doc left the staging location");
+  assert.equal(fs.existsSync(path.dirname(started.docPath!)), false, "the emptied staging session folder is cleaned");
+  assert.ok(String(list[0].docPath).startsWith(history), "recent.json now points into history");
+  assert.equal(fs.existsSync(list[0].docPath), true, "the document really is in history");
+  assert.equal(fs.existsSync(list[0].audioPath), true, "the audio moved into history too");
+  // File it into the user's folder from history.
   const res = (await rec.save(dest)) as { ok: boolean; error?: string; docPath?: string; audioPath?: string };
   assert.equal(res.ok, true, res.error);
-  assert.equal(fs.existsSync(stopped.docPath), false, "the document moved out of staging");
+  assert.equal(fs.existsSync(list[0].docPath), false, "the document moved out of history");
   assert.equal(path.dirname(res.docPath!), dest, "the document is now in the chosen folder");
   assert.equal(path.dirname(res.audioPath!), dest, "the audio moved too");
-  assert.equal(fs.existsSync(path.dirname(started.docPath!)), false, "the empty staging subfolder is cleaned");
   list = JSON.parse(fs.readFileSync(recent, "utf8"));
   assert.equal(list.length, 1);
   assert.equal(list[0].staged, false, "the saved recording is no longer staged");
