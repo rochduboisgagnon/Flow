@@ -179,10 +179,13 @@ function Ribbon({
   return (
     <canvas
       ref={canvasRef}
-      // C1: bigger + more imposing (was 216x40); maxAmp = H*0.34 follows the height.
-      // A soft dark drop-shadow is the ONLY backdrop now (no pill), so the emerald
-      // filaments still read on a light desktop.
-      style={{ width: 360, height: 72, display: "block", filter: "drop-shadow(0 0 7px rgba(0,0,0,0.6))" }}
+      // Roch 2026-07-15: much smaller + narrower (was 360x72, itself an enlargement of 216x40) - the
+      // overlay should stay discreet over the app you are dictating into. maxAmp = H*0.34 and the
+      // span follow the canvas, so the ribbon just scales; nothing is distorted. Keep OVERLAY_W/H in
+      // main/overlay.ts in step: the window only needs to hold this plus the shadow halo.
+      // A soft dark drop-shadow is the ONLY backdrop (no pill), so the emerald filaments still read
+      // on a light desktop.
+      style={{ width: 170, height: 32, display: "block", filter: "drop-shadow(0 0 7px rgba(0,0,0,0.6))" }}
       aria-hidden
     />
   );

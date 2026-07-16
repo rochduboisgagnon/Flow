@@ -23,11 +23,13 @@ export class OverlayWindow {
 
   create(dev: boolean) {
     const { width, height } = screen.getPrimaryDisplay().workAreaSize;
-    // C1: the overlay is now just the (bigger, 360x72) animation, no pill. The window
-    // must be large enough to hold the canvas + its drop-shadow halo without clipping,
-    // and it stays transparent + click-through so the extra size is invisible.
-    const W = 440;
-    const H = 112;
+    // The overlay is just the animation, no pill. The window only has to hold the canvas plus its
+    // drop-shadow halo without clipping; it stays transparent + click-through, so this size is
+    // invisible to the user. Roch 2026-07-15: the ribbon shrank to 170x32 (renderer/overlay.tsx),
+    // so the window follows - a 440x112 window around a 170x32 ribbon would push the (bottom-
+    // anchored) animation needlessly far up the screen. Keep the two in step.
+    const W = 220;
+    const H = 60;
     this.win = new BrowserWindow({
       width: W,
       height: H,
