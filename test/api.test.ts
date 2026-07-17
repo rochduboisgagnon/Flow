@@ -73,10 +73,6 @@ function longDepsStub() {
       calls.push("record");
       return Promise.resolve({ combo: ["CTRL", "WIN"] });
     },
-    recordOpenShortcut: () => {
-      calls.push("record-open");
-      return Promise.resolve({ openPilotCombo: ["CTRL", "ALT", "P"] });
-    },
     listMics: () => Promise.resolve([{ id: "m1", label: "Mic" }]),
     ollamaModels: () => Promise.resolve(["gemma3:4b"]),
     quit: () => {

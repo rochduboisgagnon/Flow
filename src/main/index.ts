@@ -143,15 +143,6 @@ if (!app.requestSingleInstanceLock()) {
         }
         return { combo: null };
       },
-      recordOpenShortcut: async () => {
-        // v5 c2: same gesture recorder, applied to the "open AGR Pilot" combo.
-        const combo = await hotkey.record();
-        if (combo && combo.length > 0) {
-          applySettings({ openPilotCombo: combo });
-          return { combo, comboLabel: comboLabel(combo) };
-        }
-        return { combo: null };
-      },
       listMics: () => overlay.listMics(),
       ollamaModels: () => listOllamaModels(),
       quit: () => {
@@ -296,23 +287,11 @@ const longRec = new LongRecorder({
   historyDir: () => settings.historyDir, // C10: read lazily, so a live settings change applies immediately
 });
 
-// v5 c2: the "open AGR Pilot" shortcut. Flow's keyspy runs on a DEDICATED thread
-// that only pumps keys, so it never drops the combo the way a hook on the Manager's
-// busy UI thread did (v4). On a match, Flow launches the Manager with --open-pilot;
-// the Manager's single-instance handler signals the running Manager to open the AGR
-// Pilot window (Program.cs). Best-effort: a failed launch never crashes the thread.
-function openPilotApp(): void {
-  try {
-    // Flow lives at <hub>\AGR Flow\AGR Flow.exe; AGR-Manager.exe is one level up.
-    const mgr = path.join(path.dirname(path.dirname(app.getPath("exe"))), "AGR-Manager.exe");
-    if (!fs.existsSync(mgr)) return;
-    spawn(mgr, ["--open-pilot"], { detached: true, stdio: "ignore", windowsHide: true }).unref();
-  } catch {
-    /* best effort */
-  }
-}
-
-const hotkey = new HotkeyAdapter(settings.combo, settings.openPilotCombo, {
+// NOTE: the "open AGR Pilot" shortcut used to live here (v5 c2, fired from Flow's keyspy),
+// which coupled it to AGR Flow - disabling Flow killed the shortcut. It now belongs entirely to
+// AGR Manager (its always-on LL hook), which owns Pilot and runs whether or not Flow does. This
+// adapter only handles the dictation combo.
+const hotkey = new HotkeyAdapter(settings.combo, {
   onStart() {
     if (longRec.isBusy) {
       // The transcript belongs to the long recording; a dictation mid-meeting
@@ -330,7 +309,6 @@ const hotkey = new HotkeyAdapter(settings.combo, settings.openPilotCombo, {
     listening = false;
     overlay.cancelCapture();
   },
-  onOpenPilot: openPilotApp,
 });
 
 /** The shared utterance pipeline (PTT loop AND local API): anti-hallucination
@@ -429,11 +407,9 @@ function applySettings(patch: Partial<FlowSettings>): FlowSettings {
   const comboChanged = JSON.stringify(next.combo) !== JSON.stringify(settings.combo);
   const modelChanged = next.model !== settings.model;
   const langChanged = next.language !== settings.language;
-  const openComboChanged = JSON.stringify(next.openPilotCombo) !== JSON.stringify(settings.openPilotCombo);
   Object.assign(settings, next);
   saveSettings(settings);
   if (comboChanged) hotkey.setCombo(settings.combo);
-  if (openComboChanged) hotkey.setOpenCombo(settings.openPilotCombo); // v5 c2: re-arm the open shortcut
   if (langChanged) sidecar?.setLanguage(settings.language);
   if (modelChanged) void swapModel(settings.model);
   return { ...settings, combo: [...settings.combo] };

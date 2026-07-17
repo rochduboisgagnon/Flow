@@ -1,6 +1,6 @@
 import { GlobalKeyboardListener } from "keyspy";
 import type { IGlobalKeyEvent } from "keyspy";
-import { createComboMatcher, createEdgeMatcher, normalizeCombo, type ComboMatcher, type EdgeMatcher } from "../shared/combo";
+import { createComboMatcher, normalizeCombo, type ComboMatcher } from "../shared/combo";
 import { MIN_HOLD_MS, DOUBLE_TAP_MS } from "../shared/constants";
 
 // HotkeyAdapter: the only place that touches keyspy. The rest of the app sees
@@ -15,7 +15,6 @@ export interface PttCallbacks {
   onStart(): void;
   onStop(): void;
   onCancel(): void;
-  onOpenPilot?(): void; // v5 c2: the "open AGR Pilot" combo fired
 }
 
 interface RecorderState {
@@ -32,17 +31,18 @@ const RECORD_TIMEOUT_MS = 10_000;
 export class HotkeyAdapter {
   private listener: GlobalKeyboardListener | null = null;
   private matcher: ComboMatcher;
-  private openMatcher: EdgeMatcher; // v5 c2: "open AGR Pilot" shortcut
   private suspended = false;
   private recorder: RecorderState | null = null;
   private cbs: PttCallbacks;
 
-  constructor(combo: string[], openPilotCombo: string[], cbs: PttCallbacks) {
+  // The "open AGR Pilot" shortcut used to live here too (v5 c2), which coupled it to AGR Flow:
+  // disabling Flow killed the shortcut. It now belongs entirely to AGR Manager (its own always-on
+  // LL hook), independent of Flow. This adapter only owns the dictation combo.
+  constructor(combo: string[], cbs: PttCallbacks) {
     this.matcher = createComboMatcher(combo, {
       minHoldMs: MIN_HOLD_MS,
       doubleTapMs: DOUBLE_TAP_MS,
     });
-    this.openMatcher = createEdgeMatcher(openPilotCombo);
     this.cbs = cbs;
   }
 
@@ -57,11 +57,6 @@ export class HotkeyAdapter {
       // cancel the capture, and a click is never part of a shortcut.
       if (e.name.startsWith("MOUSE")) return false;
       if (this.recorder) return this.handleRecording(e);
-      // v5 c2: the "open AGR Pilot" shortcut shares this dedicated listener thread
-      // (a rising-edge single fire, independent of the push-to-talk matcher). Both
-      // matchers see every event so their state stays consistent.
-      const open = this.openMatcher.handle({ key: e.name, state: e.state });
-      if (open.fire) this.cbs.onOpenPilot?.();
       const { action, swallow } = this.matcher.handle(
         { key: e.name, state: e.state },
         Date.now(),
@@ -69,7 +64,7 @@ export class HotkeyAdapter {
       if (action === "start") this.cbs.onStart();
       else if (action === "stop") this.cbs.onStop();
       else if (action === "cancel") this.cbs.onCancel();
-      return open.swallow || swallow;
+      return swallow;
     });
   }
 
@@ -129,11 +124,6 @@ export class HotkeyAdapter {
     this.matcher.setCombo(combo);
     // Never leave a hot microphone behind a state reset.
     if (wasCapturing) this.cbs.onCancel();
-  }
-
-  /** v5 c2: applies a new "open AGR Pilot" combo ([] disables the shortcut). */
-  setOpenCombo(combo: string[]) {
-    this.openMatcher.setCombo(combo);
   }
 
   /** While suspended (shortcut recorder open), keys pass through untouched. */
