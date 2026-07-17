@@ -90,12 +90,12 @@ const RIBBON = {
   skew: 0.86, // crest slightly left of center
   baseSpeed: 0.55,
 };
-// R2: the same emerald AGR gradient as AGR Pilot's ribbon (kept in sync).
-// Amber ribbon (charte 2026-07-17): AGR Flow's dictation overlay takes the AGR accent, no longer
-// emerald. A warm monochrome ramp of the ambre family (deep -> gold -> deep) so the additive bloom
-// reads amber, not green. This is Flow's OWN signature; the Pilot composer ribbon follows the
-// chosen theme separately (RIBBON_COLORWAYS in AGR Pilot).
-const RIBBON_STOPS = ["#a8641f", "#d1914a", "#f0c078", "#d1914a", "#a8641f"];
+// Amber/orange ribbon (charte 2026-07-17; retune Roch 2026-07-17: le pic tirait trop vers le
+// jaune-or). AGR Flow's dictation overlay takes the AGR accent, no longer emerald. A warm ramp
+// anchored on the brand ambre --brand #b9762a (deep -> orange -> deep) so the additive bloom reads
+// ORANGE, not yellow or green. Flow's OWN signature; the Pilot composer ribbon follows the chosen
+// theme separately (RIBBON_COLORWAYS in AGR Pilot).
+const RIBBON_STOPS = ["#8a4a15", "#b9762a", "#db8434", "#b9762a", "#8a4a15"];
 
 function Ribbon({
   levelRef,
