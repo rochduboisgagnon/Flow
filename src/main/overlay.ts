@@ -6,6 +6,7 @@ import {
   CAPTURE_CANCEL,
   type CaptureStartPayload,
 } from "../shared/ipcContracts";
+import { OverlayVisibility } from "./overlayVisibility";
 
 // The overlay window: a small transparent strip near the bottom of the screen,
 // shown while dictating. HARD CONSTRAINT: it must NEVER take focus - the whole
@@ -20,6 +21,11 @@ export class OverlayWindow {
   private ready = false;
   private pendingStart: CaptureStartPayload | null = null;
   private hideTimer: NodeJS.Timeout | undefined;
+  // Overlap guard (bug Roch: sometimes the animation does not show on press). The window is SHARED
+  // and persistent; re-pressing PTT while the previous utterance was still finalizing let the OLD
+  // flowDone()/safety-timer hide the NEW capture. The hide policy lives in a pure, unit-tested state
+  // machine (overlayVisibility.ts); here we just show/hide when it says so.
+  private vis = new OverlayVisibility();
 
   create(dev: boolean) {
     const { width, height } = screen.getPrimaryDisplay().workAreaSize;
@@ -53,6 +59,10 @@ export class OverlayWindow {
         // packaged app. contextIsolation stays on; both windows load only our
         // own local pages.
         sandbox: false,
+        // The window is hidden between dictations; without this, Chromium throttles the
+        // canvas requestAnimationFrame and the ribbon can be blank or late right after a
+        // showInactive(). Keep it painting so the animation is there the instant it shows.
+        backgroundThrottling: false,
       },
     });
     this.win.setAlwaysOnTop(true, "screen-saver");
@@ -71,39 +81,67 @@ export class OverlayWindow {
 
   startCapture(cfg: CaptureStartPayload) {
     if (!this.win || this.win.isDestroyed()) return;
+    // A new press takes over the shared window: any pending hide from a previous
+    // utterance is now stale and must not fire.
+    clearTimeout(this.hideTimer);
+    this.hideTimer = undefined;
+    this.vis.onStart();
     if (!this.ready) {
       this.pendingStart = cfg;
       return;
     }
+    this.win.setAlwaysOnTop(true, "screen-saver"); // re-assert above any fullscreen app
+    this.reposition(); // anchor on the display under the cursor (multi-monitor)
     this.win.showInactive(); // show WITHOUT focusing
     this.win.webContents.send(CAPTURE_START, cfg);
   }
 
   stopCapture() {
     this.pendingStart = null;
+    this.vis.onStop();
     if (!this.win || this.win.isDestroyed()) return;
     this.win.webContents.send(CAPTURE_STOP);
-    // Stay visible: the renderer shows "Transcribing..." until the text is
-    // routed (flowDone), hiding the model's latency behind honest feedback.
-    // A safety timer guarantees the overlay can never linger forever.
+    // Stay visible: the renderer shows "Transcribing..." until the text is routed
+    // (flowDone), hiding the model's latency behind honest feedback. A safety timer
+    // guarantees the overlay can never linger forever, even if a pipeline never signals.
     clearTimeout(this.hideTimer);
-    this.hideTimer = setTimeout(() => this.win?.hide(), 10_000);
+    this.hideTimer = setTimeout(() => {
+      if (this.vis.onSafetyTimeout()) this.hideNow();
+    }, 10_000);
   }
 
   /** The utterance finished its journey (inserted, clipboarded, or dropped). */
   flowDone() {
+    if (this.vis.onDone()) this.hideNow();
+  }
+
+  cancelCapture() {
+    this.pendingStart = null;
+    if (!this.win || this.win.isDestroyed()) return;
+    this.win.webContents.send(CAPTURE_CANCEL);
+    // A tapped/aborted press must not yank the overlay from under a PREVIOUS utterance
+    // that is still transcribing: only hide when nothing is live.
+    if (this.vis.onCancel()) this.hideNow();
+  }
+
+  private hideNow() {
     clearTimeout(this.hideTimer);
     this.hideTimer = undefined;
     if (!this.win || this.win.isDestroyed()) return;
     this.win.hide();
   }
 
-  cancelCapture() {
-    this.pendingStart = null;
-    clearTimeout(this.hideTimer);
+  /** Anchor the strip at the bottom-centre of the display under the cursor, recomputed on
+   * each press: the create()-time position is fixed to the primary display, so dictating on
+   * a second monitor would put the ribbon on the wrong screen ("it did not show"). */
+  private reposition() {
     if (!this.win || this.win.isDestroyed()) return;
-    this.win.webContents.send(CAPTURE_CANCEL);
-    this.win.hide();
+    const wa = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+    const [w, h] = this.win.getSize();
+    this.win.setPosition(
+      Math.round(wa.x + (wa.width - w) / 2),
+      Math.round(wa.y + wa.height - h - 24),
+    );
   }
 
   /** Microphone list for the Manager's settings view. Device enumeration

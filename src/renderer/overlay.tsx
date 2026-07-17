@@ -111,6 +111,7 @@ function Ribbon({
     let raf = 0;
     let activation = 0; // 0..1, eased
     let level = 0; // smoothed mic level
+    let prevPhase = ""; // to snap activation up on the rising edge into "listening"
 
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const W = cv.clientWidth;
@@ -127,6 +128,11 @@ function Ribbon({
     const draw = (now: number) => {
       const t = now / 1000;
       const p = phaseRef.current;
+      // Snap to a visible amplitude the instant listening begins, so even a very short press
+      // shows the ribbon at once instead of ramping up from flat (~0.5 s) - which, on a brief
+      // show, meant the user saw nothing appear.
+      if (p === "listening" && prevPhase !== "listening") activation = Math.max(activation, 0.62);
+      prevPhase = p;
       // Listening: amplitude follows the mic (a breathing floor keeps it visible
       // between words). Transcribing: a calmer breathing wire. Idle: still present.
       level += (levelRef.current - level) * 0.25;
