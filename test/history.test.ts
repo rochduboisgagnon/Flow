@@ -125,14 +125,15 @@ test("C10 (b): save() files a history entry into the chosen folder and cleans th
 
   const res = (await rec.save(dest)) as { ok: boolean; error?: string; docPath?: string };
   assert.equal(res.ok, true, res.error);
-  assert.equal(fs.existsSync(path.join(dest, "meeting-note.md")), true, "the document is filed into the chosen folder");
+  // 2026-07-21: the capture gets its own subfolder in the chosen dir.
+  assert.equal(fs.existsSync(path.join(dest, "meeting-note", "meeting-note.md")), true, "the document is filed into the chosen folder");
   assert.equal(fs.existsSync(recDir), false, "the emptied per-recording folder is gone");
   assert.equal(fs.existsSync(dateDir), false, "the emptied date folder is gone too");
   assert.equal(fs.existsSync(history), true, "historyRoot itself is never removed");
 
   const list = JSON.parse(fs.readFileSync(recent, "utf8"));
   assert.equal(list[0].staged, false);
-  assert.equal(list[0].dir, dest);
+  assert.equal(list[0].dir, path.join(dest, "meeting-note"));
 
   fs.rmSync(work, { recursive: true, force: true });
 });

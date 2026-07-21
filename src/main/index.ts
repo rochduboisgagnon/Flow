@@ -1,7 +1,6 @@
 import { app, session, ipcMain } from "electron";
 import path from "node:path";
 import fs from "node:fs";
-import { spawn } from "node:child_process";
 import { HotkeyAdapter } from "./hotkey";
 import { OverlayWindow } from "./overlay";
 import { NativeCapture } from "./capture";
@@ -108,6 +107,7 @@ if (!app.requestSingleInstanceLock()) {
         return longRec.stop();
       },
       longSave: (dir) => longRec.save(dir), // v6 c7: file the recording at Stop
+      longNotesSplice: (docPath, notes) => longRec.notesSplice(docPath, notes),
       longMark: () => longRec.mark(),
       longChunk: (pcm) => {
         longRec.onChunk(pcm);

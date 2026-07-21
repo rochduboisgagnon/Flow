@@ -115,6 +115,34 @@ export function recordingBaseName(title: string, d: Date): string {
   return (slug || "recording") + "-" + stamp;
 }
 
+/** Meeting-notes splice (2026-07-21): rebuild the ONE document as
+ * <header>## Notes ... ## Transcript <raw transcript>, whatever state it is
+ * in. Three input shapes exist: (a) header + "## Summary ... ## Transcript ..."
+ * (an Ollama summary was spliced at finalize), (b) header + bare timestamped
+ * lines with NO section marker at all (no local LLM - the common case), and
+ * (c) header + "## Notes ... ## Transcript ..." (a regenerate). Idempotent:
+ * an earlier Summary/Notes block is replaced, never stacked, and shape (b)
+ * gains its "## Transcript" marker. The header is passed in (rebuilt from
+ * recent.json by the caller) so this works after an engine restart, when the
+ * in-memory header of the live recorder is long gone. */
+export function spliceNotes(doc: string, header: string, notes: string): string {
+  let body = doc.startsWith(header) ? doc.slice(header.length) : doc;
+  if (body === doc) {
+    // Header drifted (e.g. hand-edited title): fall back to the engine line,
+    // the one part of the header no user has a reason to touch.
+    const engineLine = "- engine: AGR Flow (100% local)\n\n";
+    const at = doc.indexOf(engineLine);
+    if (at >= 0) {
+      header = doc.slice(0, at + engineLine.length);
+      body = doc.slice(at + engineLine.length);
+    }
+  }
+  // Strip any previous scaffolding down to the raw timestamped transcript.
+  const prior = body.match(/^## (?:Summary|Notes)\n[\s\S]*?\n## Transcript\n+/);
+  if (prior) body = body.slice(prior[0].length);
+  return header + "## Notes\n\n" + notes.trim() + "\n\n## Transcript\n\n" + body.replace(/^\s+/, "");
+}
+
 // ---- summary templates (plan §6: gabarits de resume) ----
 
 export const SUMMARY_TEMPLATES = [

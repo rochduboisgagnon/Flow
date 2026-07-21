@@ -38,6 +38,10 @@ export interface ApiDeps {
   longStartNative(opts: { title?: string; keepAudio?: boolean; captureSystem?: boolean }): unknown;
   longStop(): unknown;
   longSave(dir: string): unknown; // v6 c7: file the finished recording at Stop
+  // Meeting notes (2026-07-21): the Pilot server GENERATES the notes (Claude,
+  // on its side); the engine only does the WRITE, so save() and the splice can
+  // never tear the document between two processes.
+  longNotesSplice(docPath: string, notes: string): unknown;
   longMark(): unknown;
   longChunk(pcm: Int16Array): unknown;
   longGap(seconds: number): unknown;
@@ -216,6 +220,12 @@ export class LocalApi {
         const dir = typeof body?.dir === "string" ? body.dir : "";
         if (!dir) return json(400, { ok: false, error: "missing dir" });
         return json(200, await this.deps.longSave(dir));
+      }
+      if (req.method === "POST" && url.pathname === "/long/notes-splice") {
+        const body = await readJson(req);
+        const docPath = typeof body?.docPath === "string" ? body.docPath : "";
+        const notes = typeof body?.notes === "string" ? body.notes : "";
+        return json(200, this.deps.longNotesSplice(docPath, notes));
       }
       if (req.method === "GET" && url.pathname === "/long/transcript") {
         const since = Number(url.searchParams.get("since") || "0") || 0;

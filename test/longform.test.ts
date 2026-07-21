@@ -8,10 +8,12 @@ import {
   findCutPoint,
   hms,
   transcriptLine,
+  transcriptHeader,
   recordingBaseName,
   chunkTranscript,
   pushRecent,
   summaryPrompt,
+  spliceNotes,
   RECENT_MAX,
   type RecentEntry,
 } from "../src/shared/longform";
@@ -243,16 +245,19 @@ test("v6 c7 + C10: no dir -> stage, finalize files it into history, then save() 
   const res = (await rec.save(dest)) as { ok: boolean; error?: string; docPath?: string; audioPath?: string };
   assert.equal(res.ok, true, res.error);
   assert.equal(fs.existsSync(list[0].docPath), false, "the document moved out of history");
-  assert.equal(path.dirname(res.docPath!), dest, "the document is now in the chosen folder");
-  assert.equal(path.dirname(res.audioPath!), dest, "the audio moved too");
+  // 2026-07-21: each capture gets its own subfolder <name>-<date> in the chosen dir.
+  const sub = path.dirname(res.docPath!);
+  assert.equal(path.dirname(sub), dest, "the capture folder sits in the chosen folder");
+  assert.equal(path.basename(sub), path.basename(res.docPath!, ".md"), "the folder carries the capture's name+date");
+  assert.equal(path.dirname(res.audioPath!), sub, "the audio lives in the same capture folder");
   list = JSON.parse(fs.readFileSync(recent, "utf8"));
   assert.equal(list.length, 1);
   assert.equal(list[0].staged, false, "the saved recording is no longer staged");
-  assert.equal(list[0].dir, dest);
+  assert.equal(list[0].dir, sub);
   fs.rmSync(work, { recursive: true, force: true });
 });
 
-test("v6 c7: save() never overwrites an existing file in the destination", async () => {
+test("v6 c7: save() never reuses an existing folder in the destination (uniqueDir suffix)", async () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-save-"));
   const staging = path.join(work, "st");
   fs.mkdirSync(staging);
@@ -261,7 +266,10 @@ test("v6 c7: save() never overwrites an existing file in the destination", async
   const recent = path.join(work, "recent.json");
   const doc = path.join(staging, "note.md");
   fs.writeFileSync(doc, "NEW");
-  fs.writeFileSync(path.join(dest, "note.md"), "KEEP"); // a user's own file already there
+  // A folder of the same name already there (the user's own, or a previous
+  // same-titled capture): the new capture must NOT move in with it.
+  fs.mkdirSync(path.join(dest, "note"));
+  fs.writeFileSync(path.join(dest, "note", "keep.md"), "KEEP");
   fs.writeFileSync(
     recent,
     JSON.stringify([{ title: "T", startedIso: "", dir: staging, docPath: doc, audioPath: "", durationMs: 0, staged: true }]),
@@ -274,8 +282,8 @@ test("v6 c7: save() never overwrites an existing file in the destination", async
   });
   const res = (await rec.save(dest)) as { ok: boolean; error?: string; docPath?: string };
   assert.equal(res.ok, true, res.error);
-  assert.equal(fs.readFileSync(path.join(dest, "note.md"), "utf8"), "KEEP", "the existing user file is untouched");
-  assert.equal(fs.readFileSync(path.join(dest, "note-1.md"), "utf8"), "NEW", "the moved doc got a suffixed name");
+  assert.equal(fs.readFileSync(path.join(dest, "note", "keep.md"), "utf8"), "KEEP", "the existing folder is untouched");
+  assert.equal(fs.readFileSync(path.join(dest, "note-1", "note.md"), "utf8"), "NEW", "the capture got its own suffixed folder");
   fs.rmSync(work, { recursive: true, force: true });
 });
 
@@ -307,8 +315,8 @@ test("v6 c7: save() tolerates a phantom .wav (keepAudio on but the file was neve
   const res = (await rec.save(dest)) as { ok: boolean; error?: string; docPath?: string; audioPath?: string };
   assert.equal(res.ok, true, res.error); // the missing .wav must not fail the save
   assert.equal(res.audioPath, "", "a phantom .wav is dropped, not treated as saved");
-  assert.equal(fs.existsSync(path.join(dest, "note.md")), true, "the document is filed");
-  assert.equal(fs.existsSync(path.join(dest, "note.wav")), false, "no bogus .wav is created in the destination");
+  assert.equal(fs.existsSync(path.join(dest, "note", "note.md")), true, "the document is filed in its capture folder");
+  assert.equal(fs.existsSync(path.join(dest, "note", "note.wav")), false, "no bogus .wav is created in the destination");
   fs.rmSync(work, { recursive: true, force: true });
 });
 
@@ -326,5 +334,104 @@ test("v6 c7: save() with a vanished document refuses and leaves recent.json unto
   const res = (await rec.save(dest)) as { ok: boolean };
   assert.equal(res.ok, false, "a vanished source is refused, not half-committed");
   assert.deepEqual(JSON.parse(fs.readFileSync(recent, "utf8")), [entry], "recent.json is left exactly as it was");
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+test("2026-07-21: a failed save() rolls the capture folder back out of the destination", async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-save5-"));
+  const staging = path.join(work, "st");
+  fs.mkdirSync(staging);
+  const dest = path.join(work, "dest");
+  fs.mkdirSync(dest);
+  const recent = path.join(work, "recent.json");
+  const doc = path.join(staging, "note.md");
+  fs.writeFileSync(doc, "NEW");
+  // audioPath pointing at a DIRECTORY: existsSync says yes, copyFileSync throws
+  // (EISDIR/EPERM) after the doc already copied - the two-phase rollback runs.
+  const badWav = path.join(staging, "not-a-file.wav");
+  fs.mkdirSync(badWav);
+  const entry = { title: "T", startedIso: "", dir: staging, docPath: doc, audioPath: badWav, durationMs: 0, staged: true };
+  fs.writeFileSync(recent, JSON.stringify([entry]));
+  const rec = new LongRecorder({ getSidecar: () => null, cleanupModel: () => "", recentPathOverride: recent, stagingRootOverride: staging });
+  const res = (await rec.save(dest)) as { ok: boolean };
+  assert.equal(res.ok, false, "the failed copy is reported");
+  assert.deepEqual(fs.readdirSync(dest), [], "no capture folder (or partial copy) is left in the destination");
+  assert.equal(fs.readFileSync(doc, "utf8"), "NEW", "the source is untouched for a clean retry");
+  assert.deepEqual(JSON.parse(fs.readFileSync(recent, "utf8")), [entry], "recent.json is left exactly as it was");
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+// ---- meeting notes (2026-07-21): spliceNotes + notesSplice ----
+
+test("spliceNotes: a bare transcript (no Ollama) gains ## Notes and ## Transcript", () => {
+  const header = transcriptHeader("Kickoff", "2026-07-21T09:00:00.000Z");
+  const doc = header + "[00:00:00] Bonjour.\n\n[00:00:05] On commence.\n\n";
+  const out = spliceNotes(doc, header, "## Resume\n\nCourt.");
+  assert.equal(out, header + "## Notes\n\n## Resume\n\nCourt.\n\n## Transcript\n\n[00:00:00] Bonjour.\n\n[00:00:05] On commence.\n\n");
+});
+
+test("spliceNotes: an Ollama ## Summary block is replaced, never stacked", () => {
+  const header = transcriptHeader("Kickoff", "2026-07-21T09:00:00.000Z");
+  const doc = header + "## Summary\n\nvieux resume\n\n## Transcript\n\n[00:00:00] Bonjour.\n\n";
+  const out = spliceNotes(doc, header, "notes fraiches");
+  assert.ok(!out.includes("## Summary"), "the old summary is gone");
+  assert.ok(!out.includes("vieux resume"));
+  assert.ok(out.includes("## Notes\n\nnotes fraiches\n\n## Transcript\n\n[00:00:00] Bonjour."));
+});
+
+test("spliceNotes is idempotent: a regenerate replaces the previous ## Notes", () => {
+  const header = transcriptHeader("Kickoff", "2026-07-21T09:00:00.000Z");
+  const doc = header + "[00:00:00] Bonjour.\n\n";
+  const once = spliceNotes(doc, header, "v1");
+  const twice = spliceNotes(once, header, "v2");
+  assert.ok(!twice.includes("v1"), "the first notes are replaced");
+  assert.equal(twice, spliceNotes(doc, header, "v2"), "regenerate lands on the same canonical form");
+});
+
+test("spliceNotes: a hand-edited title falls back to the engine line, transcript intact", () => {
+  const header = transcriptHeader("Kickoff", "2026-07-21T09:00:00.000Z");
+  const doc = "# Titre change a la main\n\n- recorded: 2026-07-21T09:00:00.000Z\n- engine: AGR Flow (100% local)\n\n[00:00:00] Bonjour.\n\n";
+  const out = spliceNotes(doc, header, "notes");
+  assert.ok(out.startsWith("# Titre change a la main"), "the user's edited header wins");
+  assert.ok(out.includes("## Notes\n\nnotes\n\n## Transcript\n\n[00:00:00] Bonjour."));
+});
+
+test("notesSplice: writes the notes, resolves the target from recent.json", async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-notes-"));
+  const recent = path.join(work, "recent.json");
+  const doc = path.join(work, "kickoff.md");
+  const header = transcriptHeader("Kickoff", "2026-07-21T09:00:00.000Z");
+  fs.writeFileSync(doc, header + "[00:00:00] Bonjour.\n\n");
+  fs.writeFileSync(
+    recent,
+    JSON.stringify([{ title: "Kickoff", startedIso: "2026-07-21T09:00:00.000Z", dir: work, docPath: doc, audioPath: "", durationMs: 0 }]),
+  );
+  const rec = new LongRecorder({ getSidecar: () => null, cleanupModel: () => "", recentPathOverride: recent });
+  const res = rec.notesSplice(doc, "## Resume\n\nCourt.");
+  assert.equal(res.ok, true, res.error);
+  const out = fs.readFileSync(doc, "utf8");
+  assert.ok(out.includes("## Notes\n\n## Resume\n\nCourt.\n\n## Transcript\n\n[00:00:00] Bonjour."));
+  // Empty notes and empty docPath are refused without touching the file.
+  assert.equal(rec.notesSplice(doc, "   ").ok, false);
+  assert.equal(rec.notesSplice("", "x").ok, false);
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+test("notesSplice: a stale docPath (save moved the capture) answers movedTo instead of writing", async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-notes2-"));
+  const recent = path.join(work, "recent.json");
+  const newDoc = path.join(work, "kickoff.md");
+  fs.writeFileSync(newDoc, transcriptHeader("Kickoff", "2026-07-21T09:00:00.000Z") + "[00:00:00] Bonjour.\n\n");
+  fs.writeFileSync(
+    recent,
+    JSON.stringify([{ title: "Kickoff", startedIso: "2026-07-21T09:00:00.000Z", dir: work, docPath: newDoc, audioPath: "", durationMs: 0 }]),
+  );
+  const rec = new LongRecorder({ getSidecar: () => null, cleanupModel: () => "", recentPathOverride: recent });
+  const res = rec.notesSplice(path.join(work, "old-location.md"), "notes");
+  assert.equal(res.ok, false);
+  assert.equal(res.movedTo, newDoc, "the caller is pointed at the new location");
+  assert.ok(!fs.readFileSync(newDoc, "utf8").includes("## Notes"), "nothing was written on the stale call");
+  // Re-splice on movedTo succeeds (the notes were already computed).
+  assert.equal(rec.notesSplice(res.movedTo!, "notes").ok, true);
   fs.rmSync(work, { recursive: true, force: true });
 });

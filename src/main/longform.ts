@@ -20,6 +20,7 @@ import {
   recordingBaseName,
   summaryPrompt,
   chunkTranscript,
+  spliceNotes,
   pushRecent,
   type RecentEntry,
 } from "../shared/longform";
@@ -531,6 +532,7 @@ export class LongRecorder {
   private deps: LongDeps;
   private active = false;
   private finalizing = false;
+  private splicing = false; // notes splice in flight: save() waits it out (one writer)
   private startedAt = 0;
   private startedIso = "";
   private title = "";
@@ -898,10 +900,12 @@ export class LongRecorder {
     }
     if (!stat.isDirectory()) return { ok: false, error: "destination is not a folder" };
     // Normally already done: the UI only offers "Save" once state left finalizing.
-    // Wait it out anyway so we never move a half-written document.
+    // Wait it out anyway so we never move a half-written document. Same wait for
+    // a notes splice in flight (notesSplice): one writer at a time, never a torn
+    // copy of a document being rewritten.
     const deadline = Date.now() + 10 * 60_000;
-    while (this.finalizing && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
-    if (this.finalizing) return { ok: false, error: "still finalizing; try again in a moment" };
+    while ((this.finalizing || this.splicing) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
+    if (this.finalizing || this.splicing) return { ok: false, error: "still finalizing; try again in a moment" };
     // recent.json is the source of truth for "the last capture" (survives an
     // engine restart between Stop and Save).
     const list = loadRecent(this.deps.recentPathOverride);
@@ -920,16 +924,22 @@ export class LongRecorder {
     //     and the sources stay put. A large .wav that fails to copy (a near-full
     //     target volume, an antivirus lock) can never strand the transcript.
     const madeDest: string[] = [];
+    let subDir = "";
     let newDoc: string;
     let newAudio = "";
     try {
-      newDoc = copyFileInto(dir, entry.docPath);
+      // Each capture gets its own subfolder <slug>-<YYYY-MM-DD-HHmm> (the doc's
+      // base name) so the .md and its audio travel together instead of piling
+      // up loose in the chosen folder. Same layout as history's per-recording
+      // folders; uniqueDir keeps two same-titled captures apart.
+      subDir = uniqueDir(dir, path.basename(entry.docPath, ".md"));
+      newDoc = copyFileInto(subDir, entry.docPath);
       madeDest.push(newDoc);
       // The .wav may be absent (transcript-only, or the Pilot server could not
       // create it and rolled back at /long/start): its absence must NOT fail the
       // save - the document is the deliverable.
       if (entry.audioPath && fs.existsSync(entry.audioPath)) {
-        newAudio = copyFileInto(dir, entry.audioPath);
+        newAudio = copyFileInto(subDir, entry.audioPath);
         madeDest.push(newAudio);
       }
     } catch (err) {
@@ -940,16 +950,23 @@ export class LongRecorder {
           /* leave a partial copy rather than risk touching a user file */
         }
       }
+      // Drop the subfolder too if it emptied out (rmdirSync refuses otherwise):
+      // a failed save must not litter the user's folder.
+      try {
+        if (subDir) fs.rmdirSync(subDir);
+      } catch {
+        /* non-empty or already gone */
+      }
       return { ok: false, error: "could not save the recording: " + String(err) };
     }
     const stagedFrom = entry.dir;
-    const updated: RecentEntry = { ...entry, dir, docPath: newDoc, audioPath: newAudio, staged: false };
+    const updated: RecentEntry = { ...entry, dir: subDir, docPath: newDoc, audioPath: newAudio, staged: false };
     saveRecent(pushRecent(list.slice(1), updated), this.deps.recentPathOverride);
     // Keep the live snapshot consistent if it still points at the saved doc.
     if (this.transcriptPath === entry.docPath) {
       this.transcriptPath = newDoc;
       this.audioPath = newAudio;
-      this.dir = dir;
+      this.dir = subDir;
       this.staged = false;
     }
     // recent.json now points at the destination copies; remove the staging
@@ -971,6 +988,45 @@ export class LongRecorder {
     cleanEmptyHoldingDirs(this.holdingRootFor(stagedFrom), stagedFrom);
     this.deps.log?.(`[long] saved -> ${newDoc}`);
     return { ok: true, docPath: newDoc, audioPath: newAudio };
+  }
+
+  /** Meeting-notes splice (2026-07-21): the Pilot server generates the notes
+   * (Claude one-shot, on ITS side) and hands the finished text here; the ENGINE
+   * stays the one writer of the document, so a splice can never tear against
+   * save() moving the files (save waits on `splicing` like it waits on
+   * `finalizing`). The 100%-local invariant holds: no network call happens
+   * here, we only write bytes we were handed. The target is resolved from
+   * recent.json, NOT trusted from the caller: if save() moved the capture
+   * between notes generation and this call, the caller gets `movedTo` and
+   * re-splices on the new path (the notes are already computed). */
+  notesSplice(docPath: string, notes: string): { ok: boolean; error?: string; movedTo?: string } {
+    const p = (docPath || "").trim();
+    const text = (notes || "").trim();
+    if (!p) return { ok: false, error: "missing docPath" };
+    if (!text) return { ok: false, error: "empty notes" };
+    if (this.active || this.finalizing) return { ok: false, error: "a recording is still in progress" };
+    const entry = loadRecent(this.deps.recentPathOverride)[0];
+    if (!entry || !entry.docPath || !fs.existsSync(entry.docPath)) {
+      return { ok: false, error: "no recording to annotate (already purged?)" };
+    }
+    if (path.resolve(p) !== path.resolve(entry.docPath)) {
+      return { ok: false, movedTo: entry.docPath, error: "the recording moved" };
+    }
+    this.splicing = true;
+    try {
+      const doc = fs.readFileSync(entry.docPath, "utf8");
+      const header = transcriptHeader(entry.title, entry.startedIso);
+      // Atomic swap, same discipline as the summary splice in finalize().
+      const tmp = entry.docPath + ".tmp";
+      fs.writeFileSync(tmp, spliceNotes(doc, header, text));
+      fs.renameSync(tmp, entry.docPath);
+      this.deps.log?.(`[long] notes spliced -> ${entry.docPath}`);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: String(err) };
+    } finally {
+      this.splicing = false;
+    }
   }
 
   /** Live transcript tail for the PWA page (v3 chantier 5): the document
