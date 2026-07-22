@@ -90,12 +90,11 @@ const RIBBON = {
   skew: 0.86, // crest slightly left of center
   baseSpeed: 0.55,
 };
-// Amber/orange ribbon (charte 2026-07-17; retune Roch 2026-07-17: le pic tirait trop vers le
-// jaune-or). AGR Flow's dictation overlay takes the AGR accent, no longer emerald. A warm ramp
-// anchored on the brand ambre --brand #b9762a (deep -> orange -> deep) so the additive bloom reads
-// ORANGE, not yellow or green. Flow's OWN signature; the Pilot composer ribbon follows the chosen
-// theme separately (RIBBON_COLORWAYS in AGR Pilot).
-const RIBBON_STOPS = ["#8a4a15", "#b9762a", "#db8434", "#b9762a", "#8a4a15"];
+// Solid AGR-site amber ribbon (Roch 2026-07-22: "un orange, pas un orange fluo"). The site accent is
+// --brand #b9762a with --brand-2 #9c6222 as its deep tone; the ramp stays INSIDE that amber family
+// (no bright peak like the old #db8434) and compositing is NORMAL, not additive - see the draw loop.
+// Flow's OWN signature; the Pilot composer ribbon follows the chosen theme separately.
+const RIBBON_STOPS = ["#9c6222", "#b9762a", "#c07f30", "#b9762a", "#9c6222"];
 
 function Ribbon({
   levelRef,
@@ -154,7 +153,9 @@ function Ribbon({
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
       ctx.strokeStyle = grad;
-      ctx.globalCompositeOperation = "lighter"; // additive: filaments bloom where they cross
+      // Normal (source-over) compositing: overlapping strands stay a solid amber instead of
+      // summing toward yellow-white. The old additive "lighter" blend was exactly the neon
+      // bloom Roch asked to drop ("un orange, pas un orange fluo", 2026-07-22).
       for (const s of strands) {
         const trace = () => {
           ctx.beginPath();
@@ -189,13 +190,12 @@ function Ribbon({
   return (
     <canvas
       ref={canvasRef}
-      // Roch 2026-07-15: much smaller + narrower (was 360x72, itself an enlargement of 216x40) - the
-      // overlay should stay discreet over the app you are dictating into. maxAmp = H*0.34 and the
-      // span follow the canvas, so the ribbon just scales; nothing is distorted. Keep OVERLAY_W/H in
-      // main/overlay.ts in step: the window only needs to hold this plus the shadow halo.
-      // A soft dark drop-shadow is the ONLY backdrop (no pill), so the emerald filaments still read
-      // on a light desktop.
-      style={{ width: 170, height: 32, display: "block", filter: "drop-shadow(0 0 7px rgba(0,0,0,0.6))" }}
+      // Roch 2026-07-22: 50% narrower (170 -> 85), height unchanged - the overlay should stay
+      // discreet over the app you are dictating into. maxAmp = H*0.34 and the span follow the
+      // canvas, so the ribbon just scales; nothing is distorted. Keep OVERLAY_W/H in main/overlay.ts
+      // in step: the window only needs to hold this plus the shadow halo. A soft dark drop-shadow is
+      // the ONLY backdrop (no pill), so the amber filaments still read on a light desktop.
+      style={{ width: 85, height: 32, display: "block", filter: "drop-shadow(0 0 7px rgba(0,0,0,0.6))" }}
       aria-hidden
     />
   );
