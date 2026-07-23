@@ -48,6 +48,17 @@ test("language accepts auto and short ISO codes only", () => {
   assert.equal(sanitizeSettings({ language: "french" }).language, SETTINGS_DEFAULTS.language);
 });
 
+test("insertMode and summaryModel: valid values kept, junk falls back to defaults", () => {
+  assert.equal(sanitizeSettings({ insertMode: "type" }).insertMode, "type");
+  assert.equal(sanitizeSettings({ insertMode: "paste" }).insertMode, "paste");
+  assert.equal(sanitizeSettings({ insertMode: "nonsense" }).insertMode, SETTINGS_DEFAULTS.insertMode);
+  assert.equal(SETTINGS_DEFAULTS.insertMode, "paste");
+  assert.equal(sanitizeSettings({ summaryModel: "gemma3:12b" }).summaryModel, "gemma3:12b");
+  // A model name that looks like a path (contains a slash) is rejected.
+  assert.equal(sanitizeSettings({ summaryModel: "../evil" }).summaryModel, SETTINGS_DEFAULTS.summaryModel);
+  assert.equal(SETTINGS_DEFAULTS.summaryModel, "");
+});
+
 test("defaults are Ctrl+Win, large-v3-turbo, French forced, no sounds (v5)", () => {
   assert.deepEqual(SETTINGS_DEFAULTS.combo, ["CTRL", "WIN"]);
   assert.match(SETTINGS_DEFAULTS.model, /^ggml-large-v3-turbo/);

@@ -7,7 +7,7 @@ import { NativeCapture } from "./capture";
 import { WhisperSidecar } from "./asr/sidecar";
 import { ensureModel, DEFAULT_MODEL_FILE, AVAILABLE_MODELS } from "./asr/modelStore";
 import { FocusProbe } from "./focus/probe";
-import { insertViaPaste, leaveOnClipboard } from "./insert";
+import { insertViaPaste, insertTyped, leaveOnClipboard } from "./insert";
 import { decideRoute } from "../shared/route";
 import { comboLabel } from "../shared/combo";
 import { loadSettings, saveSettings, sanitizeSettings, dataDir, type FlowSettings } from "./settings";
@@ -282,6 +282,7 @@ let listening = false; // dictation capture in flight (drives /update-readiness)
 const longRec = new LongRecorder({
   getSidecar: () => sidecar,
   cleanupModel: () => settings.cleanupModel,
+  summaryModel: () => settings.summaryModel,
   ollamaModels: () => listOllamaModels(),
   log: flowLog, // R1: long-recording diagnostics visible in a built app too
   historyDir: () => settings.historyDir, // C10: read lazily, so a live settings change applies immediately
@@ -348,8 +349,11 @@ function wireCapture() {
         // Probe the focus WHILE nothing else has stolen it, then route and act.
         const focus = (await probe?.probe()) ?? null;
         const route = decideRoute(focus);
-        if (route === "insert") await insertViaPaste(text);
-        else leaveOnClipboard(text);
+        if (route === "insert") {
+          // "type" mode keystrokes the text (paste-hostile apps); default pastes.
+          if (settings.insertMode === "type") await insertTyped(text);
+          else await insertViaPaste(text);
+        } else leaveOnClipboard(text);
         // `text` goes out of scope here: the dictation is never retained (5.4).
         if (DEV)
           console.log(`[flow] ${ms} ms | focus=${focus?.control ?? "none"} -> ${route}`);

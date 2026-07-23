@@ -63,5 +63,11 @@ export function leaveOnClipboard(text: string): void {
   clipboard.writeText(text);
 }
 
-// A typed-keys fallback (keyboard.type) for paste-hostile apps is planned for
-// phase 2 (streamed insertion); paste + restore covers phase 1's targets.
+/** The paste-hostile path (opt-in via settings.insertMode = "type"): type the
+ * text as keystrokes instead of pasting. Slower and unicode/IME-sensitive, but
+ * it works where an app swallows a programmatic Ctrl+V, and it NEVER puts the
+ * dictation on the clipboard - so it is even stricter on the zero-retention rule
+ * (§5.4) than the paste path (no snapshot/restore dance at all). */
+export async function insertTyped(text: string): Promise<void> {
+  await keyboard.type(text);
+}

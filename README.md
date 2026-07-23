@@ -39,9 +39,12 @@ release       ──> energy VAD (silence never reaches the model)
    otherwise  ──> leave the text on the clipboard, ready for Ctrl+V
 ```
 
-Settings (tray icon > Settings): shortcut (recorded through the low-level hook,
-modifier-only combos welcome), microphone, languages, model (tiny to medium),
-sounds, optional AI cleanup.
+Settings live in AGR Manager's AGR Flow view (the engine itself is headless and
+is driven over its local API): shortcut (recorded through the low-level hook,
+modifier-only combos welcome), microphone, language, model (tiny through
+large-v3-turbo, the French-friendly default), insertion mode (clipboard paste,
+or typed keystrokes for paste-hostile apps), and an optional local-LLM pass
+(Ollama) for dictation cleanup and meeting summaries.
 
 ## How the long mode works
 

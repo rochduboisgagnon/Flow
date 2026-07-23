@@ -18,9 +18,11 @@ export interface FlowSettings {
   micDeviceId: string; // "" = system default microphone
   sounds: boolean; // audible start/stop cues
   cleanup: boolean; // optional Ollama pass (punctuation + voice commands)
-  cleanupModel: string; // Ollama model name, e.g. "gemma3:4b"
+  cleanupModel: string; // Ollama model name for dictation cleanup, e.g. "gemma3:4b"
+  summaryModel: string; // Ollama model for meeting summaries; "" = reuse cleanupModel, then first installed
   forceCpu: boolean; // R1: escape hatch for capricious GPUs (skip the Vulkan backend)
   historyDir: string; // C10: recording history root; "" = default (dataDir()/history)
+  insertMode: "paste" | "type"; // how dictation lands in an editable field: clipboard paste (default) or typed keystrokes for paste-hostile apps
 }
 
 export const SETTINGS_DEFAULTS: FlowSettings = {
@@ -31,8 +33,10 @@ export const SETTINGS_DEFAULTS: FlowSettings = {
   sounds: false, // v5 c5: no audible cues at all
   cleanup: false, // dictation never needs the LLM (plan: optional, off)
   cleanupModel: "",
+  summaryModel: "", // "" = reuse cleanupModel, then the first installed Ollama model
   forceCpu: false, // R1: Vulkan first by default; on = CPU only
   historyDir: "", // C10: default location (dataDir()/history)
+  insertMode: "paste", // clipboard paste + restore; "type" keystrokes the text (paste-hostile apps, never touches the clipboard)
 };
 
 export function dataDir(): string {
@@ -71,6 +75,10 @@ export function sanitizeSettings(raw: unknown): FlowSettings {
   if (typeof r.cleanupModel === "string" && /^[\w.:-]*$/.test(r.cleanupModel)) {
     out.cleanupModel = r.cleanupModel;
   }
+  if (typeof r.summaryModel === "string" && /^[\w.:-]*$/.test(r.summaryModel)) {
+    out.summaryModel = r.summaryModel;
+  }
+  if (r.insertMode === "type" || r.insertMode === "paste") out.insertMode = r.insertMode;
   return out;
 }
 

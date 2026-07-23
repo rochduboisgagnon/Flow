@@ -109,13 +109,17 @@ test("pushRecent caps at RECENT_MAX, newest first", () => {
   assert.equal(list[0].title, "t" + (RECENT_MAX + 2));
 });
 
-test("summaryPrompt carries the transcript, template shape and marks", () => {
-  const p = summaryPrompt("meeting", "TRANSCRIPT BODY", [83_000]);
+test("summaryPrompt carries the transcript, clean section headings and marks", () => {
+  const p = summaryPrompt("TRANSCRIPT BODY", [83_000]);
   assert.ok(p.includes("TRANSCRIPT BODY"));
-  assert.ok(p.includes("Decisions"));
+  assert.ok(p.includes("## Decisions"));
   assert.ok(p.includes("00:01:23"));
-  const c = summaryPrompt("client", "X", []);
-  assert.ok(c.includes("Engagements"));
+  // The lead summary must NOT carry its own heading (it would double the
+  // "## Summary" wrapper finalize adds), and no "(bullets)"/"(one paragraph)"
+  // instruction parentheticals must leak into the section titles.
+  assert.ok(!p.includes("## Resume"), "no ## Resume heading to stack under ## Summary");
+  assert.ok(!p.includes("(bullets)"));
+  assert.ok(!p.includes("(one paragraph)"));
 });
 
 test("LongRecorder end to end with a mock engine (one document, audio kept)", async () => {

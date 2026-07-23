@@ -26,8 +26,7 @@ class CaptureProcessor extends AudioWorkletProcessor {
 registerProcessor("agrflow-capture", CaptureProcessor);
 `;
 
-// Audible start/stop cues (plan 5.9): know it is listening without looking.
-// v5 chantier 5: audible start/stop cues removed entirely (Roch: no noise at all).
+// v5 chantier 5: audible start/stop cues were removed entirely (Roch: no noise at all).
 
 type Phase = "idle" | "listening" | "transcribing" | "error";
 
@@ -315,7 +314,8 @@ function Overlay() {
   return (
     // C1: the overlay is now JUST the animation - no green dot, no glass pill. The
     // wrapper only centers the canvas (transparent). The error state keeps its own
-    // minimal readable chip (errors are rare).
+    // minimal readable chip (errors are rare), on the AGR charte: near-black with a
+    // single amber accent, matched to the ribbon rather than the old dark-glass look.
     <div
       style={{
         display: "flex",
@@ -330,13 +330,14 @@ function Overlay() {
       {phase === "error" ? (
         <span
           style={{
-            color: "#e9ecf0",
-            background: "rgba(10,12,16,0.78)",
-            border: "1px solid rgba(255,255,255,0.10)",
-            borderRadius: 12,
-            padding: "6px 13px",
-            backdropFilter: "blur(10px)",
-            WebkitBackdropFilter: "blur(10px)",
+            color: "#f4f1ec", // warm off-white (charte)
+            background: "rgba(20,18,15,0.86)", // near-black, faintly warm (charte noir)
+            border: "1px solid #b9762a", // the single amber accent (--brand)
+            borderRadius: 10,
+            padding: "5px 12px",
+            fontWeight: 500,
+            // Same "reads on a light desktop" trick as the ribbon's drop-shadow.
+            boxShadow: "0 2px 9px rgba(0,0,0,0.5)",
           }}
         >
           Microphone unavailable

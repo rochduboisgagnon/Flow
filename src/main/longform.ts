@@ -88,6 +88,10 @@ export interface LongStateSnapshot {
 export interface LongDeps {
   getSidecar(): WhisperSidecar | null;
   cleanupModel(): string; // settings.cleanupModel ("" = none configured)
+  /** settings.summaryModel: the Ollama model used for meeting summaries. "" (or
+   * absent) reuses cleanupModel, then the first installed model - so a distinct,
+   * bigger summary model can be set without disturbing the dictation cleanup. */
+  summaryModel?(): string;
   /** Installed Ollama models, used to auto-pick a summary model when the user
    * did not configure one. Injectable so tests don't hit a real Ollama. */
   ollamaModels?: () => Promise<string[] | null>;
@@ -1091,9 +1095,13 @@ export class LongRecorder {
     if (this.queue.length >= MAX_QUEUE) {
       // The ASR cannot keep up at all (should not happen: whisper runs many
       // times faster than realtime here). Refusing keeps memory bounded; the
-      // gap is visible in the transcript rather than silently eaten.
+      // gap is written into the transcript rather than silently eaten (same
+      // honest-gap discipline as a per-segment transcription failure).
       this.lastError = "transcription backlog full; a segment was dropped";
       this.deps.log?.("[long] " + this.lastError);
+      try {
+        fs.appendFileSync(this.transcriptPath, `> [segment at ${Math.round(offsetMs / 1000)}s dropped: transcription backlog full]\n\n`);
+      } catch { /* disk hiccup: the log line above still recorded it */ }
       return;
     }
     this.queue.push({ pcm: seg, offsetMs });
@@ -1147,22 +1155,26 @@ export class LongRecorder {
       // document at the top (no template chooser anymore). If no local LLM is
       // available, the document is the transcript alone.
       let summary = "";
-      const model = this.deps.cleanupModel() || (this.deps.ollamaModels ? (await this.deps.ollamaModels())?.[0] : undefined) || "";
+      const model =
+        (this.deps.summaryModel?.() || "") ||
+        this.deps.cleanupModel() ||
+        (this.deps.ollamaModels ? (await this.deps.ollamaModels())?.[0] : undefined) ||
+        "";
       if (model) {
         const doc = fs.readFileSync(this.transcriptPath, "utf8");
         const body = doc.startsWith(this.headerStr) ? doc.slice(this.headerStr.length) : doc;
         const parts = chunkTranscript(body);
         if (parts.length === 1) {
-          summary = (await summarize(model, summaryPrompt("meeting", parts[0], this.marks))) ?? "";
+          summary = (await summarize(model, summaryPrompt(parts[0], this.marks))) ?? "";
         } else {
           // Map-reduce: summarize each chunk, then the joined summaries.
           const partials: string[] = [];
           for (const p of parts) {
-            const x = await summarize(model, summaryPrompt("meeting", p, []));
+            const x = await summarize(model, summaryPrompt(p, []));
             if (x) partials.push(x);
           }
           summary =
-            (await summarize(model, summaryPrompt("meeting", partials.join("\n\n---\n\n"), this.marks))) ??
+            (await summarize(model, summaryPrompt(partials.join("\n\n---\n\n"), this.marks))) ??
             partials.join("\n\n---\n\n");
         }
         if (summary) {

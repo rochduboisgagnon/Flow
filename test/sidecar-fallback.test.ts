@@ -59,7 +59,7 @@ test("R1: a backend that passes the probe then returns empty demotes to CPU", as
   });
   try {
     // The GPU passes the decode probe (1st inference = text) so it is frozen; then
-    // real utterances come back empty. After EMPTY_DEMOTE_STREAK (5) it must switch
+    // real utterances come back empty. After EMPTY_DEMOTE_STREAK (3) it must switch
     // to CPU (default allowEmptyDemote = dictation).
     const texts: string[] = [];
     for (let i = 0; i < 6; i++) texts.push((await sc.transcribe(probe)).text);

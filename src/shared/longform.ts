@@ -143,26 +143,27 @@ export function spliceNotes(doc: string, header: string, notes: string): string 
   return header + "## Notes\n\n" + notes.trim() + "\n\n## Transcript\n\n" + body.replace(/^\s+/, "");
 }
 
-// ---- summary templates (plan §6: gabarits de resume) ----
-
-export const SUMMARY_TEMPLATES = [
-  { id: "meeting", label: "Meeting notes" },
-  { id: "client", label: "Client interaction" },
-  { id: "raw", label: "Raw transcript only (no summary)" },
-] as const;
-
-export type TemplateId = (typeof SUMMARY_TEMPLATES)[number]["id"];
-
-export function summaryPrompt(template: TemplateId, transcript: string, marks: number[]): string {
+// ---- summary prompt (plan §6: gabarits de resume) ----
+//
+// One shape only. The template chooser was removed in v3 (one document, no
+// picker), so finalize always asks for meeting-style notes; the earlier
+// "client"/"raw" templates were never reachable from finalize and are gone.
+//
+// Two shape rules keep the on-disk document clean (finalize wraps the whole
+// summary under a single "## Summary" heading):
+//   - the lead summary is a PLAIN paragraph with NO heading of its own; a
+//     "## Resume" heading here would stack a redundant empty title under the
+//     "## Summary" wrapper (the doublon bug).
+//   - section titles carry no "(one paragraph)"/"(bullets)" parentheticals,
+//     which the model used to echo literally into the headings.
+export function summaryPrompt(transcript: string, marks: number[]): string {
   const marked = marks.length
-    ? `\nMoments the user MARKED as important during the recording (offsets): ${marks.map(hms).join(", ")}. Give these passages extra attention in the summary.\n`
+    ? `\nMoments the user MARKED as important during the recording (offsets): ${marks.map(hms).join(", ")}. Give these passages extra attention.\n`
     : "";
   const shape =
-    template === "client"
-      ? "Write, in the LANGUAGE of the transcript: ## Resume (one paragraph), ## Besoins exprimes (bullets), ## Engagements pris (bullets: who commits to what, deadlines), ## Prochaines etapes (bullets), ## Points de vigilance (bullets, only if any)."
-      : "Write, in the LANGUAGE of the transcript: ## Resume (one paragraph), ## Points cles (bullets), ## Decisions (bullets), ## Actions (bullets: owner and deadline when stated), ## Suivis (bullets, only if any).";
+    'Write in the LANGUAGE of the transcript. Start with a one-paragraph summary as plain text, with NO heading. Then add these sections, each introduced by its exact heading alone on its line with bullet points beneath it: "## Points cles", "## Decisions", "## Actions" (name the owner and any stated deadline), and "## Suivis" (include this section only if there are open follow-ups).';
   return [
-    "You summarize a meeting transcript. Base EVERYTHING on the transcript below; never invent facts, names or numbers. Output ONLY the requested markdown sections, no preamble.",
+    "You summarize a meeting transcript. Base EVERYTHING on the transcript below; never invent facts, names or numbers. Output ONLY markdown, no preamble.",
     marked,
     shape,
     "",

@@ -65,10 +65,11 @@ const RESPAWN_DELAY_MS = 1_000;
 const PROBE_TIMEOUT_MS = 30_000;
 // R1: after this many consecutive EMPTY results during DICTATION (the "animation
 // plays but nothing writes" symptom), the current backend is demoted and the next
-// candidate (CPU) takes over. Set high enough that a real user never trips it by
-// chance (empty dictations in a row are essentially never legitimate), but a broken
-// backend - empty on EVERY utterance - still falls back within a few seconds.
-const EMPTY_DEMOTE_STREAK = 5;
+// candidate (CPU) takes over. Empty dictations in a row are essentially never
+// legitimate (the energy VAD already dropped true silence before we got here), so
+// 3 is low enough to self-heal a broken backend after only a couple of dead
+// utterances, yet not so twitchy that a lone fluke demotes a healthy GPU.
+const EMPTY_DEMOTE_STREAK = 3;
 
 export class WhisperSidecar {
   private proc: ChildProcess | null = null;

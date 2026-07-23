@@ -1,6 +1,6 @@
 {
   "name": "agr-flow",
-  "version": "0.19.0",
+  "version": "0.20.0",
   "description": "Local, on-device voice dictation for any app. Hold a key, speak, release: the text lands at your cursor. Nothing ever leaves your machine, nothing is ever stored.",
   "license": "MIT",
   "author": "AGR Labs",
@@ -14,7 +14,7 @@
     "dev:electron": "tsc -p tsconfig.main.json && cross-env AGRFLOW_DEV=1 electron .",
     "build": "tsc -p tsconfig.main.json && vite build",
     "lint": "eslint .",
-    "test": "tsx --test test/*.test.ts",
+    "test": "tsx --test --test-concurrency=1 test/*.test.ts",
     "dist": "npm run build && electron-builder --win",
     "postinstall": "node scripts/ensure-keyspy.cjs"
   },
