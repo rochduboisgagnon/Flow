@@ -225,7 +225,7 @@ function Ribbon({
       // drop-shadow of its own - the pill is its backdrop and reads on any desktop. maxAmp =
       // H*0.34 and the span follow the canvas, so the ribbon just scales. Keep OVERLAY_W/H in
       // main/overlay.ts in step: the window must hold the pill (canvas + padding) plus its shadow.
-      style={{ width: 92, height: 26, display: "block" }}
+      style={{ width: 92, height: 18, display: "block" }}
       aria-hidden
     />
   );
@@ -384,7 +384,7 @@ function Overlay() {
             display: "inline-flex",
             alignItems: "center",
             justifyContent: "center",
-            padding: "7px 16px", // the pill's breathing room around the ribbon
+            padding: "5px 16px", // slim vertical breathing room (Roch: ~30% shorter pill)
             background: "rgba(20,18,15,0.82)", // charte near-black, faintly warm
             borderRadius: 999, // stadium: fully circular ends (the Wispr shape)
             boxShadow: "0 2px 10px rgba(0,0,0,0.45)", // lifts off a light desktop

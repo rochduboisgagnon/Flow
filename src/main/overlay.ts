@@ -34,6 +34,8 @@ export class OverlayWindow {
     // its soft shadow without clipping; it stays transparent + click-through, so this size is
     // invisible. Bottom-anchored, so height is what would move the pill vertically - keep it just
     // large enough for the pill + shadow, and in step with the pill's padding in overlay.tsx.
+    // The slim pill (canvas 92x18 + ~5/16 px padding = ~124x28) is centered in this window, so
+    // shrinking the pill keeps its on-screen position; no need to change W/H for the slim tweak.
     const W = 160;
     const H = 70;
     this.win = new BrowserWindow({
