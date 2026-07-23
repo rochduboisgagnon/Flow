@@ -29,13 +29,13 @@ export class OverlayWindow {
 
   create(dev: boolean) {
     const { width, height } = screen.getPrimaryDisplay().workAreaSize;
-    // The overlay is just the animation, no pill. The window only has to hold the canvas plus its
-    // drop-shadow halo without clipping; it stays transparent + click-through, so this size is
-    // invisible to the user. Roch 2026-07-22: the ribbon is 50% narrower (85x32, renderer/overlay.tsx),
-    // so the window follows - it just needs to clear the canvas + the 7px shadow. Height stays: only
-    // the WIDTH shrank, and the window is bottom-anchored so height is what would move the ribbon.
-    const W = 130;
-    const H = 60;
+    // The overlay is a horizontal PILL (stadium) holding the amber ribbon (renderer/overlay.tsx,
+    // 2026-07-23). The window only has to contain that pill (canvas 92x26 + ~7/16 px padding) plus
+    // its soft shadow without clipping; it stays transparent + click-through, so this size is
+    // invisible. Bottom-anchored, so height is what would move the pill vertically - keep it just
+    // large enough for the pill + shadow, and in step with the pill's padding in overlay.tsx.
+    const W = 160;
+    const H = 70;
     this.win = new BrowserWindow({
       width: W,
       height: H,
@@ -63,6 +63,9 @@ export class OverlayWindow {
         // canvas requestAnimationFrame and the ribbon can be blank or late right after a
         // showInactive(). Keep it painting so the animation is there the instant it shows.
         backgroundThrottling: false,
+        // The opt-in start/stop cue is synthesized in this renderer; there is no DOM user
+        // gesture (the PTT keypress lives in the native hook), so allow autoplay explicitly.
+        autoplayPolicy: "no-user-gesture-required",
       },
     });
     this.win.setAlwaysOnTop(true, "screen-saver");

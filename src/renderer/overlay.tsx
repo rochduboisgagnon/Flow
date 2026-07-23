@@ -26,7 +26,39 @@ class CaptureProcessor extends AudioWorkletProcessor {
 registerProcessor("agrflow-capture", CaptureProcessor);
 `;
 
-// v5 chantier 5: audible start/stop cues were removed entirely (Roch: no noise at all).
+// House-made start/stop cues (opt-in via the `sounds` setting; the v5 removal is
+// reinstated 2026-07-23 at Roch's request, but as an ORIGINAL synthesized blip -
+// no third-party audio). A soft sine "blip" with a fast attack and quick decay,
+// ~180 ms: HIGHER for start (A5 gliding down), LOWER for stop (D5 -> A4), echoing
+// the Wispr convention (high = go, low = done) without shipping its files. Web
+// Audio only, no asset. A cue must NEVER break capture, so it is all best-effort.
+let cueCtx: AudioContext | null = null;
+function playCue(kind: "start" | "stop"): void {
+  try {
+    if (!cueCtx) cueCtx = new AudioContext();
+    const ctx = cueCtx;
+    if (ctx.state === "suspended") void ctx.resume();
+    const t = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    const [f0, f1] = kind === "start" ? [880, 784] : [587, 440]; // A5->G5 / D5->A4
+    osc.frequency.setValueAtTime(f0, t);
+    osc.frequency.exponentialRampToValueAtTime(f1, t + 0.16);
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(0.11, t + 0.012); // soft fast attack (tunable)
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.18); // quick decay
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(t);
+    osc.stop(t + 0.2);
+    osc.onended = () => {
+      osc.disconnect();
+      gain.disconnect();
+    };
+  } catch {
+    /* audio output unavailable (rare): dictation just continues silently */
+  }
+}
 
 type Phase = "idle" | "listening" | "transcribing" | "error";
 
@@ -189,12 +221,11 @@ function Ribbon({
   return (
     <canvas
       ref={canvasRef}
-      // Roch 2026-07-22: 50% narrower (170 -> 85), height unchanged - the overlay should stay
-      // discreet over the app you are dictating into. maxAmp = H*0.34 and the span follow the
-      // canvas, so the ribbon just scales; nothing is distorted. Keep OVERLAY_W/H in main/overlay.ts
-      // in step: the window only needs to hold this plus the shadow halo. A soft dark drop-shadow is
-      // the ONLY backdrop (no pill), so the amber filaments still read on a light desktop.
-      style={{ width: 85, height: 32, display: "block", filter: "drop-shadow(0 0 7px rgba(0,0,0,0.6))" }}
+      // 2026-07-23: the ribbon now lives INSIDE a pill (see Overlay), so it carries no
+      // drop-shadow of its own - the pill is its backdrop and reads on any desktop. maxAmp =
+      // H*0.34 and the span follow the canvas, so the ribbon just scales. Keep OVERLAY_W/H in
+      // main/overlay.ts in step: the window must hold the pill (canvas + padding) plus its shadow.
+      style={{ width: 92, height: 26, display: "block" }}
       aria-hidden
     />
   );
@@ -203,6 +234,7 @@ function Ribbon({
 function Overlay() {
   const [phase, setPhase] = useState<Phase>("idle");
   const levelRef = useRef(0); // written per audio frame, read by the ribbon rAF
+  const soundsOn = useRef(false); // this capture's opt-in cue flag (start plays now, stop later)
   const sessionRef = useRef<{
     ctx: AudioContext;
     stream: MediaStream;
@@ -221,6 +253,10 @@ function Overlay() {
 
     async function start(cfg?: CaptureStartPayload) {
       const my = ++gen;
+      // Play the "go" cue on the KEYPRESS, before the getUserMedia latency, so it is
+      // instant. Remember the flag for the matching stop cue on release.
+      soundsOn.current = !!cfg?.sounds;
+      if (soundsOn.current) playCue("start");
       let stream: MediaStream | null = null;
       let ctx: AudioContext | null = null;
       try {
@@ -289,6 +325,7 @@ function Overlay() {
     }
 
     function stop() {
+      if (soundsOn.current) playCue("stop");
       const chunks = teardown();
       setPhase("transcribing"); // the overlay stays up until main says flowDone
       const pcm = floatTo16BitPcm(chunks);
@@ -312,10 +349,10 @@ function Overlay() {
   }, []);
 
   return (
-    // C1: the overlay is now JUST the animation - no green dot, no glass pill. The
-    // wrapper only centers the canvas (transparent). The error state keeps its own
-    // minimal readable chip (errors are rare), on the AGR charte: near-black with a
-    // single amber accent, matched to the ribbon rather than the old dark-glass look.
+    // 2026-07-23 (Roch): the ribbon sits in a horizontal PILL - a stadium with fully circular
+    // ends, Wispr-style - but in the AGR charte: a near-black translucent pill with the amber
+    // ribbon inside (colour unchanged). The wrapper only centers it; the error state keeps its
+    // own matching chip (errors are rare).
     <div
       style={{
         display: "flex",
@@ -333,17 +370,28 @@ function Overlay() {
             color: "#f4f1ec", // warm off-white (charte)
             background: "rgba(20,18,15,0.86)", // near-black, faintly warm (charte noir)
             border: "1px solid #b9762a", // the single amber accent (--brand)
-            borderRadius: 10,
-            padding: "5px 12px",
+            borderRadius: 999, // stadium ends, matched to the ribbon pill
+            padding: "5px 13px",
             fontWeight: 500,
-            // Same "reads on a light desktop" trick as the ribbon's drop-shadow.
-            boxShadow: "0 2px 9px rgba(0,0,0,0.5)",
+            boxShadow: "0 2px 10px rgba(0,0,0,0.45)",
           }}
         >
           Microphone unavailable
         </span>
       ) : (
-        <Ribbon levelRef={levelRef} phase={phase} />
+        <div
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "7px 16px", // the pill's breathing room around the ribbon
+            background: "rgba(20,18,15,0.82)", // charte near-black, faintly warm
+            borderRadius: 999, // stadium: fully circular ends (the Wispr shape)
+            boxShadow: "0 2px 10px rgba(0,0,0,0.45)", // lifts off a light desktop
+          }}
+        >
+          <Ribbon levelRef={levelRef} phase={phase} />
+        </div>
       )}
     </div>
   );
