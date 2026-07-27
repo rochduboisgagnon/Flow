@@ -1,21 +1,57 @@
-/* Flow main window - DARK theme (Roch 2026-07-27), derived from the app's own
-   signature: the dictation pill's warm near-black (rgb 20,18,15) with the ONE
-   amber accent #b9762a. Charte AGR: black/white/grey + amber, 600 titles / 400
-   body, no emoji, no gradients. */
+/* Flow main window - ported from the validated mockup (design/mockup.html),
+   wave U1. Two themes over the SAME single amber accent: dark is the app's
+   signature (derived from the dictation pill's warm near-black), light is the
+   original AGR light charte. Tokens only; a literal color below either lives
+   in a token block or carries a justification comment.
+
+   The two ambers are INTENTIONALLY different (Roch 2026-07-22 + mockup):
+   #c98a3a on dark (lightened for AA contrast), #b9762a on light. On light
+   grounds #b9762a only clears the 3:1 NON-TEXT bar (controls, borders, dots);
+   amber TEXT goes through --amber-text, which deepens to #9c6222 on light to
+   clear 4.5:1 (review U1j - same split as the charte's --brand vs
+   --brand-text). Do not "harmonize" any of them. The overlay's ribbon stays
+   in the #b9762a family and is NOT themed. */
 
 :root {
-  --bg: #171512;
-  --panel: #201d19;
-  --line: #2e2a24;
-  --line-strong: #3b352d;
-  --ink: #f4f1ec;
-  --ink-2: #a49d92;
-  --ink-3: #6f6a61;
-  --brand: #b9762a;
-  --brand-soft: rgba(185, 118, 42, 0.16);
-  --danger: #c65a4f;
-  --radius: 10px;
+  --bg: #191613;
+  --panel: #211d18;
+  --panel2: #292319;
+  --line: #2d2823;
+  --line2: #3d362d;
+  --ink: #f2ede4;
+  --ink2: #a89e90;
+  --ink3: #6e675d;
+  --amber: #c98a3a;
+  --amber-text: #c98a3a; /* 6.2:1 on --bg dark: amber is text-safe as-is */
+  --amber-deep: #9c6222;
+  --amber-soft: rgba(201, 138, 58, 0.13);
+  --err: #cf6a5c;
+  --hero-grad: linear-gradient(160deg, #241e16, #1d1915 55%);
+  --r: 10px;
+  /* MUST equal TITLEBAR_H in src/shared/constants.ts (the DIP height given to
+     titleBarOverlay). If the two diverge, the native caption buttons float
+     over the content or the brand row is half-covered. */
+  --titlebar-h: 40px;
   --font: "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+  /* Native scrollbars and form controls follow the app theme, not the OS. */
+  color-scheme: dark;
+}
+html.light {
+  --bg: #f6f4f0;
+  --panel: #fdfcfa;
+  --panel2: #efece6;
+  --line: #e4e0d8;
+  --line2: #d3cdc2;
+  --ink: #1b1917;
+  --ink2: #6f6a61;
+  --ink3: #a09a8f;
+  --amber: #b9762a;
+  --amber-text: #9c6222; /* #b9762a is only 3.4:1 on light --bg; text needs 4.5 */
+  --amber-deep: #9c6222;
+  --amber-soft: rgba(185, 118, 42, 0.11);
+  --err: #a03d31;
+  --hero-grad: linear-gradient(160deg, #fbf8f2, #f3efe7 55%);
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -25,42 +61,62 @@ html, body, #root {
   height: 100%;
   font-family: var(--font);
   font-size: 13.5px;
+  line-height: 1.5;
   color: var(--ink);
   background: var(--bg);
 }
+/* Amber selection in both themes (mockup): visible on dark and light inks. */
+::selection { background: rgba(201, 138, 58, 0.28); }
 
-.app { display: flex; height: 100%; user-select: none; }
+/* Desktop chrome does not select like a web page; every READABLE surface is
+   re-enabled in the allowlist at the bottom. Grow the allowlist with each new
+   page (transcript, notes, snippets), or facts become uncopyable. */
+.app { display: flex; flex-direction: column; height: 100%; user-select: none; }
 
-/* ---- left rail ---- */
-.rail {
-  width: 216px;
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  border-right: 1px solid var(--line);
-  background: var(--bg);
-  padding: 14px 10px 10px;
-  overflow-y: auto;
-}
-.rail .brand {
+/* ---- titlebar (frameless shell, wave U1) ----
+   The native caption buttons (min/max/close) are drawn by Windows via
+   titleBarOverlay OVER the top-right corner of this bar. padding-right keeps
+   our content out from under them: env(titlebar-area-width) is the width NOT
+   covered by the overlay, with a fallback for when the overlay is absent
+   (dev on another platform), where it must resolve to zero padding. */
+.titlebar {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 4px 8px 14px;
+  height: var(--titlebar-h);
+  flex: none;
+  border-bottom: 1px solid var(--line);
+  padding-right: calc(100% - env(titlebar-area-width, 100%));
+  -webkit-app-region: drag; /* dragging + native double-click maximize; every
+                               interactive child needs -webkit-app-region:no-drag */
 }
-.rail .brand img { width: 22px; height: 22px; border-radius: 6px; }
-.rail .brand .name { font-weight: 600; font-size: 15px; letter-spacing: 0.01em; }
-.rail .brand .by { font-size: 10.5px; color: var(--ink-3); margin-top: 1px; }
+.tb-brand { display: flex; align-items: center; gap: 9px; padding: 0 14px; }
+.tb-icon { width: 20px; height: 20px; display: block; border-radius: 5px; }
+.tb-name { font-weight: 600; font-size: 13px; letter-spacing: 0.01em; }
+.tb-drag { flex: 1; }
+.tb-status { display: flex; align-items: center; gap: 7px; color: var(--ink2); font-size: 11.5px; padding-right: 12px; }
 
-.rail .group-label {
-  font-size: 10.5px;
+/* ---- body: rail + content ---- */
+.body { display: flex; flex: 1; min-height: 0; }
+
+.rail {
+  width: 212px;
+  flex: none;
+  border-right: 1px solid var(--line);
+  padding: 12px 9px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow-y: auto;
+}
+.rail .grp {
+  font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--ink-3);
-  padding: 12px 8px 4px;
+  letter-spacing: 0.09em;
+  color: var(--ink2); /* review U1j: ink3 text fails AA in both themes */
+  padding: 13px 9px 5px;
 }
-.rail button.nav {
+.rail button {
   display: flex;
   align-items: center;
   gap: 9px;
@@ -68,163 +124,160 @@ html, body, #root {
   border: 0;
   background: transparent;
   font: inherit;
-  color: var(--ink-2);
-  padding: 7px 8px;
-  border-radius: 7px;
+  color: var(--ink2);
+  padding: 7px 9px;
+  border-radius: 8px;
   cursor: pointer;
   text-align: left;
+  transition: background 0.12s, color 0.12s;
 }
-.rail button.nav:hover { background: rgba(255, 255, 255, 0.05); color: var(--ink); }
-.rail button.nav.active { background: var(--brand-soft); color: var(--ink); font-weight: 600; }
-.rail button.nav.active svg { stroke: var(--brand); }
-.rail button.nav svg { width: 15px; height: 15px; stroke: currentColor; flex: none; }
+.rail button:hover { background: var(--panel2); color: var(--ink); }
+.rail button[aria-current="page"] { background: var(--amber-soft); color: var(--ink); font-weight: 600; }
+.rail button[aria-current="page"] svg { stroke: var(--amber); }
+.rail svg { width: 15px; height: 15px; stroke: currentColor; stroke-width: 1.75; fill: none; stroke-linecap: round; stroke-linejoin: round; flex: none; }
 .rail .spacer { flex: 1; }
 
-/* ---- content ---- */
-.content { flex: 1; overflow-y: auto; padding: 26px 32px 40px; }
-.content h1 { font-size: 19px; font-weight: 600; margin: 0 0 4px; }
-.content .sub { color: var(--ink-2); margin: 0 0 22px; }
+.content { flex: 1; overflow-y: auto; padding: 26px 30px 38px; min-width: 0; }
+.page { animation: pagein 0.18s ease; }
+@keyframes pagein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .page { animation: none; } }
 
-.cards { display: flex; flex-wrap: wrap; gap: 14px; }
-.card {
+h2 { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 3px; }
+.sub { color: var(--ink2); font-size: 12.5px; margin: 0 0 20px; max-width: 62ch; }
+.lbl { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.09em; color: var(--ink2); }
+
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 16px 18px; }
+.kbd { font-weight: 600; background: var(--panel2); border: 1px solid var(--line2); border-bottom-width: 2px; border-radius: 6px; padding: 2px 9px; font-size: 12.5px; }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 7px; vertical-align: 1px; }
+.dot.on { background: var(--amber); }
+.dot.off { background: transparent; border: 1.4px solid var(--ink2); }
+.dot.err { background: var(--err); }
+.chip { display: inline-block; background: var(--panel2); border: 1px solid var(--line2); border-radius: 999px; padding: 2.5px 10px; font-size: 11.5px; color: var(--ink2); }
+.num { font-variant-numeric: tabular-nums; }
+
+.btn {
+  font: inherit;
+  border: 1px solid var(--line2);
   background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 16px 18px;
-  min-width: 250px;
-  flex: 1;
+  color: var(--ink);
+  border-radius: 8px;
+  padding: 6px 14px;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
 }
-.card.full { flex-basis: 100%; }
-.card h3 {
-  margin: 0 0 10px;
-  font-size: 11.5px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-  color: var(--ink-3);
+.btn:hover { border-color: var(--ink3); }
+.btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: 0.55; cursor: default; transform: none; }
+/* Near-black text ON amber holds AA against BOTH theme ambers; a token would
+   wrongly follow --ink and break contrast on light. */
+.btn.amber { background: var(--amber); border-color: var(--amber); color: #171310; font-weight: 600; }
+.btn.amber:hover { background: #d69745; border-color: #d69745; } /* one step lighter than dark amber */
+html.light .btn.amber:hover { background: #c98a3a; border-color: #c98a3a; } /* review U1j: darkening dropped the label under AA; lighten instead (5.0 -> 6.3:1) */
+.btn.ghost { border-color: transparent; color: var(--ink2); }
+.btn.ghost:hover { color: var(--ink); border-color: var(--line2); }
+
+/* Enable/disable switch. Review U1j: the mockup rail (--line2 on the page)
+   sat at 1.5:1 in light - a control that does not read as a control. The
+   BORDER now carries the 3:1 boundary (--ink2 clears it in both themes); the
+   rail fill stays quiet on purpose, OFF should recede next to amber ON. */
+.toggle {
+  position: relative;
+  width: 34px;
+  height: 19px;
+  border-radius: 999px;
+  border: 1px solid var(--ink2);
+  background: var(--panel2);
+  cursor: pointer;
+  flex: none;
+  transition: background 0.14s, border-color 0.14s, box-shadow 0.14s;
 }
-.card .big { font-size: 15px; font-weight: 600; }
-.card .muted { color: var(--ink-2); font-size: 12.5px; margin-top: 3px; }
+.toggle:hover { border-color: var(--ink); }
+.toggle:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+.toggle::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #fdfcfa; /* knob: near-white; on light its border does the work */
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  transition: left 0.14s, transform 0.1s;
+}
+.toggle:active::after { transform: scale(0.92); }
+.toggle.on { background: var(--amber); border-color: var(--amber); }
+.toggle.on:hover { background: #d69745; border-color: #d69745; } /* same pair as .btn.amber:hover */
+html.light .toggle.on:hover { background: #c98a3a; border-color: #c98a3a; }
+.toggle.on::after { left: 17px; }
+/* Light theme: the knob color equals --panel, so its edge must be firmer. */
+html.light .toggle::after { border-color: rgba(0, 0, 0, 0.3); }
 
-.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 7px; vertical-align: 1px; }
-.dot.on { background: var(--brand); }
-.dot.off { background: transparent; border: 1.5px solid var(--ink-3); }
-.dot.err { background: var(--danger); }
+select, input[type="text"] {
+  font: inherit;
+  color: var(--ink);
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  padding: 6px 10px;
+  min-width: 180px;
+}
+/* Solid amber focus ring (review U1j): the mockup ring at 50% alpha lands at
+   1.75:1 on light - invisible, and it is the ONLY focus affordance. Solid
+   --amber clears 3:1 (non-text) in both themes. */
+select:focus, input:focus, button:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
 
-/* ---- settings ---- */
-.tabs { display: flex; flex-wrap: wrap; gap: 2px; border-bottom: 1px solid var(--line); margin-bottom: 22px; }
+/* ---- Home (hero + status cards) ---- */
+.home-grid { display: grid; grid-template-columns: 1.5fr 1fr; gap: 14px; }
+.hero-card { grid-row: span 2; display: flex; flex-direction: column; justify-content: space-between; background: var(--hero-grad); border: 1px solid var(--line2); }
+.hero-card .big { font-size: 21px; font-weight: 600; letter-spacing: -0.01em; margin: 10px 0 4px; }
+.hero-card .ribbon-mini { margin: 22px 0 8px; }
+.stat-inline { display: flex; align-items: baseline; gap: 8px; }
+.progress { height: 5px; border-radius: 999px; background: var(--panel2); overflow: hidden; margin-top: 8px; width: 180px; }
+.progress > div { height: 100%; background: var(--amber); }
+
+/* ---- Diagnostics ---- */
+table.diag { border-collapse: collapse; width: 100%; max-width: 640px; }
+table.diag td { padding: 9px 14px 9px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.diag tr:last-child td { border-bottom: 0; }
+table.diag td:first-child { color: var(--ink2); white-space: nowrap; width: 180px; }
+.mono { font-family: Consolas, monospace; font-size: 12px; color: var(--ink2); word-break: break-all; }
+
+/* ---- Settings ---- */
+.tabs { display: flex; flex-wrap: wrap; gap: 2px; border-bottom: 1px solid var(--line); margin-bottom: 20px; }
 .tabs button {
   border: 0;
   background: transparent;
   font: inherit;
-  color: var(--ink-2);
+  color: var(--ink2);
   padding: 8px 12px 9px;
   cursor: pointer;
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
 }
 .tabs button:hover { color: var(--ink); }
-.tabs button.active { color: var(--ink); font-weight: 600; border-bottom-color: var(--brand); }
-
-.rows { max-width: 640px; }
-.row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-  padding: 13px 2px;
-  border-bottom: 1px solid var(--line);
-}
+.tabs button.on { color: var(--ink); font-weight: 600; border-bottom-color: var(--amber); }
+.rows { max-width: 620px; }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 22px; padding: 13px 2px; border-bottom: 1px solid var(--line); }
 .row:last-child { border-bottom: 0; }
-.row .label { font-weight: 600; }
-.row .help { color: var(--ink-2); font-size: 12.5px; margin-top: 3px; max-width: 380px; }
-.row .control { flex: none; display: flex; align-items: center; gap: 8px; }
+.row .l b { display: block; font-weight: 600; }
+.row .l span { color: var(--ink2); font-size: 12.5px; max-width: 360px; display: block; margin-top: 2px; }
+.row .c { flex: none; display: flex; align-items: center; gap: 8px; }
+.note-amber { color: var(--amber-text); font-size: 12.5px; }
+.note-err { color: var(--err); font-size: 12.5px; }
 
-select, input[type="text"] {
-  font: inherit;
-  color: var(--ink);
-  background: var(--panel);
-  border: 1px solid var(--line-strong);
-  border-radius: 7px;
-  padding: 6px 9px;
-  min-width: 190px;
-}
-select:focus, input:focus { outline: 2px solid var(--brand-soft); border-color: var(--brand); }
+/* ---- honest not-yet state (pages whose engine work is a later wave) ---- */
+.coming { border: 1.5px dashed var(--line2); border-radius: var(--r); padding: 30px 32px; color: var(--ink2); max-width: 560px; }
+.coming .soon { display: inline-block; font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--amber-text); margin-bottom: 8px; }
+.coming .wave { margin-top: 10px; font-size: 11.5px; color: var(--ink2); }
 
-button.btn {
-  font: inherit;
-  border: 1px solid var(--line-strong);
-  background: var(--panel);
-  color: var(--ink);
-  border-radius: 7px;
-  padding: 6px 13px;
-  cursor: pointer;
-}
-button.btn:hover { border-color: var(--ink-3); }
-button.btn:disabled { opacity: 0.55; cursor: default; }
-button.btn.primary { background: var(--brand); border-color: var(--brand); color: #1b1917; font-weight: 600; }
-button.btn.primary:hover { background: #c98434; border-color: #c98434; }
+/* The shell is non-selectable; FACTS must be copyable. Extend this allowlist
+   with every new readable surface (.transcript, .doc, .rich, .snip pre when
+   their waves land) - forgetting it makes pages uncopyable. */
+table.diag, .mono, .row .l span, .card .sub { user-select: text; }
 
-/* toggle */
-.toggle {
-  position: relative;
-  width: 36px;
-  height: 20px;
-  border-radius: 999px;
-  border: 1px solid var(--line-strong);
-  background: var(--line);
-  cursor: pointer;
-  transition: background 0.15s;
-  flex: none;
+@media (max-width: 960px) {
+  .home-grid { grid-template-columns: 1fr; }
+  .hero-card { grid-row: auto; }
 }
-.toggle.on { background: var(--brand); border-color: var(--brand); }
-.toggle .knob {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: #fff;
-  transition: left 0.15s;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
-}
-.toggle.on .knob { left: 18px; }
-
-/* misc */
-.kbd {
-  font-family: inherit;
-  font-weight: 600;
-  background: var(--panel);
-  border: 1px solid var(--line-strong);
-  border-bottom-width: 2px;
-  border-radius: 6px;
-  padding: 3px 9px;
-}
-.placeholder {
-  border: 1px dashed var(--line-strong);
-  border-radius: var(--radius);
-  padding: 34px;
-  color: var(--ink-2);
-  max-width: 560px;
-}
-.placeholder .soon {
-  display: inline-block;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--brand);
-  margin-bottom: 8px;
-}
-table.diag { border-collapse: collapse; min-width: 520px; }
-table.diag td { padding: 8px 14px 8px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
-table.diag td:first-child { color: var(--ink-2); white-space: nowrap; }
-.mono { font-family: Consolas, monospace; font-size: 12px; word-break: break-all; }
-/* The shell is non-selectable, but FACTS must be copyable (audit): paths,
-   ports, versions in Diagnostics, and the helper texts. */
-table.diag, .mono, .row .help, .card .muted { user-select: text; }
-.progress { height: 5px; border-radius: 999px; background: var(--line); overflow: hidden; margin-top: 8px; width: 180px; }
-.progress > div { height: 100%; background: var(--brand); }
-.note-amber { color: var(--brand); font-size: 12.5px; }
-.note-err { color: var(--danger); font-size: 12.5px; }

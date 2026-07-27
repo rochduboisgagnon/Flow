@@ -36,7 +36,7 @@ export const SETTINGS_DEFAULTS: FlowSettings = {
   forceCpu: false, // R1: Vulkan first by default; on = CPU only
   historyDir: "", // C10: default location (dataDir()/history)
   insertMode: "paste", // clipboard paste + restore; "type" keystrokes the text (paste-hostile apps, never touches the clipboard)
-  theme: "dark", // U0: dark = today's fixed appearance; the wave that ships the light theme will flip this default to "system"
+  theme: "system", // U1: follow Windows now that both themes exist; dark stays one click away
 };
 
 // A5: the folder is ~/.flow since 1.0.0, but a machine coming from an AGR

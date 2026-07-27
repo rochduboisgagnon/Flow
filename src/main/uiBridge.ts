@@ -1,4 +1,4 @@
-import { ipcMain, shell, dialog, app } from "electron";
+import { ipcMain, shell, dialog, app, BrowserWindow } from "electron";
 import {
   UI_GET_STATE,
   UI_SET_SETTINGS,
@@ -104,7 +104,12 @@ export class UiBridge {
     });
     ipcMain.handle(UI_PICK_FOLDER, async (e) => {
       if (!this.fromMain(e)) return null;
-      const r = await dialog.showOpenDialog({ properties: ["openDirectory"] });
+      // Without a parent window, the dialog is app-modal and may open behind the frameless main window.
+      const wc = this.mainWindow.contents();
+      const parent = wc ? BrowserWindow.fromWebContents(wc) : null;
+      const r = parent
+        ? await dialog.showOpenDialog(parent, { properties: ["openDirectory"] })
+        : await dialog.showOpenDialog({ properties: ["openDirectory"] });
       return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0];
     });
     ipcMain.handle(UI_GET_LOGIN_ITEM, (e) => {

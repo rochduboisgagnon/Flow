@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
+import type { ResolvedTheme } from "../shared/theme";
 import {
   CAPTURE_START,
   CAPTURE_STOP,
@@ -70,10 +71,17 @@ const api = {
 export type AgrflowApi = typeof api;
 contextBridge.exposeInMainWorld("agrflow", api);
 
+// U1b: read the pre-paint theme argv once at preload load. main.tsx reads
+// this BEFORE createRoot to set html.light ahead of the first paint; the
+// overlay and capture windows get this same preload too but ignore the field.
+const flowThemeArg = process.argv.find((a) => a.startsWith("--flow-theme="));
+const initialTheme: ResolvedTheme = flowThemeArg === "--flow-theme=light" ? "light" : "dark";
+
 // ---- main window bridge (plan V1, A1/A2) ----
 // Shared preload: the overlay and capture windows see this too, but the
 // main-process handlers refuse any sender that is not the main window.
 const ui = {
+  initialTheme,
   getState: (): Promise<UiStatePayload> => ipcRenderer.invoke(UI_GET_STATE),
   setSettings: (patch: Record<string, unknown>): Promise<UiStatePayload> =>
     ipcRenderer.invoke(UI_SET_SETTINGS, patch),

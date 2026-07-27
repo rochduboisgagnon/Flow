@@ -66,16 +66,16 @@ test("defaults are Ctrl+Win, large-v3-turbo, French forced, no sounds (v5)", () 
   assert.equal(SETTINGS_DEFAULTS.sounds, false);
 });
 
-test("theme: valid preferences kept, junk falls back to dark (U0)", () => {
+test("theme: valid preferences kept, junk falls back to the default (U0/U1)", () => {
   assert.equal(sanitizeSettings({ theme: "light" }).theme, "light");
   assert.equal(sanitizeSettings({ theme: "system" }).theme, "system");
   assert.equal(sanitizeSettings({ theme: "dark" }).theme, "dark");
-  assert.equal(sanitizeSettings({ theme: "blue" }).theme, "dark");
-  assert.equal(sanitizeSettings({ theme: 3 }).theme, "dark");
-  assert.equal(sanitizeSettings({ theme: null }).theme, "dark");
-  assert.equal(SETTINGS_DEFAULTS.theme, "dark");
+  assert.equal(sanitizeSettings({ theme: "blue" }).theme, "system");
+  assert.equal(sanitizeSettings({ theme: 3 }).theme, "system");
+  assert.equal(sanitizeSettings({ theme: null }).theme, "system");
+  assert.equal(SETTINGS_DEFAULTS.theme, "system");
 });
 
-test("a settings.json written before U0 (no theme field) defaults to dark", () => {
-  assert.equal(sanitizeSettings({ combo: ["CTRL", "WIN"], language: "fr" }).theme, "dark");
+test("a settings.json written before U0 (no theme field) follows Windows (U1)", () => {
+  assert.equal(sanitizeSettings({ combo: ["CTRL", "WIN"], language: "fr" }).theme, "system");
 });

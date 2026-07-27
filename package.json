@@ -12,7 +12,7 @@
   "scripts": {
     "dev": "concurrently -k \"vite\" \"tsc -p tsconfig.main.json -w --preserveWatchOutput\" \"npm:dev:electron\"",
     "dev:electron": "tsc -p tsconfig.main.json && cross-env AGRFLOW_DEV=1 electron .",
-    "build": "tsc -p tsconfig.main.json && vite build",
+    "build": "node scripts/check-icon.cjs && tsc -p tsconfig.main.json && vite build",
     "lint": "eslint .",
     "test": "tsx --test --test-concurrency=1 test/*.test.ts",
     "dist": "npm run build && electron-builder --win",

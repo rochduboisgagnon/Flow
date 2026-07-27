@@ -239,6 +239,12 @@ if (!app.requestSingleInstanceLock()) {
       },
       mainWindow,
     );
+    // Review U1j: a snapshot the moment the window becomes visible again.
+    // Both push channels are visibility-gated, so a theme flip (or any state
+    // change) that happened while hidden would otherwise stay invisible for
+    // up to a second after a tray "Open Flow" - a dark page under native
+    // caption buttons already recolored light.
+    mainWindow.setOnShow(() => uiBridge?.pushNow());
 
     // A login-item launch passes --hidden: engine up, window quiet. Any other
     // launch (installer, Start menu, double-click) shows the window.
