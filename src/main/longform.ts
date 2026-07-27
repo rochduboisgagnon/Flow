@@ -17,12 +17,18 @@ import {
   transcriptLine,
   markLine,
   gapLine,
+  interruptedNote,
+  ENGINE_LINE,
   recordingBaseName,
   summaryPrompt,
   chunkTranscript,
   spliceNotes,
   pushRecent,
   type RecentEntry,
+  type LongStateSnapshot,
+  type LongStartResult,
+  type LongStopResult,
+  type LongTranscriptResult,
 } from "../shared/longform";
 
 // C2: a 44-byte canonical WAV header (16 kHz mono 16-bit). Written with a
@@ -69,21 +75,8 @@ export interface LongStartOpts {
   native?: boolean; // C2: the engine captures the audio itself, so IT writes the .wav
 }
 
-export interface LongStateSnapshot {
-  active: boolean;
-  finalizing: boolean;
-  startedIso: string;
-  durationMs: number;
-  segments: number; // transcribed so far
-  pending: number; // queued behind the ASR
-  marks: number;
-  title: string;
-  dir: string;
-  docPath: string;
-  audioPath: string;
-  lastError: string;
-  recent: RecentEntry[];
-}
+// LongStateSnapshot lives in ../shared/longform now (U4a: shared/ipcContracts.ts
+// reuses it for UI_LONG_STATE without pulling src/main into the renderer build).
 
 export interface LongDeps {
   getSidecar(): WhisperSidecar | null;
@@ -110,6 +103,13 @@ export interface LongDeps {
 }
 
 const MAX_QUEUE = 240; // ~100 min of backlog before we refuse to grow (safety)
+
+// U4a piege 1: how long state()'s `recent` field may lag behind recent.json.
+// Exported so the cache behavior itself is testable (test/longform.test.ts)
+// without a magic number duplicated on both sides. Short enough that nothing
+// waits meaningfully on it, long enough to turn a 1 Hz poll's worth of reads
+// into a small fraction of one.
+export const RECENT_STATE_CACHE_MS = 3_000;
 
 export function recentPath(): string {
   return path.join(dataDir(), "recent.json");
@@ -163,6 +163,37 @@ function copyFileInto(destDir: string, src: string): string {
     throw err;
   }
   return dest;
+}
+
+/** Move `src` INTO destDir, with copyFileInto's exact no-clobber discipline
+ * ("-1", "-2"... on a name collision). Tries an atomic rename FIRST: staging
+ * and history both live under dataDir(), so the rename virtually always
+ * applies, it costs the same whatever the file weighs (a multi-hour .wav runs
+ * to hundreds of megabytes, and the SYNCHRONOUS quit rescue cannot afford to
+ * copy that byte by byte while the user waits for the app to close), and it
+ * never leaves a half-written destination behind. Falls back to the two-phase
+ * copy-then-delete when rename cannot apply (EXDEV across volumes, a locked
+ * file). Throws only when BOTH failed - and then nothing was destroyed. */
+function moveFileInto(destDir: string, src: string): string {
+  const base = path.basename(src);
+  const ext = path.extname(base);
+  const stem = base.slice(0, base.length - ext.length);
+  let dest = path.join(destDir, base);
+  for (let i = 1; fs.existsSync(dest); i++) dest = path.join(destDir, stem + "-" + i + ext);
+  try {
+    fs.renameSync(src, dest);
+    return dest;
+  } catch {
+    /* cross-volume or locked: fall through to the copy that always works */
+  }
+  const copied = copyFileInto(destDir, src);
+  try {
+    fs.rmSync(src);
+  } catch {
+    // The copy is in place, so nothing is lost; a source we could not remove
+    // only costs app-owned disk, and the next startup rescan will see it.
+  }
+  return copied;
 }
 
 /** Remove `dir` and any now-empty ancestor directories, up to but never
@@ -311,6 +342,187 @@ function purgeHistoryDirs(root: string, log?: (msg: string) => void): void {
     if (removed > 0) log?.(`[long] history purge: removed ${removed} folder(s) older than ${RETENTION_DAYS} days`);
   } catch (err) {
     log?.(`[long] history purge failed: ${err}`);
+  }
+}
+
+// ---- filing a finished recording into the archive (C10 + U4) ----
+
+/** The date folder a recording is filed under. Normally the day it was
+ * recorded, EXCEPT when that day already sits outside the retention window:
+ * a recording recovered from a machine that stayed off for four months would
+ * then land straight in a bucket the very next purge deletes - Flow would have
+ * "rescued" a meeting into the bin. Such a recording is filed under TODAY
+ * instead, so the user gets the full window to notice it; the document's own
+ * header still states the real recording date, so nothing is misrepresented.
+ *
+ * The comparison mirrors purgeHistoryDirs' arithmetic exactly: the purge judges
+ * a folder by the MIDNIGHT its name decodes to, never by the instant inside it. */
+function historyDateFolder(startedMs: number, now = Date.now()): string {
+  const cutoff = now - RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  if (Number.isFinite(startedMs) && startedMs > 0) {
+    const name = ymd(new Date(startedMs));
+    const midnight = new Date(name + "T00:00:00").getTime();
+    if (!Number.isNaN(midnight) && midnight >= cutoff) return name;
+  }
+  return ymd(new Date(now));
+}
+
+interface FiledRecording {
+  dir: string;
+  docPath: string;
+  audioPath: string; // "" when no audio was kept
+}
+
+/** File a finished recording into `<historyRoot>/<date>/<name>/`. ONE
+ * implementation behind the three ways a recording reaches the archive -
+ * finalize()'s normal staged landing, the synchronous quit rescue and the
+ * startup rescan of orphaned staging folders - so a guardrail cannot hold on
+ * one path and quietly not on another.
+ *
+ * Order of operations, and why it is that order:
+ *  - the DOCUMENT moves first and alone. If that fails, nothing was touched:
+ *    the caller still has a complete recording exactly where it was, and the
+ *    next startup rescan will try again.
+ *  - the audio follows only when the user asked to keep it. A failure there is
+ *    logged and swallowed: a transcript in the archive beats a rollback that
+ *    would put the meeting back into a folder nothing lists.
+ *  - the .wav is removed ONLY when keepAudio is false, and only once the
+ *    document is safely filed. That is the sole deletion this function can
+ *    ever perform, it concerns the audio alone, and it happens because the
+ *    user explicitly unchecked "Keep the audio file". The recording itself
+ *    (the document) is never deleted by Flow, on any path.
+ * Returns null when nothing was filed. Never throws. */
+function fileRecordingIntoHistory(opts: {
+  historyRoot: string;
+  docPath: string;
+  audioPath: string;
+  keepAudio: boolean;
+  startedMs: number;
+  log?: (msg: string) => void;
+}): FiledRecording | null {
+  const { historyRoot: root, docPath, audioPath, keepAudio, startedMs, log } = opts;
+  let destDir: string;
+  try {
+    ensureHistoryRoot(root); // review C10 F1: the marker makes the root purgeable
+    const dateDir = path.join(root, historyDateFolder(startedMs));
+    fs.mkdirSync(dateDir, { recursive: true });
+    destDir = uniqueDir(dateDir, path.basename(docPath, ".md"));
+  } catch (err) {
+    log?.(`[long] cannot prepare the history folder: ${err}`);
+    return null;
+  }
+  let newDoc: string;
+  try {
+    newDoc = moveFileInto(destDir, docPath);
+  } catch (err) {
+    try {
+      fs.rmdirSync(destDir); // empty by construction: leave no debris behind
+    } catch {
+      /* best effort */
+    }
+    log?.(`[long] could not file the recording into history: ${err}`);
+    return null;
+  }
+  let newAudio = "";
+  if (audioPath && fs.existsSync(audioPath)) {
+    if (keepAudio) {
+      try {
+        newAudio = moveFileInto(destDir, audioPath);
+      } catch (err) {
+        log?.(`[long] the transcript was filed but its .wav could not follow (left where it was): ${err}`);
+      }
+    } else {
+      try {
+        fs.rmSync(audioPath);
+        log?.("[long] audio dropped: the recording asked not to keep the .wav");
+      } catch (err) {
+        log?.(`[long] could not drop the .wav the recording asked not to keep: ${err}`);
+      }
+    }
+  }
+  return { dir: destDir, docPath: newDoc, audioPath: newAudio };
+}
+
+/** Everything needed to file an ORPHANED staging folder, read back from what
+ * the folder already carries - no bookkeeping sidecar to keep in sync, and
+ * nothing a session that died mid-write could have failed to write: start()
+ * writes the document's header (title + start instant) before the first chunk
+ * ever arrives, and names the staging folder "<epoch ms>-<random>". */
+function readStagedSession(
+  dir: string,
+  folderName: string,
+): { docPath: string; audioPath: string; title: string; startedMs: number } | null {
+  let files: fs.Dirent[];
+  try {
+    files = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  let docPath = "";
+  let audioPath = "";
+  for (const f of files) {
+    if (!f.isFile()) continue;
+    // ".md" excludes a ".md.tmp" left by an interrupted atomic swap: a torn
+    // temporary file is never mistaken for the document.
+    if (!docPath && f.name.toLowerCase().endsWith(".md")) docPath = path.join(dir, f.name);
+    else if (!audioPath && f.name.toLowerCase().endsWith(".wav")) audioPath = path.join(dir, f.name);
+  }
+  if (!docPath) return null;
+  let title = path.basename(docPath, ".md");
+  let startedMs = NaN;
+  try {
+    const head = fs.readFileSync(docPath, "utf8").slice(0, 512);
+    const t = head.match(/^# (.+)$/m);
+    if (t) title = t[1].trim() || title;
+    const r = head.match(/^- recorded: (.+)$/m);
+    if (r) {
+      const ms = Date.parse(r[1].trim());
+      if (!Number.isNaN(ms)) startedMs = ms;
+    }
+  } catch {
+    /* the header is a convenience; the folder name below is the floor */
+  }
+  if (Number.isNaN(startedMs)) {
+    const stamp = Number(folderName.split("-")[0]);
+    if (Number.isFinite(stamp) && stamp > 0) startedMs = stamp;
+  }
+  if (Number.isNaN(startedMs)) {
+    try {
+      startedMs = fs.statSync(docPath).mtimeMs;
+    } catch {
+      startedMs = Date.now();
+    }
+  }
+  return { docPath, audioPath, title, startedMs };
+}
+
+/** Insert the interruption note at the TOP of the document, right under the
+ * header, rather than appending it at the end: whoever opens a three-hour
+ * transcript has to learn that it is incomplete without scrolling to the
+ * bottom. Best effort and never destructive - a document that cannot be
+ * rewritten gets the note appended instead, and if THAT fails too the recording
+ * is still filed (a missing note is a disappointment; a lost meeting is the bug
+ * being fixed here). */
+function noteInterruption(docPath: string, note: string, log?: (msg: string) => void): void {
+  try {
+    const doc = fs.readFileSync(docPath, "utf8");
+    const at = doc.indexOf(ENGINE_LINE);
+    if (at < 0) {
+      fs.appendFileSync(docPath, note);
+      return;
+    }
+    const cut = at + ENGINE_LINE.length;
+    // Atomic swap, same discipline as the summary and notes splices.
+    const tmp = docPath + ".tmp";
+    fs.writeFileSync(tmp, doc.slice(0, cut) + note + doc.slice(cut));
+    fs.renameSync(tmp, docPath);
+  } catch (err) {
+    log?.(`[long] could not place the interruption note at the top: ${err}`);
+    try {
+      fs.appendFileSync(docPath, note);
+    } catch {
+      /* filing the recording matters more than annotating it */
+    }
   }
 }
 
@@ -541,6 +753,20 @@ function existingRecent(list: RecentEntry[]): RecentEntry[] {
   return list.filter((e) => e.docPath && fs.existsSync(e.docPath));
 }
 
+/** Playable length of a 16 kHz mono 16-bit .wav, from its size alone. Used for
+ * a RECOVERED recording, whose duration nobody was around to measure: reading
+ * it off the audio is honest, and beats showing "0:00" for a two-hour meeting.
+ * 0 when there is no audio to measure. */
+function wavDurationMs(audioPath: string): number {
+  if (!audioPath) return 0;
+  try {
+    const bytes = Math.max(0, fs.statSync(audioPath).size - 44); // minus the header
+    return Math.round((bytes / (SAMPLE_RATE * 2)) * 1000);
+  } catch {
+    return 0;
+  }
+}
+
 function saveRecent(list: RecentEntry[], file = recentPath()): void {
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -557,6 +783,10 @@ export class LongRecorder {
   private active = false;
   private finalizing = false;
   private splicing = false; // notes splice in flight: save() waits it out (one writer)
+  // U4: rescueOnQuit() ran. The process is on its way out and the recording is
+  // already filed, so a finalize() still awaiting the ASR or Ollama must not
+  // file or re-index it a second time if it somehow gets CPU again.
+  private quitting = false;
   private startedAt = 0;
   private startedIso = "";
   private title = "";
@@ -579,6 +809,15 @@ export class LongRecorder {
   private queue: Array<{ pcm: Int16Array; offsetMs: number }> = [];
   private segments = 0;
   private pumping = false;
+  // U4a piege 1: state() is now polled at up to 1 Hz by BOTH GET /long/state
+  // and the UI_LONG_STATE IPC channel (main/uiBridge.ts), and `recent` is a
+  // synchronous read (existingRecent(loadRecent()): a JSON read plus an
+  // fs.existsSync per entry) - the same load pattern main/index.ts's own
+  // recentForUi() cache exists to keep off the keyboard hook's hot path for
+  // UiStatePayload's 1 Hz push. Caching it HERE, once, protects every current
+  // and future caller of state() alike, rather than asking each one to
+  // remember to skip or cache the field itself.
+  private recentStateCache: { at: number; value: RecentEntry[] } = { at: 0, value: [] };
 
   constructor(deps: LongDeps) {
     this.deps = deps;
@@ -632,77 +871,175 @@ export class LongRecorder {
   /** File a STAGED recording out of the app-owned staging folder into the
    * date-bucketed history (C10): a recording nobody explicitly saved still
    * gets a home for RETENTION_DAYS instead of sitting invisible in staging
-   * forever. Same two-phase discipline as save(): copy first, delete the
-   * staging sources only once the copies are safely in place. Best effort:
-   * any failure just leaves the recording in staging - nothing is lost,
-   * nothing blocks the recording (it is already finished by the time this
-   * runs, inside finalize()). */
+   * forever. The move itself, and every guardrail around it, lives in
+   * fileRecordingIntoHistory - shared with the quit rescue and the startup
+   * rescan. Best effort: any failure just leaves the recording in staging,
+   * where the next startup rescan finds it. */
   private fileIntoHistory(): void {
-    const root = this.historyBase();
-    let destDir: string;
-    try {
-      ensureHistoryRoot(root); // review C10 F1: the marker makes the root purgeable
-      const dateDir = path.join(root, ymd(new Date(this.startedAt)));
-      fs.mkdirSync(dateDir, { recursive: true });
-      destDir = uniqueDir(dateDir, path.basename(this.transcriptPath, ".md"));
-    } catch (err) {
-      this.deps.log?.(`[long] cannot prepare the history folder: ${err}`);
-      return;
-    }
-    const madeDest: string[] = [];
-    let newDoc: string;
-    let newAudio = "";
-    try {
-      newDoc = copyFileInto(destDir, this.transcriptPath);
-      madeDest.push(newDoc);
-      // C10: a staged recording keeps its .wav in history EVEN when the
-      // keepAudio setting is off - start() hands out an audio path for every
-      // staged recording precisely so this safety net has something to keep
-      // (see start()). The .wav may still be legitimately absent (the writer
-      // never got a chunk before Stop), which must not fail the filing.
-      if (this.audioPath && fs.existsSync(this.audioPath)) {
-        newAudio = copyFileInto(destDir, this.audioPath);
-        madeDest.push(newAudio);
-      }
-    } catch (err) {
-      for (const p of madeDest) {
-        try {
-          fs.rmSync(p);
-        } catch {
-          /* leave a partial copy rather than risk touching more */
-        }
-      }
-      try {
-        fs.rmdirSync(destDir);
-      } catch {
-        /* best effort */
-      }
-      this.deps.log?.(`[long] could not file the recording into history: ${err}`);
-      return;
-    }
     const oldDir = this.dir;
-    const oldDoc = this.transcriptPath;
-    const oldAudio = this.audioPath;
-    this.dir = destDir;
-    this.transcriptPath = newDoc;
-    this.audioPath = newAudio;
-    try {
-      fs.rmSync(oldDoc);
-    } catch {
-      /* */
-    }
-    if (oldAudio) {
-      try {
-        fs.rmSync(oldAudio);
-      } catch {
-        /* */
-      }
-    }
+    const filed = fileRecordingIntoHistory({
+      historyRoot: this.historyBase(),
+      docPath: this.transcriptPath,
+      audioPath: this.audioPath,
+      // U4 constat 2: "Keep the audio file" finally decides something. The .wav
+      // is written throughout a STAGED capture whatever the box says (it is the
+      // only thing that can still save a meeting whose transcription failed,
+      // and in device mode the Pilot server needs a path to stream it to), but
+      // it enters the 90-day archive only when the user asked to keep it.
+      keepAudio: this.keepAudio,
+      startedMs: this.startedAt,
+      log: this.deps.log,
+    });
+    if (!filed) return;
+    this.dir = filed.dir;
+    this.transcriptPath = filed.docPath;
+    this.audioPath = filed.audioPath;
     cleanEmptyHoldingDirs(this.stagingBase(), oldDir);
-    this.deps.log?.(`[long] filed into history -> ${newDoc}`);
+    this.deps.log?.(`[long] filed into history -> ${filed.docPath}`);
   }
 
-  start(opts: LongStartOpts): { ok: boolean; error?: string; docPath?: string; audioPath?: string } {
+  /** True when `p` sits inside the app-owned staging root. Tells "this
+   * recording is still parked where only Flow can see it" apart from "it has
+   * already been filed into history, or straight into the user's own folder". */
+  private underStaging(p: string): boolean {
+    const rel = path.relative(this.stagingBase(), p);
+    return !!rel && !rel.startsWith("..") && !path.isAbsolute(rel);
+  }
+
+  /** U4 blocking finding: `before-quit` is SYNCHRONOUS and Electron awaits
+   * nothing a handler starts. Calling stop() from there only LAUNCHES
+   * finalize(), which drains the ASR queue in 200 ms polls and then waits on an
+   * Ollama round-trip - the process dies long before fileIntoHistory() and
+   * saveRecent() ever run, and the meeting stays in <dataDir>/staging, a folder
+   * nothing lists, nothing rescans and nothing purges. The recording exists on
+   * disk and is invisible from every surface of the app.
+   *
+   * This is the synchronous half of the fix: no summary, no waiting on the
+   * transcription, just "get the document into the archive, index it, and say
+   * honestly what is missing from it". Best effort in the strict sense of
+   * flushNativeAudioSync(): an exception here must never keep the app from
+   * dying. Returns whether it actually rescued something. */
+  rescueOnQuit(): boolean {
+    if (!this.active && !this.finalizing) return false;
+    // Count what is about to be lost BEFORE tearing the state down, so the note
+    // in the document can be specific: the queued segments plus the open one.
+    const pending = this.queue.length + (this.curLen > 0 ? 1 : 0);
+    this.active = false;
+    this.quitting = true; // a finalize() still in flight must not file this twice
+    try {
+      // The .wav first: its size header is a placeholder until the stream
+      // closes, so a file moved before this looks empty to every player.
+      this.flushNativeAudioSync();
+      noteInterruption(this.transcriptPath, interruptedNote("quit", pending), this.deps.log);
+      // Only a recording still parked in staging needs relocating; one recorded
+      // straight into the user's own folder is already where they want it.
+      if (this.staged && this.underStaging(this.transcriptPath)) this.fileIntoHistory();
+      saveRecent(
+        pushRecent(loadRecent(this.deps.recentPathOverride), {
+          title: this.title,
+          startedIso: this.startedIso,
+          dir: this.dir,
+          docPath: this.transcriptPath,
+          audioPath: this.audioPath,
+          // Wall clock, not `consumed`: the capture ran until this very moment,
+          // while `consumed` only counts segments that were CLOSED in time.
+          durationMs: Math.max(0, Date.now() - this.startedAt),
+          staged: this.staged,
+        }),
+        this.deps.recentPathOverride,
+      );
+      this.deps.log?.(`[long] rescued on quit -> ${this.transcriptPath}`);
+      return true;
+    } catch (err) {
+      this.deps.log?.(`[long] quit rescue failed: ${err}`);
+      return false;
+    } finally {
+      this.finalizing = false;
+    }
+  }
+
+  /** U4, the real net: everything rescueOnQuit() does assumes before-quit RUNS.
+   * A power cut, a bugcheck, a taskkill or an OOM never gives the engine that
+   * chance, and the recording stays in <dataDir>/staging exactly as the failed
+   * session left it. At boot nothing can legitimately be recording yet (the
+   * single-instance lock is held, and neither the local API nor the window is
+   * up), so ANY folder still sitting in staging belongs to a session that is
+   * over: file it into the archive, where every surface of the app can finally
+   * see it, and say so in the log.
+   *
+   * Never throws and never deletes: a folder it cannot file stays exactly where
+   * it is, so the next boot tries again. Returns how many were rescued. */
+  rescueOrphanedStaging(): number {
+    const staging = this.stagingBase();
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(staging, { withFileTypes: true });
+    } catch {
+      return 0; // no staging folder at all: the normal case, nothing to say
+    }
+    let rescued = 0;
+    let best: RecentEntry | null = null;
+    let bestMs = -1;
+    for (const entry of entries) {
+      const dir = path.join(staging, entry.name);
+      try {
+        // lstat decides, like everywhere else in this file: a symlink/junction
+        // dropped into staging is never followed out of the app-owned root.
+        const st = fs.lstatSync(dir);
+        if (st.isSymbolicLink() || !st.isDirectory()) continue;
+        const session = readStagedSession(dir, entry.name);
+        if (!session) {
+          this.deps.log?.(`[long] staging folder without a transcript, left untouched: ${dir}`);
+          continue;
+        }
+        noteInterruption(session.docPath, interruptedNote("recovered", -1), this.deps.log);
+        const filed = fileRecordingIntoHistory({
+          historyRoot: this.historyBase(),
+          docPath: session.docPath,
+          audioPath: session.audioPath,
+          // Nobody can tell what the user had asked for in a session that died
+          // without a trace, so Flow keeps what it cannot attribute: the rule
+          // that matters is never destroying a recording, not enforcing a
+          // checkbox whose value no longer exists anywhere.
+          keepAudio: true,
+          startedMs: session.startedMs,
+          log: this.deps.log,
+        });
+        if (!filed) continue;
+        rescued++;
+        cleanEmptyHoldingDirs(staging, dir);
+        this.deps.log?.(`[long] recovered an interrupted recording -> ${filed.docPath}`);
+        if (session.startedMs > bestMs) {
+          bestMs = session.startedMs;
+          best = {
+            title: session.title,
+            startedIso: new Date(session.startedMs).toISOString(),
+            dir: filed.dir,
+            docPath: filed.docPath,
+            audioPath: filed.audioPath,
+            durationMs: wavDurationMs(filed.audioPath),
+            staged: true, // never filed by the user: it still deserves a "Save to..."
+          };
+        }
+      } catch (err) {
+        this.deps.log?.(`[long] could not recover ${dir}: ${err}`);
+      }
+    }
+    if (best) {
+      // RECENT_MAX is 1: recent.json holds "the last capture", and save() files
+      // exactly that one. A recovered recording takes the slot only when it is
+      // genuinely more recent than what is already there, so a boot rescue can
+      // never demote a capture the user finished afterwards.
+      const list = loadRecent(this.deps.recentPathOverride);
+      const headMs = list[0] ? Date.parse(list[0].startedIso || "") : NaN;
+      if (!list[0] || Number.isNaN(headMs) || bestMs >= headMs) {
+        saveRecent(pushRecent(list, best), this.deps.recentPathOverride);
+      }
+    }
+    return rescued;
+  }
+
+  start(opts: LongStartOpts): LongStartResult {
     if (this.active || this.finalizing) return { ok: false, error: "a recording is already in progress" };
     this.purgeHistory(); // C10: retention purge on every start(), best effort, never blocking
     const now = new Date();
@@ -737,12 +1074,14 @@ export class LongRecorder {
     // The .wav is written by the Pilot server as chunks stream in, when the
     // user chose to keep the audio (v3 chantier 4). We own the path; an empty
     // path tells the server not to open a file.
-    // C10: a STAGED recording (no destination chosen) gets an audio path
-    // regardless of keepAudio - it is filed into History as a safety net at
-    // finalize, and the user hasn't decided yet whether they want the audio;
-    // by the time they'd open History the capture is long gone if we hadn't
-    // kept it. A recording with an explicit destination keeps the existing
-    // behaviour (keepAudio alone decides).
+    // A STAGED recording gets a path regardless of keepAudio, because DURING
+    // the capture the .wav is the only thing that can still save a meeting
+    // whose transcription falls over, and a crash gives no second chance to
+    // start writing it. U4 constat 2: that is where its life ends when the box
+    // is unchecked - fileIntoHistory() drops it once the document is safely
+    // filed, so the checkbox describes what Flow KEEPS, truthfully, instead of
+    // being a decoration on a .wav retained for 90 days no matter what.
+    // A recording with an explicit destination never writes one at all.
     this.audioPath = this.keepAudio || this.staged ? path.join(dir, base + ".wav") : "";
     // C2: in NATIVE mode the engine captures the audio, so the engine writes the .wav
     // (in device mode the Pilot server writes it as chunks stream in). Open a growing
@@ -780,6 +1119,7 @@ export class LongRecorder {
     this.queue = [];
     this.segments = 0;
     this.lastError = "";
+    this.quitting = false;
     this.headerStr = transcriptHeader(this.title, this.startedIso);
     try {
       fs.writeFileSync(this.transcriptPath, this.headerStr);
@@ -910,7 +1250,7 @@ export class LongRecorder {
 
   /** Stops the capture; transcription of the backlog + the summary continue in
    * the background (state shows finalizing until done). */
-  stop(): { ok: boolean; docPath: string } {
+  stop(): LongStopResult {
     if (!this.active) return { ok: false, docPath: "" };
     this.active = false;
     this.finalizing = true;
@@ -1068,7 +1408,7 @@ export class LongRecorder {
 
   /** Live transcript tail for the PWA page (v3 chantier 5): the document
    * content from byte `since` onward, plus the new byte offset to poll from. */
-  transcriptSince(since: number): { text: string; nextSince: number } {
+  transcriptSince(since: number): LongTranscriptResult {
     try {
       const buf = fs.readFileSync(this.transcriptPath);
       const from = Math.max(0, Math.min(since | 0, buf.length));
@@ -1092,10 +1432,26 @@ export class LongRecorder {
       docPath: this.transcriptPath,
       audioPath: this.audioPath,
       lastError: this.lastError,
-      // C10: entries the retention purge already removed are hidden here
-      // (recent.json on disk is untouched; save() still reads it raw).
-      recent: existingRecent(loadRecent(this.deps.recentPathOverride)),
+      recent: this.cachedRecent(),
     };
+  }
+
+  /** C10: entries the retention purge already removed are hidden here
+   * (recent.json on disk is untouched; save() still reads it raw).
+   *
+   * U4a piege 1: cached for RECENT_STATE_CACHE_MS so a caller polling state()
+   * at 1 Hz (GET /long/state, UI_LONG_STATE) does not re-read recent.json and
+   * re-stat its entry's docPath on every single tick. RECENT_MAX is 1, so
+   * staleness only ever means "the very last completed capture might lag a
+   * few seconds behind a save/finalize that just happened" - never wrong,
+   * just briefly behind, for a field every current caller treats as
+   * informational. */
+  private cachedRecent(): RecentEntry[] {
+    const now = Date.now();
+    if (now - this.recentStateCache.at > RECENT_STATE_CACHE_MS) {
+      this.recentStateCache = { at: now, value: existingRecent(loadRecent(this.deps.recentPathOverride)) };
+    }
+    return this.recentStateCache.value;
   }
 
   /** Capture died under us (mic error): keep what we have, stop cleanly. */
@@ -1180,9 +1536,17 @@ export class LongRecorder {
       // save() never moves a half-written audio file (no-op in device mode).
       await this.closeNativeAudio();
       // Drain the backlog (pump may already be running; wait it out).
-      while (this.queue.length > 0 || this.pumping) {
+      while ((this.queue.length > 0 || this.pumping) && !this.quitting) {
         await this.pump();
         await new Promise((r) => setTimeout(r, 200));
+      }
+      // U4: the quit rescue already filed and indexed this recording,
+      // synchronously, on the way out. Whatever this async tail was still
+      // doing, it must not file it a second time or overwrite recent.json with
+      // paths that have since moved.
+      if (this.quitting) {
+        this.deps.log?.("[long] finalize abandoned: the quit rescue already filed this recording");
+        return;
       }
       // v3 chantier 4: always attempt a summary and splice it into the SAME
       // document at the top (no template chooser anymore). If no local LLM is

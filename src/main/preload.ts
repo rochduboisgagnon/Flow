@@ -27,12 +27,22 @@ import {
   UI_SNIPPET_SAVE,
   UI_SNIPPET_DELETE,
   UI_SNIPPET_COPY,
+  UI_LONG_STATE,
+  UI_LONG_START,
+  UI_LONG_STOP,
+  UI_LONG_MARK,
+  UI_LONG_TRANSCRIPT,
   type CaptureStartPayload,
   type NativeStartPayload,
   type UiStatePayload,
   type UpdateCheckResult,
   type SnippetInput,
   type SnippetsResult,
+  type UiLongStartRequest,
+  type LongStateSnapshot,
+  type LongStartResult,
+  type LongStopResult,
+  type LongTranscriptResult,
 } from "../shared/ipcContracts";
 
 export type CaptureCommand = "start" | "stop" | "cancel";
@@ -112,6 +122,14 @@ const ui = {
   snippetSave: (input: SnippetInput): Promise<SnippetsResult> => ipcRenderer.invoke(UI_SNIPPET_SAVE, input),
   snippetDelete: (id: string): Promise<SnippetsResult> => ipcRenderer.invoke(UI_SNIPPET_DELETE, id),
   snippetCopy: (id: string): Promise<SnippetsResult> => ipcRenderer.invoke(UI_SNIPPET_COPY, id),
+  // ---- long-form recorder (U4a): IPC surface only, no page yet. PULL-only
+  // like snippets/state above - the page will poll longTranscript at 1 Hz
+  // rather than have the engine push a growing document every second.
+  longState: (): Promise<LongStateSnapshot> => ipcRenderer.invoke(UI_LONG_STATE),
+  longStart: (opts: UiLongStartRequest): Promise<LongStartResult> => ipcRenderer.invoke(UI_LONG_START, opts),
+  longStop: (): Promise<LongStopResult> => ipcRenderer.invoke(UI_LONG_STOP),
+  longMark: (): Promise<{ ok: boolean }> => ipcRenderer.invoke(UI_LONG_MARK),
+  longTranscript: (since: number): Promise<LongTranscriptResult> => ipcRenderer.invoke(UI_LONG_TRANSCRIPT, since),
   onState(cb: (s: UiStatePayload) => void): () => void {
     const handler = (_e: Electron.IpcRendererEvent, s: UiStatePayload) => cb(s);
     ipcRenderer.on(UI_STATE_PUSH, handler);

@@ -17,7 +17,7 @@ import {
   RECENT_MAX,
   type RecentEntry,
 } from "../src/shared/longform";
-import { LongRecorder } from "../src/main/longform";
+import { LongRecorder, RECENT_STATE_CACHE_MS } from "../src/main/longform";
 import type { WhisperSidecar } from "../src/main/asr/sidecar";
 
 const SR = 16_000;
@@ -201,6 +201,43 @@ test("v6 c8: only the last recording is remembered (RECENT_MAX=1)", () => {
   }
   assert.equal(list.length, 1);
   assert.equal(list[0].title, "c", "the last capture replaces the previous one");
+});
+
+// U4a piege 1: state().recent is a synchronous read (existingRecent(loadRecent())).
+// GET /long/state and the UI_LONG_STATE IPC channel now poll state() at up to
+// 1 Hz (main/uiBridge.ts, main/api.ts), so LongRecorder caches `recent` for
+// RECENT_STATE_CACHE_MS instead of re-reading recent.json (and re-stat'ing its
+// entry's docPath) on every single call.
+test("U4a: state().recent is cached briefly, not re-read from disk on every call", async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-recent-cache-"));
+  const recent = path.join(work, "recent.json");
+  const docA = path.join(work, "a.md");
+  const docB = path.join(work, "b.md");
+  fs.writeFileSync(docA, "# A");
+  fs.writeFileSync(docB, "# B");
+  const entryA: RecentEntry = { title: "A", startedIso: "", dir: work, docPath: docA, audioPath: "", durationMs: 1 };
+  const entryB: RecentEntry = { title: "B", startedIso: "", dir: work, docPath: docB, audioPath: "", durationMs: 2 };
+  fs.writeFileSync(recent, JSON.stringify([entryA]));
+
+  const rec = new LongRecorder({ getSidecar: () => null, recentPathOverride: recent });
+  const first = rec.state().recent;
+  assert.equal(first.length, 1);
+  assert.equal(first[0].title, "A");
+
+  // Mutate recent.json directly on disk (as another process/save() would). A
+  // call still inside the cache window must serve the STALE cached value, not
+  // re-read the file.
+  fs.writeFileSync(recent, JSON.stringify([entryB]));
+  const second = rec.state().recent;
+  assert.equal(second[0].title, "A", "state() must serve the cached list within the cache window, not re-read on every call");
+
+  // Past the window the cache refreshes and picks up the new content - it
+  // must never freeze forever.
+  await new Promise((r) => setTimeout(r, RECENT_STATE_CACHE_MS + 200));
+  const third = rec.state().recent;
+  assert.equal(third[0].title, "B", "the cache must still refresh once its window has elapsed");
+
+  fs.rmSync(work, { recursive: true, force: true });
 });
 
 test("v6 c7 + C10: no dir -> stage, finalize files it into history, then save() files it out (nothing deleted)", async () => {

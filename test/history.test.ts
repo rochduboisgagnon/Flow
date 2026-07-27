@@ -138,7 +138,14 @@ test("C10 (b): save() files a history entry into the chosen folder and cleans th
   fs.rmSync(work, { recursive: true, force: true });
 });
 
-test("C10 (d): a staged recording keeps its .wav in history even with keepAudio off (safety net)", async () => {
+// U4 constat 2 (rewritten): C10 (d) used to assert that a staged recording kept
+// its .wav in history EVEN with keepAudio off - which made the "Keep the audio
+// file" checkbox a decoration, since the IPC path never passes a dir and every
+// UI recording is therefore staged. The .wav is still WRITTEN during the
+// capture (it is the only thing that can save a meeting whose transcription
+// falls over, and a crash gives no second chance to start writing it), but it
+// does not enter the 90-day archive when the user asked not to keep it.
+test("U4-2: a staged recording still gets an audio path, but keepAudio off means the .wav does NOT enter history", async () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-hist-d-"));
   const staging = path.join(work, "staging");
   const history = path.join(work, "history");
@@ -153,12 +160,13 @@ test("C10 (d): a staged recording keeps its .wav in history even with keepAudio 
     historyRootOverride: history,
   });
 
-  // keepAudio explicitly OFF, and no destination: the staged safety net must
-  // still hand out an audio path so the wav gets captured by the caller
-  // (device mode: AGR Pilot's server writes the bytes to the path we return).
+  // keepAudio explicitly OFF, and no destination: the capture must still hand
+  // out an audio path so the wav gets written by the caller while the meeting
+  // runs (device mode: AGR Pilot's server writes the bytes to the path we
+  // return; native mode: the engine's own stream).
   const started = rec.start({ title: "No Audio Please", keepAudio: false });
   assert.equal(started.ok, true, started.error ?? "expected ok");
-  assert.ok(started.audioPath && started.audioPath.length > 0, "staged recordings get an audio path even with keepAudio off");
+  assert.ok(started.audioPath && started.audioPath.length > 0, "staged recordings get an audio path during the capture");
 
   // Stand in for the Pilot server writing chunks as they stream (device mode),
   // BEFORE finalize files the recording away.
@@ -170,9 +178,46 @@ test("C10 (d): a staged recording keeps its .wav in history even with keepAudio 
   assert.equal(rec.isBusy, false);
 
   const list = JSON.parse(fs.readFileSync(recent, "utf8"));
-  assert.ok(String(list[0].audioPath).length > 0, "the .wav is still referenced");
+  assert.equal(list[0].audioPath, "", "keepAudio off: no audio is referenced once the recording is filed");
+  assert.equal(fs.existsSync(started.audioPath!), false, "and the working .wav is gone from staging, not left behind");
+  assert.equal(fs.existsSync(list[0].docPath), true, "the document itself is safely in history");
+  assert.ok(String(list[0].docPath).startsWith(history));
+  // The archive agrees: the entry is listable, simply without audio.
+  const items = listHistory(history);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].hasAudio, false, "the archive shows no audio for it");
+
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+test("U4-2: keepAudio ON keeps the .wav all the way into history (the checkbox works both ways)", async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-hist-d2-"));
+  const staging = path.join(work, "staging");
+  const history = path.join(work, "history");
+  const recent = path.join(work, "recent.json");
+  const mockSidecar = {
+    transcribe: () => Promise.resolve({ text: "Bonjour.", ms: 5 }),
+  } as unknown as WhisperSidecar;
+  const rec = new LongRecorder({
+    getSidecar: () => mockSidecar,
+    recentPathOverride: recent,
+    stagingRootOverride: staging,
+    historyRootOverride: history,
+  });
+
+  const started = rec.start({ title: "Keep It", keepAudio: true });
+  assert.equal(started.ok, true, started.error ?? "expected ok");
+  fs.writeFileSync(started.audioPath!, Buffer.from("RIFF0000WAVE"));
+  rec.onChunk(speechy(5000));
+  rec.onChunk(concat(speechy(2000), silence(1500)));
+  rec.stop();
+  for (let i = 0; i < 100 && rec.isBusy; i++) await new Promise((r) => setTimeout(r, 50));
+  assert.equal(rec.isBusy, false);
+
+  const list = JSON.parse(fs.readFileSync(recent, "utf8"));
   assert.ok(String(list[0].audioPath).startsWith(history), "the .wav lives in history");
   assert.equal(fs.existsSync(list[0].audioPath), true, "the wav really landed in history");
+  assert.equal(listHistory(history)[0].hasAudio, true, "and the archive says so");
 
   fs.rmSync(work, { recursive: true, force: true });
 });

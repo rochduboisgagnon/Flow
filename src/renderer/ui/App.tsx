@@ -7,6 +7,7 @@ import { Home } from "./pages/Home";
 import { Diagnostics } from "./pages/Diagnostics";
 import { SettingsPage } from "./pages/Settings";
 import { SnippetsPage } from "./pages/Snippets";
+import { Record } from "./pages/Record";
 
 // Flow main window shell (wave U1). State discipline unchanged since A1/A2:
 // the window renders ONE snapshot pushed by the engine (UiStatePayload),
@@ -19,12 +20,6 @@ import { SnippetsPage } from "./pages/Snippets";
 // alive). Intro sentences come from the validated mockup; each names what is
 // missing and the wave that builds it.
 const COMING: Partial<Record<Section, { title: string; blurb: string; missing: string; wave: string }>> = {
-  record: {
-    title: "Record",
-    blurb: "Capture a meeting from this PC: your microphone, the system audio, or both.",
-    missing: "The recorder itself already runs in the engine; this page's controls and live transcript are what is left to build.",
-    wave: "Planned as wave U4 of the design campaign.",
-  },
   import: {
     title: "Import",
     blurb: "Drop audio files, get notes. Phone memos, downloaded recordings, any common format.",
@@ -103,6 +98,7 @@ export function App() {
             <section className="page" key={section}>
               {section === "home" ? <Home s={s} go={setSection} /> : null}
               {section === "diagnostics" ? <Diagnostics s={s} /> : null}
+              {section === "record" ? <Record s={s} /> : null}
               {section === "snippets" ? <SnippetsPage /> : null}
               {section === "settings" ? <SettingsPage s={s} patch={patch} /> : null}
               {coming ? <Coming {...coming} /> : null}

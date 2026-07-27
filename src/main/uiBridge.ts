@@ -15,13 +15,23 @@ import {
   UI_SNIPPET_SAVE,
   UI_SNIPPET_DELETE,
   UI_SNIPPET_COPY,
+  UI_LONG_STATE,
+  UI_LONG_START,
+  UI_LONG_STOP,
+  UI_LONG_MARK,
+  UI_LONG_TRANSCRIPT,
   type UiStatePayload,
   type UpdateCheckResult,
   type SnippetsResult,
+  type LongStateSnapshot,
+  type LongStartResult,
+  type LongStopResult,
+  type LongTranscriptResult,
 } from "../shared/ipcContracts";
 import type { MainWindow } from "./mainWindow";
 import { listSnippets, saveSnippet, deleteSnippet, getSnippet } from "./snippets";
 import { cancelPendingRestore } from "./insert";
+import { decideLongStart } from "../shared/longStart";
 
 // The main window's bridge into the engine (plan V1, A2). One rule above all:
 // these handlers call the SAME functions the local HTTP API is built on
@@ -50,6 +60,23 @@ export interface UiBridgeDeps {
   log?(msg: string): void;
   /** The Updates tab's "Check now" button (A4: FlowUpdater.checkNow). */
   checkUpdates(): Promise<UpdateCheckResult>;
+
+  // ---- long-form recorder (U4a) ----
+  // The SAME functions the HTTP /long/* routes call (main/api.ts): index.ts
+  // injects the IDENTICAL closures into both LocalApi and this bridge (see
+  // index.ts's longStateDep & friends), never a second implementation of the
+  // recorder's control surface - the founding rule this whole class exists to
+  // uphold (see the module note above guarded()).
+  longState(): LongStateSnapshot;
+  longStartNative(opts: { title?: string; keepAudio?: boolean; captureSystem?: boolean }): LongStartResult;
+  longStop(): LongStopResult;
+  longMark(): { ok: boolean };
+  longTranscript(since: number): LongTranscriptResult;
+  /** NativeCapture.available() (Windows-only "this is a PC" gate). Validated
+   * by shared/longStart.ts BEFORE this bridge ever calls longStartNative, so
+   * a machine that cannot loopback gets one clean, readable refusal instead
+   * of a call that would refuse deeper down anyway. */
+  canLoopback(): boolean;
 }
 
 const REPO_URL = "https://github.com/rochduboisgagnon/Flow";
@@ -67,6 +94,12 @@ export const LOGIN_ARGS = ["--hidden"];
 // error) so the page never has to special-case "no library" vs "empty
 // library".
 const SNIPPETS_UNAVAILABLE: SnippetsResult = { ok: false, items: [], error: "unavailable" };
+
+// U4a: same fallback discipline as SNIPPETS_UNAVAILABLE - what a refused
+// sender (guarded()'s fromMain() gate) gets back, shaped like every real
+// answer so a caller never has to special-case "refused" vs "genuinely empty".
+const LONG_START_UNAVAILABLE: LongStartResult = { ok: false, error: "unavailable" };
+const LONG_STOP_UNAVAILABLE: LongStopResult = { ok: false, docPath: "" };
 
 export class UiBridge {
   private deps: UiBridgeDeps;
@@ -191,6 +224,44 @@ export class UiBridge {
     this.guarded<[unknown], SnippetsResult>(UI_SNIPPET_SAVE, SNIPPETS_UNAVAILABLE, (input) => saveSnippet(input));
     this.guarded<[unknown], SnippetsResult>(UI_SNIPPET_DELETE, SNIPPETS_UNAVAILABLE, (id) => deleteSnippet(id));
     this.guarded<[unknown], SnippetsResult>(UI_SNIPPET_COPY, SNIPPETS_UNAVAILABLE, (id) => this.copySnippet(id));
+
+    // ---- long-form recorder (U4a): IPC surface only, no page consumes it yet
+    // (the plan wants this surface reviewed as its own unit before the page
+    // exists). Every handler below calls the SAME dep the matching HTTP
+    // /long/* route calls - see UiBridgeDeps' module note.
+    // Piege (U4a spec): this channel is polled at 1 Hz while the Record page
+    // is open, and LongStateSnapshot.recent costs a synchronous read
+    // (existingRecent(loadRecent()), same shape of hazard as the one
+    // recentForUi() (main/index.ts) already guards for UiStatePayload's own
+    // 1 Hz push. Rather than special-case this one channel, LongRecorder.state()
+    // itself caches `recent` briefly (see main/longform.ts) - so this handler
+    // stays the plain pass-through every other UI_LONG_* channel is, and the
+    // HTTP /long/state route gets the same protection for free.
+    this.guarded<[], LongStateSnapshot | null>(UI_LONG_STATE, null, () => this.deps.longState());
+
+    this.guarded<[unknown], LongStartResult>(UI_LONG_START, LONG_START_UNAVAILABLE, (opts) => {
+      // The decision (valid source? native capture available? "system" is not
+      // real yet) is pure and unit-tested in shared/longStart.ts; this handler
+      // only acts on the verdict - never its own platform/availability check.
+      const decision = decideLongStart(opts, this.deps.canLoopback());
+      if (!decision.ok) return { ok: false, error: decision.error };
+      return this.deps.longStartNative({
+        title: decision.title,
+        keepAudio: decision.keepAudio,
+        captureSystem: decision.captureSystem,
+      });
+    });
+
+    this.guarded<[], LongStopResult>(UI_LONG_STOP, LONG_STOP_UNAVAILABLE, () => this.deps.longStop());
+
+    this.guarded<[], { ok: boolean }>(UI_LONG_MARK, { ok: false }, () => this.deps.longStop());
+
+    // `since` is a byte offset (see shared/longform.ts's LongTranscriptResult);
+    // anything else from a misbehaving caller is treated as "from the start"
+    // rather than thrown - transcriptSince() itself clamps the rest.
+    this.guarded<[unknown], LongTranscriptResult>(UI_LONG_TRANSCRIPT, { text: "", nextSince: 0 }, (since) =>
+      this.deps.longTranscript(typeof since === "number" ? since : 0),
+    );
   }
 
   /** U3c: copy is not paste. No Ctrl+V, no clipboard snapshot/restore dance -

@@ -18,6 +18,7 @@ import { pcmFromWav, encodeWav } from "../shared/wav";
 import { listOllamaModels } from "./llm/ollama";
 import { LocalApi } from "./api";
 import { LongRecorder, historyRoot, listHistory, resolveHistoryEntry } from "./longform";
+import type { LongStartResult, LongStopResult } from "../shared/longform";
 import { legacyHistoryInfo, type LegacyHistoryInfo } from "./legacyHistory";
 import { decideLaunchAtLogin } from "../shared/launchAtLogin";
 import { shouldApplyCsp, MAIN_WINDOW_CSP } from "../shared/csp";
@@ -170,7 +171,66 @@ if (!app.requestSingleInstanceLock()) {
     void warmAsr();
     probe = new FocusProbe(focusProbeScript(), DEV ? (m) => console.log(m) : undefined);
     logLegacyHistoryState(); // U2c: say where the older recordings are, before purging anything
+    // U4 (blocking review): the app can die without ever running before-quit -
+    // a power cut, a bugcheck, a taskkill. Whatever is still in the staging
+    // folder at boot therefore belongs to a session that is over, and staging
+    // is a folder nothing lists and nothing rescans: file those recordings into
+    // the archive NOW, before the API or the window can start a new one on top.
+    // Runs BEFORE the purge so a recovered recording is judged by the date the
+    // rescue filed it under, never by the state the crash left behind.
+    longRec.rescueOrphanedStaging();
     longRec.purgeHistory(); // C10: retention purge at engine startup, best effort
+
+    // U4a: named so the EXACT SAME closures are handed to both the HTTP API
+    // (LocalApi, below) and the main window's IPC bridge (UiBridge, further
+    // down) - the founding rule of this whole control surface (see
+    // uiBridge.ts's UiBridgeDeps module note): a future cloud connector must
+    // find ONE implementation to reuse, never a parallel one that drifted.
+    const longStateDep = () => longRec.state();
+    const longStartNativeDep = (opts: {
+      title?: string;
+      keepAudio?: boolean;
+      captureSystem?: boolean;
+    }): LongStartResult => {
+      // C2: engine captures the PC's sound + mic natively (no picker), then feeds
+      // the long recorder directly. Windows-only barrier.
+      if (!NativeCapture.available()) return { ok: false, error: "native capture is only available on a Windows PC" };
+      const started = longRec.start({ title: opts.title, keepAudio: !!opts.keepAudio, native: true });
+      if (!started.ok) return started;
+      nativeActive = true;
+      nativeCapture.start(
+        { micDeviceId: settings.micDeviceId, captureSystem: !!opts.captureSystem },
+        (pcm) => {
+          longRec.onChunk(pcm);
+          longRec.writeNativeAudio(pcm);
+        },
+        (msg) => {
+          flowLog(`[native] capture error: ${msg}`);
+          statusText = "native capture failed: " + msg;
+          if (nativeActive) {
+            nativeActive = false;
+            nativeCapture.stop(() => longRec.stop());
+          }
+        },
+      );
+      return started;
+    };
+    const longStopDep = (): LongStopResult => {
+      // C2: native mode finalizes the recorder AFTER the renderer flushes its tail
+      // (nativeCapture.stop's callback), so the last ~1 s is not lost. Report success
+      // now; callers poll long-state (rec -> finalizing -> setup).
+      if (nativeActive) {
+        nativeActive = false;
+        const snap = longRec.state();
+        nativeCapture.stop(() => longRec.stop());
+        return { ok: true, docPath: snap.docPath };
+      }
+      return longRec.stop();
+    };
+    const longMarkDep = () => longRec.mark();
+    const longTranscriptDep = (since: number) => longRec.transcriptSince(since);
+    const canLoopbackDep = () => NativeCapture.available(); // C2: "this is a PC" gate
+
     api = new LocalApi({
       version: app.getVersion(),
       log: flowLog, // A10: the api.json no-overwrite path must be visible in a built app
@@ -178,56 +238,22 @@ if (!app.requestSingleInstanceLock()) {
       isListening: () => listening,
       isRecording: () => longRec.isBusy,
       isEngineWarm: () => sidecar !== null,
-      canLoopback: () => NativeCapture.available(),
+      canLoopback: canLoopbackDep,
       transcribe: (wav) => processUtterance(wav),
-      longState: () => longRec.state(),
+      longState: longStateDep,
       longStart: (opts) => longRec.start({ dir: opts.dir, title: opts.title, keepAudio: !!opts.keepAudio }),
-      longStartNative: (opts) => {
-        // C2: engine captures the PC's sound + mic natively (no picker), then feeds
-        // the long recorder directly. Windows-only barrier.
-        if (!NativeCapture.available()) return { ok: false, error: "native capture is only available on a Windows PC" };
-        const started = longRec.start({ title: opts.title, keepAudio: !!opts.keepAudio, native: true });
-        if (!started.ok) return started;
-        nativeActive = true;
-        nativeCapture.start(
-          { micDeviceId: settings.micDeviceId, captureSystem: !!opts.captureSystem },
-          (pcm) => {
-            longRec.onChunk(pcm);
-            longRec.writeNativeAudio(pcm);
-          },
-          (msg) => {
-            flowLog(`[native] capture error: ${msg}`);
-            statusText = "native capture failed: " + msg;
-            if (nativeActive) {
-              nativeActive = false;
-              nativeCapture.stop(() => longRec.stop());
-            }
-          },
-        );
-        return started;
-      },
-      longStop: () => {
-        // C2: native mode finalizes the recorder AFTER the renderer flushes its tail
-        // (nativeCapture.stop's callback), so the last ~1 s is not lost. Report success
-        // now; the PWA polls /long/state (rec -> finalizing -> setup).
-        if (nativeActive) {
-          nativeActive = false;
-          const snap = longRec.state();
-          nativeCapture.stop(() => longRec.stop());
-          return { ok: true, docPath: snap.docPath };
-        }
-        return longRec.stop();
-      },
+      longStartNative: longStartNativeDep,
+      longStop: longStopDep,
       longSave: (dir) => longRec.save(dir), // v6 c7: file the recording at Stop
       longNotesSplice: (docPath, notes) => longRec.notesSplice(docPath, notes),
-      longMark: () => longRec.mark(),
+      longMark: longMarkDep,
       longChunk: (pcm) => {
         markActivity(); // streamed audio = the engine is working (quiet window)
         longRec.onChunk(pcm);
         return { ok: true };
       },
       longGap: (seconds) => longRec.gap(seconds),
-      longTranscript: (since) => longRec.transcriptSince(since),
+      longTranscript: longTranscriptDep,
       // Archive 2026-07-14: historyRoot() is fixed (U2a), so the archive always
       // reflects the one place recordings are actually filed.
       listHistory: () => listHistory(historyRoot(), flowLog),
@@ -295,6 +321,15 @@ if (!app.requestSingleInstanceLock()) {
         logPath: () => path.join(dataDir(), "flow.log"),
         dataDirPath: () => dataDir(),
         checkUpdates: () => flowUpdater.checkNow(),
+        // U4a: identical closures to LocalApi's above (longStateDep & co.,
+        // defined once, just above) - never a second implementation of the
+        // recorder's control surface.
+        longState: longStateDep,
+        longStartNative: longStartNativeDep,
+        longStop: longStopDep,
+        longMark: longMarkDep,
+        longTranscript: longTranscriptDep,
+        canLoopback: canLoopbackDep,
       },
       mainWindow,
     );
@@ -876,9 +911,18 @@ app.on("before-quit", () => {
   tray?.destroy();
   hotkey.stop();
   overlay.destroy();
-  // C2: an abrupt quit mid native-recording would otherwise leave a size-0 .wav
-  // header (file looks empty). Patch it synchronously so the kept audio is valid.
   nativeActive = false;
+  // U4 (blocking review): quitting mid-recording used to bury the meeting. This
+  // handler is SYNCHRONOUS and Electron awaits nothing it starts, so calling
+  // stop() here would only launch finalize() - an ASR drain plus an Ollama
+  // round-trip - and the process would die first, leaving the document in
+  // <dataDir>/staging where no surface of the app can see it. rescueOnQuit()
+  // does the whole job synchronously: flush the .wav, note the interruption in
+  // the document, file it into the archive, index it in recent.json.
+  longRec.rescueOnQuit();
+  // C2: an abrupt quit mid native-recording would otherwise leave a size-0 .wav
+  // header (file looks empty). Patch it synchronously so the kept audio is
+  // valid. A no-op after a rescue, which flushes the stream itself first.
   longRec.flushNativeAudioSync();
   nativeCapture.destroy();
   sidecar?.stop();

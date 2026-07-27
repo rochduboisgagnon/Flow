@@ -77,10 +77,16 @@ export function hms(ms: number): string {
   return p(h) + ":" + p(m) + ":" + p(sec);
 }
 
+// The last line of every document's header. Exported because three different
+// places have to agree on it byte for byte: transcriptHeader writes it,
+// spliceNotes falls back to it when the user edited the title, and the
+// interruption note (U4) is inserted straight after it.
+export const ENGINE_LINE = "- engine: AGR Flow (100% local)\n\n";
+
 // v3 chantier 4: the recording produces ONE document (summary + transcript).
 // This header opens it; the summary is spliced in at finalize.
 export function transcriptHeader(title: string, startedIso: string): string {
-  return `# ${title}\n\n- recorded: ${startedIso}\n- engine: AGR Flow (100% local)\n\n`;
+  return `# ${title}\n\n- recorded: ${startedIso}\n` + ENGINE_LINE;
 }
 
 export function transcriptLine(offsetMs: number, text: string): string {
@@ -97,6 +103,30 @@ export function markLine(offsetMs: number): string {
 export function gapLine(offsetMs: number, seconds: number): string {
   const n = Math.max(1, Math.round(seconds));
   return `> [Recording paused ~${n}s (device locked or offline) around ${hms(offsetMs)}]\n\n`;
+}
+
+/** U4: the honest note a recording carries when it did NOT end through a normal
+ * Stop. Two ways that happens, and the document must not pretend otherwise:
+ *  - "quit": the user closed Flow while the recording was still running. The
+ *    engine files the document synchronously on its way out, which leaves room
+ *    for neither a summary nor the drain of the transcription queue.
+ *  - "recovered": the app never got to run any shutdown code at all (crash,
+ *    power loss, forced kill) and the folder was found orphaned at the next
+ *    boot, so nobody was there to count what was still in flight.
+ * `pending` is how many audio segments were still queued for transcription;
+ * a negative value means "unknown", the normal case for a recovery. */
+export function interruptedNote(kind: "quit" | "recovered", pending: number): string {
+  const how =
+    kind === "quit"
+      ? "Flow was closed while this recording was still running."
+      : "Flow stopped unexpectedly while this recording was running (crash, power loss or forced quit), and the recording was recovered at the next startup.";
+  const lost =
+    pending > 0
+      ? `the last ${pending} audio segment${pending > 1 ? "s were" : " was"} still queued for transcription and never transcribed`
+      : pending === 0
+        ? "nothing was left waiting for transcription"
+        : "anything still waiting for transcription at that moment was lost";
+  return `> [Interrupted recording: ${how} It was filed as it stood: no summary was generated, and ${lost}.]\n\n`;
 }
 
 /** File-safe recording base name: kebab title + local timestamp. */
@@ -130,11 +160,10 @@ export function spliceNotes(doc: string, header: string, notes: string): string 
   if (body === doc) {
     // Header drifted (e.g. hand-edited title): fall back to the engine line,
     // the one part of the header no user has a reason to touch.
-    const engineLine = "- engine: AGR Flow (100% local)\n\n";
-    const at = doc.indexOf(engineLine);
+    const at = doc.indexOf(ENGINE_LINE);
     if (at >= 0) {
-      header = doc.slice(0, at + engineLine.length);
-      body = doc.slice(at + engineLine.length);
+      header = doc.slice(0, at + ENGINE_LINE.length);
+      body = doc.slice(at + ENGINE_LINE.length);
     }
   }
   // Strip any previous scaffolding down to the raw timestamped transcript.
@@ -211,4 +240,53 @@ export interface RecentEntry {
 
 export function pushRecent(list: RecentEntry[], entry: RecentEntry): RecentEntry[] {
   return [entry, ...list].slice(0, RECENT_MAX);
+}
+
+// ---- result shapes shared by the HTTP /long/* routes AND the U4a IPC surface ----
+// Defined here (pure, Electron-free) rather than in main/longform.ts so that
+// shared/ipcContracts.ts - which the renderer/preload build also compiles -
+// can reuse them without pulling src/main into that build (tsconfig.json's
+// "include" never lists src/main; main/longform.ts imports these back FROM
+// here, the same direction it already imports RecentEntry and friends).
+
+/** One coherent snapshot of the long-form recorder: GET /long/state and
+ * UI_LONG_STATE render the SAME shape, produced by the SAME LongRecorder.state(). */
+export interface LongStateSnapshot {
+  active: boolean;
+  finalizing: boolean;
+  startedIso: string;
+  durationMs: number;
+  segments: number; // transcribed so far
+  pending: number; // queued behind the ASR
+  marks: number;
+  title: string;
+  dir: string;
+  docPath: string;
+  audioPath: string;
+  lastError: string;
+  recent: RecentEntry[];
+}
+
+/** The result of starting (or refusing to start) a long-form recording -
+ * shared by /long/start, /long/start-native and UI_LONG_START. */
+export interface LongStartResult {
+  ok: boolean;
+  error?: string;
+  docPath?: string;
+  audioPath?: string;
+}
+
+/** The result of stopping a long-form recording - shared by /long/stop and
+ * UI_LONG_STOP. */
+export interface LongStopResult {
+  ok: boolean;
+  docPath: string;
+}
+
+/** A transcript increment from byte `since` onward, plus the offset to poll
+ * from next - shared by /long/transcript and UI_LONG_TRANSCRIPT (the 1 Hz
+ * poll that lets the page never re-transfer the whole document). */
+export interface LongTranscriptResult {
+  text: string;
+  nextSince: number;
 }

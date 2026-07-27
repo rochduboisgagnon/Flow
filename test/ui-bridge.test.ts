@@ -17,6 +17,11 @@ import {
   UI_SNIPPET_SAVE,
   UI_SNIPPET_DELETE,
   UI_SNIPPET_COPY,
+  UI_LONG_STATE,
+  UI_LONG_START,
+  UI_LONG_STOP,
+  UI_LONG_MARK,
+  UI_LONG_TRANSCRIPT,
 } from "../src/shared/ipcContracts";
 
 // U3c: uiBridge.ts imports "electron", which outside a real Electron process
@@ -71,6 +76,11 @@ test("every ui:* invoke channel this bridge owns is registered through guarded()
     UI_SNIPPET_SAVE,
     UI_SNIPPET_DELETE,
     UI_SNIPPET_COPY,
+    UI_LONG_STATE,
+    UI_LONG_START,
+    UI_LONG_STOP,
+    UI_LONG_MARK,
+    UI_LONG_TRANSCRIPT,
   };
 
   assert.deepEqual(

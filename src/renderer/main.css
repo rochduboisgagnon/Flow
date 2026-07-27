@@ -280,7 +280,7 @@ table.diag td:first-child { color: var(--ink2); white-space: nowrap; width: 180p
 /* The shell is non-selectable; FACTS must be copyable. Extend this allowlist
    with every new readable surface (.transcript, .doc, .rich, .snip pre when
    their waves land) - forgetting it makes pages uncopyable. */
-table.diag, .mono, .row .l span, .card .sub, .rich, .snip pre { user-select: text; }
+table.diag, .mono, .row .l span, .card .sub, .rich, .snip pre, .tl-raw { user-select: text; }
 
 @media (max-width: 960px) {
   .home-grid { grid-template-columns: 1fr; }
@@ -357,3 +357,51 @@ textarea.snip-src:focus { outline: 2px solid var(--amber); outline-offset: 1px; 
 @media (max-width: 960px) {
   .fx-grid, .snip-edit { grid-template-columns: 1fr; }
 }
+
+/* ---- Record (wave U4) ---- */
+.rec-wrap { display: grid; grid-template-columns: 320px 1fr; gap: 14px; align-items: start; }
+.rec-side { display: flex; flex-direction: column; gap: 14px; }
+.seg { display: flex; background: var(--panel2); border: 1px solid var(--line2); border-radius: 9px; padding: 3px; gap: 3px; }
+.seg button {
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: var(--ink2);
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 4px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.seg button:hover:not(:disabled) { color: var(--ink); }
+/* The selected segment is raised by its own surface, not by a heavy shadow:
+   the mockup's rgba(0,0,0,.35) reads as a smudge on a light ground. */
+.seg button.on { background: var(--panel); color: var(--ink); font-weight: 600; border: 1px solid var(--line2); padding: 5px 3px; }
+/* Review U4c: an unavailable segment must READ unavailable, not merely be
+   inert - a control that looks alive and always fails is the failure mode the
+   whole campaign forbids. */
+.seg button:disabled { opacity: 0.45; cursor: not-allowed; text-decoration: line-through; text-decoration-thickness: 1px; }
+.rec-pill { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 24px 18px 20px; }
+/* Deliberately NOT themed: this mirrors the dictation pill, which floats over
+   other apps and stays the same warm near-black in both themes. */
+.pill-shell {
+  background: rgba(18, 15, 12, 0.9);
+  border: 1px solid var(--line2);
+  border-radius: 999px;
+  padding: 10px 22px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.35);
+}
+.rec-time { font-size: 26px; font-weight: 600; letter-spacing: 0.02em; }
+.rec-meta { display: flex; gap: 12px; font-size: 11.5px; color: var(--ink2); }
+.rec-keep { display: flex; gap: 9px; align-items: flex-start; font-size: 12.5px; cursor: pointer; }
+.rec-keep input { margin-top: 2px; accent-color: var(--amber); }
+.transcript { display: flex; flex-direction: column; gap: 12px; max-height: 460px; overflow-y: auto; }
+.tl-raw {
+  margin: 0;
+  font: inherit;
+  color: var(--ink2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-width: 68ch;
+}
+@media (max-width: 960px) { .rec-wrap { grid-template-columns: 1fr; } }

@@ -180,3 +180,35 @@ export interface UpdateCheckResult {
   ok: boolean;
   message: string; // human-readable outcome ("up to date", "1.1.0 available", error text)
 }
+
+// ---- long-form recorder (U4a) ----
+// The IPC surface only - no page consumes it yet (the plan wants this surface
+// reviewed as its own unit before the page exists). Every handler in
+// main/uiBridge.ts calls the SAME functions the HTTP /long/* routes call
+// (main/api.ts, injected by main/index.ts) - never a parallel implementation,
+// which is what lets a future cloud connector inherit this control surface
+// for free. State and transcript results are NOT re-invented here: they
+// reuse LongRecorder's own result types (shared/longform.ts), re-exported
+// below so a consumer needs only this one import line.
+export const UI_LONG_STATE = "ui:long-state";
+export const UI_LONG_START = "ui:long-start";
+export const UI_LONG_STOP = "ui:long-stop";
+export const UI_LONG_MARK = "ui:long-mark";
+// Takes `since` (a byte offset), answers the increment from there: what lets
+// the future page poll at 1 Hz without re-transferring the whole transcript.
+export const UI_LONG_TRANSCRIPT = "ui:long-transcript";
+
+export type { LongStateSnapshot, LongStartResult, LongStopResult, LongTranscriptResult } from "./longform";
+
+/** The three source choices UI_LONG_START accepts. "system" (the PC's own
+ * sound, no microphone) is a real, typed value - see shared/longStart.ts's
+ * module note for why the handler currently refuses it rather than silently
+ * keeping the microphone on: the native capture window
+ * (src/renderer/capture.tsx) grabs it unconditionally today. */
+export type LongAudioSource = "mic" | "system" | "both";
+
+export interface UiLongStartRequest {
+  source: LongAudioSource;
+  title?: string;
+  keepAudio?: boolean; // v3 chantier 4 parity: keep the listenable .wav (default off)
+}
