@@ -23,10 +23,16 @@ import {
   UI_SET_LOGIN_ITEM,
   UI_CHECK_UPDATES,
   UI_STATE_PUSH,
+  UI_SNIPPET_LIST,
+  UI_SNIPPET_SAVE,
+  UI_SNIPPET_DELETE,
+  UI_SNIPPET_COPY,
   type CaptureStartPayload,
   type NativeStartPayload,
   type UiStatePayload,
   type UpdateCheckResult,
+  type SnippetInput,
+  type SnippetsResult,
 } from "../shared/ipcContracts";
 
 export type CaptureCommand = "start" | "stop" | "cancel";
@@ -98,6 +104,14 @@ const ui = {
   getLoginItem: (): Promise<boolean> => ipcRenderer.invoke(UI_GET_LOGIN_ITEM),
   setLoginItem: (on: boolean): Promise<boolean> => ipcRenderer.invoke(UI_SET_LOGIN_ITEM, on),
   checkUpdates: (): Promise<UpdateCheckResult> => ipcRenderer.invoke(UI_CHECK_UPDATES),
+  // ---- snippets (U3): PULL-only, always the WHOLE library back (see
+  // ipcContracts.ts's module note) - snippetDelete and snippetCopy included,
+  // so the page can replace its list with whatever comes back and never be
+  // stale after a write it did not itself make.
+  snippetList: (): Promise<SnippetsResult> => ipcRenderer.invoke(UI_SNIPPET_LIST),
+  snippetSave: (input: SnippetInput): Promise<SnippetsResult> => ipcRenderer.invoke(UI_SNIPPET_SAVE, input),
+  snippetDelete: (id: string): Promise<SnippetsResult> => ipcRenderer.invoke(UI_SNIPPET_DELETE, id),
+  snippetCopy: (id: string): Promise<SnippetsResult> => ipcRenderer.invoke(UI_SNIPPET_COPY, id),
   onState(cb: (s: UiStatePayload) => void): () => void {
     const handler = (_e: Electron.IpcRendererEvent, s: UiStatePayload) => cb(s);
     ipcRenderer.on(UI_STATE_PUSH, handler);

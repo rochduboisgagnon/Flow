@@ -6,6 +6,7 @@ import { Coming } from "./components";
 import { Home } from "./pages/Home";
 import { Diagnostics } from "./pages/Diagnostics";
 import { SettingsPage } from "./pages/Settings";
+import { SnippetsPage } from "./pages/Snippets";
 
 // Flow main window shell (wave U1). State discipline unchanged since A1/A2:
 // the window renders ONE snapshot pushed by the engine (UiStatePayload),
@@ -62,12 +63,6 @@ const COMING: Partial<Record<Section, { title: string; blurb: string; missing: s
     missing: "Needs the local AI wave first: transformations run on a local model that may not be installed.",
     wave: "Planned as the voice-functions wave of the standalone plan (V5).",
   },
-  snippets: {
-    title: "Snippets",
-    blurb: "Say a cue, insert a full block. Deterministic, instant, no model involved.",
-    missing: "The snippet library, its HTML support and the rich clipboard path are not built yet.",
-    wave: "Planned as wave U3 of the design campaign.",
-  },
 };
 
 export function App() {
@@ -108,6 +103,7 @@ export function App() {
             <section className="page" key={section}>
               {section === "home" ? <Home s={s} go={setSection} /> : null}
               {section === "diagnostics" ? <Diagnostics s={s} /> : null}
+              {section === "snippets" ? <SnippetsPage /> : null}
               {section === "settings" ? <SettingsPage s={s} patch={patch} /> : null}
               {coming ? <Coming {...coming} /> : null}
             </section>

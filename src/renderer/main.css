@@ -280,9 +280,80 @@ table.diag td:first-child { color: var(--ink2); white-space: nowrap; width: 180p
 /* The shell is non-selectable; FACTS must be copyable. Extend this allowlist
    with every new readable surface (.transcript, .doc, .rich, .snip pre when
    their waves land) - forgetting it makes pages uncopyable. */
-table.diag, .mono, .row .l span, .card .sub { user-select: text; }
+table.diag, .mono, .row .l span, .card .sub, .rich, .snip pre { user-select: text; }
 
 @media (max-width: 960px) {
   .home-grid { grid-template-columns: 1fr; }
   .hero-card { grid-row: auto; }
+}
+
+/* ---- Snippets (wave U3) ---- */
+.fx-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+.fx { display: flex; flex-direction: column; gap: 9px; }
+.fx header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.fx .nm { font-weight: 600; font-size: 14px; }
+.fx .desc { color: var(--ink2); font-size: 12.5px; margin: 0; }
+/* A disabled card reads as disabled at a glance: the content recedes, the
+   switch stays crisp so re-enabling is obvious. State in form, not just hue. */
+.fx.off .desc, .fx.off pre, .fx.off .rich, .fx.off .snip-actions { opacity: 0.42; }
+.fx.off .nm { color: var(--ink2); }
+.fx.off .fmt { opacity: 0.55; }
+.snip .cue { color: var(--amber-text); font-weight: 600; }
+.fmt {
+  font-size: 9.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--amber-text);
+  border: 1px solid var(--amber-deep);
+  border-radius: 5px;
+  padding: 1.5px 6px;
+  margin-left: 7px;
+  vertical-align: 2px;
+}
+.fmt.plain { color: var(--ink2); border-color: var(--line2); }
+.rich {
+  margin: 8px 0 0;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 13px;
+  font-size: 12.5px;
+  color: var(--ink2);
+  overflow-wrap: anywhere;
+}
+.rich b, .rich strong { color: var(--ink); }
+.rich a { color: var(--amber-text); text-decoration: underline; text-underline-offset: 2px; }
+.rich p { margin: 0 0 6px; }
+.rich p:last-child { margin-bottom: 0; }
+.rich ul, .rich ol { margin: 0; padding-left: 18px; }
+.snip pre {
+  margin: 8px 0 0;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 13px;
+  font-family: Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--ink2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.snip-actions { display: flex; gap: 8px; margin-top: auto; padding-top: 4px; }
+.snip-edit { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.snip-edit .lbl { display: block; margin-bottom: 6px; }
+textarea.snip-src {
+  font: inherit;
+  width: 100%;
+  min-height: 120px;
+  resize: vertical;
+  color: var(--ink);
+  background: var(--panel2);
+  border: 1px solid var(--line2);
+  border-radius: 8px;
+  padding: 9px 11px;
+}
+textarea.snip-src:focus { outline: 2px solid var(--amber); outline-offset: 1px; }
+@media (max-width: 960px) {
+  .fx-grid, .snip-edit { grid-template-columns: 1fr; }
 }

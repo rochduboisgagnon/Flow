@@ -7,7 +7,7 @@ import { NativeCapture } from "./capture";
 import { WhisperSidecar } from "./asr/sidecar";
 import { ensureModel, DEFAULT_MODEL_FILE, AVAILABLE_MODELS } from "./asr/modelStore";
 import { FocusProbe } from "./focus/probe";
-import { insertViaPaste, insertTyped, leaveOnClipboard } from "./insert";
+import { insertViaPaste, insertTyped, leaveOnClipboard, flushPendingRestore } from "./insert";
 import { decideRoute } from "../shared/route";
 import { comboLabel } from "../shared/combo";
 import { loadSettings, saveSettings, sanitizeSettings, dataDir, type FlowSettings } from "./settings";
@@ -20,6 +20,7 @@ import { LocalApi } from "./api";
 import { LongRecorder, historyRoot, listHistory, resolveHistoryEntry } from "./longform";
 import { legacyHistoryInfo, type LegacyHistoryInfo } from "./legacyHistory";
 import { decideLaunchAtLogin } from "../shared/launchAtLogin";
+import { shouldApplyCsp, MAIN_WINDOW_CSP } from "../shared/csp";
 import { MainWindow } from "./mainWindow";
 import { resourcePath } from "./resources";
 import { UiBridge, LOGIN_ARGS } from "./uiBridge";
@@ -119,6 +120,42 @@ if (!app.requestSingleInstanceLock()) {
     session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => {
       cb(permission === "media");
     });
+    // U3f: PACKAGED-ONLY CSP, applied as a response header rather than a
+    // <meta> tag in main.html. A <meta> tag would ship in the SAME file
+    // `npm run dev` serves from the Vite dev server, whose HMR client needs
+    // inline scripts, eval, and a ws://localhost:5183 socket - a policy tight
+    // enough for a shipped build would break every dev reload. DEV is the
+    // exact flag serverBinaryPaths() and the migration gate already key off,
+    // so this can never drift out of sync with those branches by accident.
+    //
+    // U3g (review, blocking): the hook is on the DEFAULT session, which every
+    // window shares - so the first version of this policy also landed on the
+    // overlay and on the hidden capture window, and BOTH load their AudioWorklet
+    // from a blob: URL. `script-src 'self'` does not cover a blob: worklet
+    // module, so a packaged build would have started no microphone graph at all:
+    // dictation capturing nothing, the one thing this app may never do. The
+    // policy is therefore scoped to the MAIN WINDOW, which is also where it
+    // belongs: it is the only window that renders content the user wrote
+    // (snippet HTML). Whom to cover is decided by shared/csp.ts, pure and
+    // unit-tested (test/csp.test.ts), rather than inline here.
+    if (!DEV) {
+      session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+        const mine = shouldApplyCsp(
+          { url: details.url, webContentsId: details.webContentsId ?? null },
+          // Read LIVE: the main window is lazy (first show()), so at the moment
+          // this hook is installed it does not exist yet.
+          mainWindow.webContentsId(),
+        );
+        // An empty response is Electron's documented "do not touch this one".
+        // Echoing details.responseHeaders back would also work, but the overlay
+        // and the capture window come through HERE - the path that must stay as
+        // close to a no-op as the API allows.
+        if (!mine) return callback({});
+        callback({
+          responseHeaders: { ...details.responseHeaders, "Content-Security-Policy": [MAIN_WINDOW_CSP] },
+        });
+      });
+    }
     overlay.create(DEV);
     tray = new FlowTray({
       showWindow: () => mainWindow.show(DEV),
@@ -336,7 +373,10 @@ let api: LocalApi | null = null;
 
 // The app's own face (V1): lazy window + IPC bridge into the same control
 // functions the HTTP API uses. Closing the window never touches the engine.
-const mainWindow = new MainWindow();
+// flowLog is a hoisted function declaration (below), so referencing it here
+// at module load time is safe - see U3f: MainWindow logs a refused
+// navigation/popup through the same file everything else diagnoses into.
+const mainWindow = new MainWindow(flowLog);
 let uiBridge: UiBridge | null = null;
 // The tray (V1, A3): created once the app is ready (see whenReady above), so
 // it can be destroyed on before-quit alongside everything else engine-owned.
@@ -826,6 +866,9 @@ async function recordShortcutAndApply(): Promise<{ combo: string[] | null; combo
 
 app.on("before-quit", () => {
   mainWindow.setQuitting(true);
+  // U3e: quitting inside the ~250 ms restore window would kill the timer that
+  // owes the user their clipboard back. Hand it back first, while we still can.
+  flushPendingRestore();
   uiBridge?.stop();
   // Only our polling timers: electron-updater's own autoInstallOnAppQuit hook
   // stays armed, so a downloaded update still lands on this manual quit.

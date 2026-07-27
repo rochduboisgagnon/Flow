@@ -79,7 +79,13 @@ test(
       }
       const stopped = rec.stop();
       assert.equal(stopped.ok, true);
-      for (let i = 0; i < 600 && rec.isBusy; i++) await new Promise((r) => setTimeout(r, 100));
+      // U3: 60 s was enough while the dev machine had its GPU to itself. Flow
+      // now starts with Windows by default, so a real engine is ALWAYS warm
+      // and holding the GPU while this test runs its own sidecar: finalize
+      // queues behind it and lands past the old budget (measured: ~70 s, and
+      // the whole test ~84 s). Raised, not skipped - the point of this test is
+      // that real speech reaches the transcript, and it still proves it.
+      for (let i = 0; i < 3000 && rec.isBusy; i++) await new Promise((r) => setTimeout(r, 100));
       assert.equal(rec.isBusy, false, "finalize must complete");
       const transcript = fs.readFileSync(stopped.docPath, "utf8").toLowerCase();
       assert.ok(transcript.includes("budget"), transcript);

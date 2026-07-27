@@ -1,4 +1,4 @@
-import { ipcMain, shell, dialog, app, BrowserWindow } from "electron";
+import { ipcMain, shell, dialog, app, BrowserWindow, clipboard } from "electron";
 import {
   UI_GET_STATE,
   UI_SET_SETTINGS,
@@ -11,10 +11,17 @@ import {
   UI_SET_LOGIN_ITEM,
   UI_CHECK_UPDATES,
   UI_STATE_PUSH,
+  UI_SNIPPET_LIST,
+  UI_SNIPPET_SAVE,
+  UI_SNIPPET_DELETE,
+  UI_SNIPPET_COPY,
   type UiStatePayload,
   type UpdateCheckResult,
+  type SnippetsResult,
 } from "../shared/ipcContracts";
 import type { MainWindow } from "./mainWindow";
+import { listSnippets, saveSnippet, deleteSnippet, getSnippet } from "./snippets";
+import { cancelPendingRestore } from "./insert";
 
 // The main window's bridge into the engine (plan V1, A2). One rule above all:
 // these handlers call the SAME functions the local HTTP API is built on
@@ -54,6 +61,13 @@ const REPO_URL = "https://github.com/rochduboisgagnon/Flow";
 // two can never diverge again.
 export const LOGIN_ARGS = ["--hidden"];
 
+// U3c: the fallback SnippetsResult for a request that never reaches the
+// store at all - refused by guarded() (wrong sender) or aimed at an id that
+// resolves to nothing. Shaped like every other SnippetsResult (ok/items/
+// error) so the page never has to special-case "no library" vs "empty
+// library".
+const SNIPPETS_UNAVAILABLE: SnippetsResult = { ok: false, items: [], error: "unavailable" };
+
 export class UiBridge {
   private deps: UiBridgeDeps;
   private mainWindow: MainWindow;
@@ -77,31 +91,51 @@ export class UiBridge {
     return c !== null && e.sender === c;
   }
 
+  /**
+   * The ONLY place ipcMain.handle is ever called (test/ui-bridge.test.ts
+   * enforces this by reading the source). Registers `channel` so the
+   * fromMain() gate applies BY CONSTRUCTION: a handler written with
+   * this.guarded(...) cannot forget the check, because there is nowhere to
+   * write it - unlike the old pattern of `if (!this.fromMain(e)) return ...`
+   * repeated at the top of every handler, which only takes one omission to
+   * break.
+   *
+   * Why this matters here specifically (U3c): preload.js is the SAME file
+   * loaded by the overlay and the hidden capture window, so `window.flowui`
+   * exists there too. Without a gate that cannot be skipped, an unguarded
+   * ui:snippet-save would let either of those windows rewrite the user's
+   * whole snippet library - and neither of them is a page a reviewer is
+   * likely to be staring at when a new channel is added six months from now.
+   */
+  private guarded<Args extends unknown[], T>(
+    channel: string,
+    fallback: T,
+    handler: (...args: Args) => T | Promise<T>,
+  ): void {
+    ipcMain.handle(channel, (e: Electron.IpcMainInvokeEvent, ...args: Args) => {
+      if (!this.fromMain(e)) return fallback;
+      return handler(...args);
+    });
+  }
+
   private register(): void {
-    ipcMain.handle(UI_GET_STATE, (e) => {
-      if (!this.fromMain(e)) return null;
-      return this.deps.getUiState();
-    });
-    ipcMain.handle(UI_SET_SETTINGS, (e, patch: Record<string, unknown>) => {
-      if (!this.fromMain(e)) return null;
+    this.guarded<[], UiStatePayload | null>(UI_GET_STATE, null, () => this.deps.getUiState());
+
+    this.guarded<[unknown], UiStatePayload | null>(UI_SET_SETTINGS, null, (patch) => {
       // Same path as POST /settings: applySettings sanitizes and persists.
-      this.deps.setSettings(patch && typeof patch === "object" ? patch : {});
+      this.deps.setSettings(patch && typeof patch === "object" ? (patch as Record<string, unknown>) : {});
       return this.deps.getUiState();
     });
-    ipcMain.handle(UI_RECORD_SHORTCUT, async (e) => {
-      if (!this.fromMain(e)) return { combo: null };
-      return await this.deps.recordShortcut();
-    });
-    ipcMain.handle(UI_LIST_MICS, async (e) => {
-      if (!this.fromMain(e)) return [];
-      return await this.deps.listMics();
-    });
-    ipcMain.handle(UI_OLLAMA_MODELS, async (e) => {
-      if (!this.fromMain(e)) return null;
-      return await this.deps.ollamaModels();
-    });
-    ipcMain.handle(UI_OPEN_PATH, async (e, which: unknown) => {
-      if (!this.fromMain(e)) return;
+
+    this.guarded<[], { combo: string[] | null; comboLabel?: string }>(UI_RECORD_SHORTCUT, { combo: null }, () =>
+      this.deps.recordShortcut(),
+    );
+
+    this.guarded<[], Array<{ id: string; label: string }>>(UI_LIST_MICS, [], () => this.deps.listMics());
+
+    this.guarded<[], string[] | null>(UI_OLLAMA_MODELS, null, () => this.deps.ollamaModels());
+
+    this.guarded<[unknown], void>(UI_OPEN_PATH, undefined, async (which) => {
       // Fixed destinations only: the renderer never passes a path, so a
       // compromised page cannot use this as an arbitrary-open primitive.
       if (which === "log") await shell.openPath(this.deps.logPath());
@@ -121,13 +155,13 @@ export class UiBridge {
         }
       } else if (which === "repo") await shell.openExternal(REPO_URL);
     });
+
     // U2a: the recordings folder (history) stopped being user-configurable, so
     // Settings' "Recordings folder" row no longer calls this - but it is NOT
     // dead IPC: it is the picker /long/save's own "save a copy" flow will use
     // (a destination folder is still chosen per-save, just never for history
     // itself). U5 settles pickFolder's final shape/wiring.
-    ipcMain.handle(UI_PICK_FOLDER, async (e) => {
-      if (!this.fromMain(e)) return null;
+    this.guarded<[], string | null>(UI_PICK_FOLDER, null, async () => {
       // Without a parent window, the dialog is app-modal and may open behind the frameless main window.
       const wc = this.mainWindow.contents();
       const parent = wc ? BrowserWindow.fromWebContents(wc) : null;
@@ -136,20 +170,50 @@ export class UiBridge {
         : await dialog.showOpenDialog({ properties: ["openDirectory"] });
       return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0];
     });
-    ipcMain.handle(UI_GET_LOGIN_ITEM, (e) => {
-      if (!this.fromMain(e)) return false;
-      return app.getLoginItemSettings({ args: LOGIN_ARGS }).openAtLogin;
-    });
-    ipcMain.handle(UI_SET_LOGIN_ITEM, (e, on: unknown) => {
-      if (!this.fromMain(e)) return false;
+
+    this.guarded<[], boolean>(UI_GET_LOGIN_ITEM, false, () => app.getLoginItemSettings({ args: LOGIN_ARGS }).openAtLogin);
+
+    this.guarded<[unknown], boolean>(UI_SET_LOGIN_ITEM, false, (on) => {
       // --hidden: a login launch starts the engine without popping the window.
       app.setLoginItemSettings({ openAtLogin: on === true, args: LOGIN_ARGS });
       return app.getLoginItemSettings({ args: LOGIN_ARGS }).openAtLogin;
     });
-    ipcMain.handle(UI_CHECK_UPDATES, async (e): Promise<UpdateCheckResult> => {
-      if (!this.fromMain(e)) return { ok: false, message: "unavailable" };
-      return await this.deps.checkUpdates();
-    });
+
+    this.guarded<[], UpdateCheckResult>(UI_CHECK_UPDATES, { ok: false, message: "unavailable" }, () =>
+      this.deps.checkUpdates(),
+    );
+
+    // ---- snippets (U3b/U3c): the store owns persistence, this class only
+    // gates the sender and (for copy) writes the clipboard. Every channel
+    // answers with the WHOLE library (SnippetsResult) - see ipcContracts.ts's
+    // module note on why snippets are PULL-only and never in UiStatePayload.
+    this.guarded<[], SnippetsResult>(UI_SNIPPET_LIST, SNIPPETS_UNAVAILABLE, () => listSnippets());
+    this.guarded<[unknown], SnippetsResult>(UI_SNIPPET_SAVE, SNIPPETS_UNAVAILABLE, (input) => saveSnippet(input));
+    this.guarded<[unknown], SnippetsResult>(UI_SNIPPET_DELETE, SNIPPETS_UNAVAILABLE, (id) => deleteSnippet(id));
+    this.guarded<[unknown], SnippetsResult>(UI_SNIPPET_COPY, SNIPPETS_UNAVAILABLE, (id) => this.copySnippet(id));
+  }
+
+  /** U3c: copy is not paste. No Ctrl+V, no clipboard snapshot/restore dance -
+   * insertRichViaPaste (src/main/insert.ts) exists for LANDING dictation at
+   * the cursor and is deliberately NOT reused here; this only has to put the
+   * snippet on the clipboard for the user's own next Ctrl+V, same as any
+   * ordinary copy. */
+  private copySnippet(rawId: unknown): SnippetsResult {
+    const found = getSnippet(rawId);
+    const current = listSnippets();
+    if (!found) return { ...current, ok: false, error: "snippet not found" };
+    // U3g (review, major): "no restore dance" was not the same as "immune to
+    // one". A dictation arms a ~250 ms clipboard restore, and copying a snippet
+    // inside that window used to be undone by it a quarter second later - the
+    // user's copy silently replaced by their pre-dictation clipboard. Disarm it
+    // FIRST, before the write, so no timer can be sitting between our write and
+    // the user's Ctrl+V. This is the one place in the app where the user
+    // explicitly chose what belongs on their clipboard, and that choice is both
+    // more recent and more intentional than the restore it cancels.
+    if (cancelPendingRestore()) this.deps.log?.("[snippets] copy cancelled a pending clipboard restore");
+    if (found.format === "html" && found.html !== undefined) clipboard.write({ text: found.text, html: found.html });
+    else clipboard.writeText(found.text);
+    return current;
   }
 
   /** U0: pushes a snapshot immediately instead of waiting for the 1 Hz timer.

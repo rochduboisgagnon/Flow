@@ -1,7 +1,8 @@
-import { BrowserWindow } from "electron";
+import { BrowserWindow, shell } from "electron";
 import path from "node:path";
 import { THEME_BG, THEME_TITLEBAR, type ResolvedTheme } from "../shared/theme";
 import { TITLEBAR_H } from "../shared/constants";
+import { decideExternalOpen } from "../shared/externalNav";
 
 // The main window (plan V1, A1): Flow's own face, now that the Manager no
 // longer hosts the settings. Three rules, all engine-protecting:
@@ -24,6 +25,14 @@ export class MainWindow {
   // reaches the renderer only on the next timer tick - up to a full second of
   // a dark page under already-light native caption buttons on reopen.
   private onShowCb: (() => void) | null = null;
+  // U3f: diagnostics for a refused navigation/popup. Optional and defaulted to
+  // a no-op so tests/callers that do not care about logging need not supply
+  // one - the same shape as UiBridgeDeps.log?.
+  private log: (msg: string) => void;
+
+  constructor(log: (msg: string) => void = () => {}) {
+    this.log = log;
+  }
 
   setOnShow(cb: () => void): void {
     this.onShowCb = cb;
@@ -81,6 +90,22 @@ export class MainWindow {
     // restore of a minimized window, which never goes through show().
     this.win.on("show", () => this.onShowCb?.());
     this.win.on("restore", () => this.onShowCb?.());
+    // U3f: this window renders user content it did not author - a snippet
+    // preview's <a href>, in particular (htmlSanitize.ts allows http/https/
+    // mailto hrefs, with no notion of "and never navigate the app there").
+    // Both routes a link click can take are covered: will-navigate for an
+    // ordinary same-window link, setWindowOpenHandler for target="_blank" /
+    // window.open(). Neither ever lets the MAIN window's own location change;
+    // an allowed URL is instead handed to the system browser, exactly like a
+    // normal web page opening an external link safely.
+    this.win.webContents.on("will-navigate", (e, url) => {
+      e.preventDefault(); // main.html never navigates itself (SPA state, not location changes) - only page content does this
+      this.openExternalIfAllowed(url);
+    });
+    this.win.webContents.setWindowOpenHandler(({ url }) => {
+      this.openExternalIfAllowed(url);
+      return { action: "deny" }; // Flow never opens a second Electron window this way
+    });
     this.win.on("close", (e) => {
       // Closing hides; the engine keeps running (tray keeps the app reachable).
       if (!this.quitting) {
@@ -95,6 +120,17 @@ export class MainWindow {
   /** before-quit flips this so the close handler lets the window die. */
   setQuitting(v: boolean): void {
     this.quitting = v;
+  }
+
+  /** U3f: the ONLY path from page content to the OS. decideExternalOpen is
+   * pure (src/shared/externalNav.ts); this method just acts on its verdict
+   * and journals a refusal, which is what "et journalise le refus" needs for
+   * the loopback case specifically - logging every refusal uniformly is
+   * simpler than special-casing which reason gets written down. */
+  private openExternalIfAllowed(url: string): void {
+    const decision = decideExternalOpen(url);
+    if (decision.allow) void shell.openExternal(decision.url);
+    else this.log(`[nav] refused to open external URL: ${decision.reason}`);
   }
 
   /** U0: applies (and remembers) the resolved theme's background paint. Called
@@ -126,6 +162,14 @@ export class MainWindow {
   /** The live webContents when the window exists (for state pushes). */
   contents(): Electron.WebContents | null {
     return this.win && !this.win.isDestroyed() ? this.win.webContents : null;
+  }
+
+  /** U3g: the live webContents id, or null while the (lazy) window does not
+   * exist. The CSP hook in index.ts is installed at boot, long before the first
+   * show(), and the window can be destroyed and rebuilt with a different id -
+   * so the answer has to be asked for per request, never captured once. */
+  webContentsId(): number | null {
+    return this.contents()?.id ?? null;
   }
 
   destroy(): void {

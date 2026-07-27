@@ -73,6 +73,51 @@ export const UI_SET_LOGIN_ITEM = "ui:set-login-item";
 export const UI_CHECK_UPDATES = "ui:check-updates";
 export const UI_STATE_PUSH = "ui:state"; // main -> window, periodic while visible
 
+// ---- snippets (U3) ----
+// PULL-only, deliberately: the snippet library is user content of unbounded
+// size, and UiStatePayload is re-serialized and pushed EVERY SECOND while the
+// window is visible. Putting the library in the snapshot would turn a status
+// heartbeat into a data bus and re-render every page once a second.
+export const UI_SNIPPET_LIST = "ui:snippet-list";
+export const UI_SNIPPET_SAVE = "ui:snippet-save"; // create when id is "", else update
+export const UI_SNIPPET_DELETE = "ui:snippet-delete";
+export const UI_SNIPPET_COPY = "ui:snippet-copy"; // put it on the clipboard, rich when html
+
+/** One snippet as it lives on disk and travels over IPC.
+ *
+ * `text` is ALWAYS present, including for html snippets: the plain-text
+ * fallback is STORED and user-editable, never derived at paste time. CF_HTML
+ * consumers disagree (Outlook renders a <p> as a paragraph break where the
+ * user expected none), so the user must see and fix exactly what lands in a
+ * plain-text target. `html` is sanitized by the MAIN process at WRITE time. */
+export interface Snippet {
+  id: string;
+  cue: string; // what the user says (the spoken runtime belongs to the dictation wave)
+  enabled: boolean;
+  format: "text" | "html";
+  text: string; // the stored plain-text fallback, always authoritative for "type" mode
+  html?: string; // sanitized rich version, only when format === "html"
+  createdIso: string;
+}
+
+/** What the save channel accepts. An absent/empty id creates. */
+export interface SnippetInput {
+  id?: string;
+  cue: string;
+  enabled: boolean;
+  format: "text" | "html";
+  text: string;
+  html?: string;
+}
+
+/** Every snippet channel answers with the WHOLE library, so the page never
+ * holds a stale list after a write it did not make. */
+export interface SnippetsResult {
+  ok: boolean;
+  items: Snippet[];
+  error?: string; // human-readable, shown as-is by the page
+}
+
 /** One recent long-form capture, as the window shows it (a subset of the
  * engine's RecentEntry: the window never needs the staging internals). */
 export interface UiRecentCapture {
