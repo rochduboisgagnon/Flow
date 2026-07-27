@@ -92,7 +92,14 @@ jobs:
         env:
           CI: ""
         run: node scripts/ensure-keyspy.cjs
-      - run: node scripts/fetch-whisper.cjs
+      # The speech engine binaries live in a GitHub release too, so this call
+      # needs the same authenticated budget as the keyspy fetch above: the
+      # v1.3.0 run died right here on the 60-per-hour anonymous limit that
+      # hosted runners share across every project on the same IP.
+      - name: Fetch the speech engine binaries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/fetch-whisper.cjs
 
       - run: npm run build
       # Build WITHOUT publishing: the artifact gets inspected first. Publishing

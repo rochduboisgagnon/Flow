@@ -22,14 +22,29 @@ if (process.platform !== "win32") {
   process.exit(0);
 }
 
+// CI, 2026-07-27: the v1.3.0 release job died here on "API rate limit
+// exceeded" - GitHub allows only 60 anonymous REST calls per hour PER IP, and
+// hosted runners share their IPs with the rest of the world. Same class of
+// failure as the keyspy fetch, fixed the same way: send the token when the
+// environment has one. Locally there is usually none, and 60 calls/hour is
+// plenty for a developer; on CI the workflow passes GITHUB_TOKEN and the
+// budget becomes 1000/hour for the repository. The token is only ever sent to
+// api.github.com, never followed into the redirect that serves the asset.
+function ghHeaders(extra) {
+  const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+  return Object.assign({ "User-Agent": "flow" }, extra, token ? { Authorization: `Bearer ${token}` } : {});
+}
+
 function getJson(url) {
   return new Promise((resolve, reject) => {
     https
-      .get(url, { headers: { "User-Agent": "flow", Accept: "application/vnd.github+json" } }, (res) => {
+      .get(url, { headers: ghHeaders({ Accept: "application/vnd.github+json" }) }, (res) => {
         let d = "";
         res.on("data", (c) => (d += c));
         res.on("end", () => {
-          if (res.statusCode !== 200) reject(new Error(`HTTP ${res.statusCode}: ${d.slice(0, 200)}`));
+          if (res.statusCode === 403 && /rate limit/i.test(d)) {
+            reject(new Error("GitHub API rate limit reached. Set GH_TOKEN (CI passes secrets.GITHUB_TOKEN) or retry later."));
+          } else if (res.statusCode !== 200) reject(new Error(`HTTP ${res.statusCode}: ${d.slice(0, 200)}`));
           else resolve(JSON.parse(d));
         });
       })
