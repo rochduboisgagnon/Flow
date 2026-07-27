@@ -29,8 +29,8 @@ export const THEME_BG: Record<ResolvedTheme, string> = {
 // theme's secondary ink (--ink2). Windows draws the hover states and the close
 // button's red itself, so there is nothing else for us to specify here.
 export const THEME_TITLEBAR: Record<ResolvedTheme, { color: string; symbolColor: string }> = {
-  dark: { color: "#191613", symbolColor: "#a89e90" },
-  light: { color: "#f6f4f0", symbolColor: "#6f6a61" },
+  dark: { color: "#191613", symbolColor: "#c2b9ac" },
+  light: { color: "#f6f4f0", symbolColor: "#56514b" },
 };
 
 /** Validation guard: an untrusted settings.json value narrowed to ThemePref. */

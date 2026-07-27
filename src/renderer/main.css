@@ -19,8 +19,13 @@
   --line: #2d2823;
   --line2: #3d362d;
   --ink: #f2ede4;
-  --ink2: #a89e90;
-  --ink3: #6e675d;
+  /* Roch, 1.1.0 on-device validation: the mockup's secondary ink read fine on
+     the design page but was "vraiment trop pale" in the real app, BOTH themes.
+     Bumped from #a89e90/#6f6a61 to sit clearly above AA (~9:1 dark, ~7.5:1
+     light) while staying secondary next to --ink. THEME_TITLEBAR.symbolColor
+     mirrors --ink2 (enforced by test/theme.test.ts). */
+  --ink2: #c2b9ac;
+  --ink3: #857d70;
   --amber: #c98a3a;
   --amber-text: #c98a3a; /* 6.2:1 on --bg dark: amber is text-safe as-is */
   --amber-deep: #9c6222;
@@ -43,8 +48,8 @@ html.light {
   --line: #e4e0d8;
   --line2: #d3cdc2;
   --ink: #1b1917;
-  --ink2: #6f6a61;
-  --ink3: #a09a8f;
+  --ink2: #56514b;
+  --ink3: #8f887c;
   --amber: #b9762a;
   --amber-text: #9c6222; /* #b9762a is only 3.4:1 on light --bg; text needs 4.5 */
   --amber-deep: #9c6222;

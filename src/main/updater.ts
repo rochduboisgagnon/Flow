@@ -22,8 +22,12 @@ import type { UpdateCheckResult } from "../shared/ipcContracts";
 const BOOT_DELAY_MS = 2 * 60 * 1000;
 /** Steady-state check cadence. Flow ships rarely; four hours is plenty. */
 const CHECK_EVERY_MS = 4 * 60 * 60 * 1000;
-/** With an update downloaded, how often we look for a lull. */
-const QUIET_POLL_MS = 5 * 60 * 1000;
+/** With an update downloaded, how often we look for a lull. Roch (1.1.0
+ * validation): at 5 minutes the app sat visibly "update ready" long after the
+ * machine went idle - the restart must FEEL automatic. 30 s polling means the
+ * swap starts at most ~90 s after real quiet begins (poll + confirmation
+ * pause), and the poll itself is a two-comparison callback: free. */
+const QUIET_POLL_MS = 30 * 1000;
 /** How long the lull must hold before we dare swap the binary. */
 const QUIET_CONFIRM_MS = 30 * 1000;
 
