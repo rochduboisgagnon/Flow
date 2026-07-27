@@ -1,4 +1,4 @@
-import { app, session, ipcMain, nativeTheme } from "electron";
+import { app, session, ipcMain, nativeTheme, BrowserWindow } from "electron";
 import path from "node:path";
 import fs from "node:fs";
 import { HotkeyAdapter } from "./hotkey";
@@ -17,7 +17,8 @@ import { gateTranscript } from "../shared/textGate";
 import { pcmFromWav, encodeWav } from "../shared/wav";
 import { listOllamaModels } from "./llm/ollama";
 import { LocalApi } from "./api";
-import { LongRecorder, historyRoot, listHistory, resolveHistoryEntry } from "./longform";
+import { LongRecorder, historyRoot, listHistory, resolveHistoryEntry, readHistoryDoc } from "./longform";
+import { DownloadManager } from "./downloads";
 import type { LongStartResult, LongStopResult } from "../shared/longform";
 import { legacyHistoryInfo, type LegacyHistoryInfo } from "./legacyHistory";
 import { decideLaunchAtLogin } from "../shared/launchAtLogin";
@@ -164,6 +165,13 @@ if (!app.requestSingleInstanceLock()) {
       // only reads it for its tooltip, it never writes anything back (A10).
       getStatus: () => engineStatus(),
       pauseHotkey: (v) => hotkey.suspend(v),
+      // U4 (blocking review): the SAME "busy" the updater refuses to install
+      // through. "Quit Flow" was the one control that walked straight past it.
+      isRecording: () => longRec.isBusy,
+      parentWindow: () => {
+        const wc = mainWindow.contents();
+        return wc ? BrowserWindow.fromWebContents(wc) : null;
+      },
     });
     if (NativeCapture.available()) nativeCapture.create(DEV); // C2: Windows loopback window
     wireCapture();
@@ -207,10 +215,19 @@ if (!app.requestSingleInstanceLock()) {
         (msg) => {
           flowLog(`[native] capture error: ${msg}`);
           statusText = "native capture failed: " + msg;
-          if (nativeActive) {
-            nativeActive = false;
-            nativeCapture.stop(() => longRec.stop());
-          }
+          if (!nativeActive) return;
+          nativeActive = false;
+          // U4 (review, major): abort() - not stop(). abort() is the ONLY entry
+          // point that records `lastError`, which is the single field carrying
+          // the failure to GET /long/state and to the Record page; it was
+          // written for exactly this call site and had no caller at all, so a
+          // capture that died mid-meeting ended the recording in silence and
+          // the page went on showing a healthy, finished one.
+          longRec.abort(msg);
+          // Then tear the renderer's audio graph down. Nothing waits on its
+          // tail: the recorder has already been stopped with the reason, and a
+          // capture that just failed is not going to flush anything.
+          nativeCapture.stop(() => {});
         },
       );
       return started;
@@ -230,6 +247,12 @@ if (!app.requestSingleInstanceLock()) {
     const longMarkDep = () => longRec.mark();
     const longTranscriptDep = (since: number) => longRec.transcriptSince(since);
     const canLoopbackDep = () => NativeCapture.available(); // C2: "this is a PC" gate
+    // U5a: named exactly like the long* deps above, and for the identical
+    // reason - historyRoot() is fixed (U2a), so BOTH the HTTP archive routes
+    // and the UI_HISTORY_* IPC channels always reflect the one place
+    // recordings are actually filed, off the SAME two functions.
+    const listHistoryDep = () => listHistory(historyRoot(), flowLog);
+    const readHistoryDocDep = (id: string) => readHistoryDoc(id, historyRoot());
 
     api = new LocalApi({
       version: app.getVersion(),
@@ -254,10 +277,13 @@ if (!app.requestSingleInstanceLock()) {
       },
       longGap: (seconds) => longRec.gap(seconds),
       longTranscript: longTranscriptDep,
-      // Archive 2026-07-14: historyRoot() is fixed (U2a), so the archive always
-      // reflects the one place recordings are actually filed.
-      listHistory: () => listHistory(historyRoot(), flowLog),
+      // Archive 2026-07-14 / U5a: listHistory and readHistoryDoc are the named
+      // consts above, shared byte-for-byte with UiBridge below. resolveHistoryEntry
+      // stays route-local (still needed here for streaming /long/history/audio,
+      // which has no IPC equivalent - U5c downloads instead, see downloads.ts).
+      listHistory: listHistoryDep,
       resolveHistoryEntry: (id) => resolveHistoryEntry(id, historyRoot()),
+      readHistoryDoc: readHistoryDocDep,
       // Settings surface for the Manager's AGR Flow view (chantier A).
       getSettings: () => ({
         settings: { ...settings, combo: [...settings.combo] },
@@ -330,6 +356,17 @@ if (!app.requestSingleInstanceLock()) {
         longMark: longMarkDep,
         longTranscript: longTranscriptDep,
         canLoopback: canLoopbackDep,
+        // U5a: identical closures to LocalApi's above (listHistoryDep &
+        // readHistoryDocDep, defined once, just above) - the Notes page's
+        // archive view and the HTTP /long/history* routes can never disagree.
+        listHistory: listHistoryDep,
+        readHistoryDoc: readHistoryDocDep,
+        // U5c: browser-style downloads (Roch's decision) - main-only, no HTTP
+        // equivalent (a remote PWA has no business writing into this
+        // machine's Downloads folder).
+        downloadDoc: (id) => downloads.downloadDoc(id),
+        downloadAudio: (id) => downloads.downloadAudio(id),
+        lastDownloadedPath: () => downloads.lastDownloadedPath(),
       },
       mainWindow,
     );
@@ -537,7 +574,10 @@ async function warmAsr() {
 const overlay = new OverlayWindow();
 // C2: the hidden native-capture window (Windows-only). Created at startup so
 // getDisplayMedia is instant on the first native recording; idle until asked.
-const nativeCapture = new NativeCapture();
+// U4: flowLog goes in, because a capture window that crashes or fails to load
+// used to leave no trace anywhere - the failure mode that let the engine report
+// a healthy recording while capturing nothing at all.
+const nativeCapture = new NativeCapture(flowLog);
 let nativeActive = false; // a native (engine-side) capture is feeding the long recorder
 
 // The dictation loop, main-process side. PTT drives the overlay (which owns the
@@ -667,6 +707,18 @@ const longRec = new LongRecorder({
   // on the very next purge instead of needing a restart.
   historyPurgeSuspended: () => settings.historyPurgeSuspended,
   log: flowLog, // R1: long-recording diagnostics visible in a built app too
+});
+
+// U5c (Roch's decision): the archive's download flow - browser-style, straight
+// into the OS Downloads folder, no dialog. app.getPath("downloads") is read
+// LAZILY (inside the closure), never at module load: it is correct on Windows
+// AND macOS and follows a folder the user relocated, but calling it this early
+// would run before app.whenReady() for no benefit (download only actually
+// happens well after boot).
+const downloads = new DownloadManager({
+  historyRoot: () => historyRoot(),
+  downloadsDir: () => app.getPath("downloads"),
+  log: flowLog,
 });
 
 // NOTE: the "open AGR Pilot" shortcut used to live here (v5 c2, fired from Flow's keyspy),

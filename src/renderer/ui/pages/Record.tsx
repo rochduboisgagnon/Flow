@@ -51,6 +51,14 @@ export function Record({ s }: { s: UiStatePayload }) {
   //    finished document is read once, whole, when the recorder goes idle.
   const inFlight = useRef(false);
   const wasRunning = useRef(false);
+  // Review U4 (major): which recording the byte offset in sinceRef belongs to.
+  // It used to be reset only by this page's own start(), so a recording started
+  // anywhere else - the tray, the local API, a connector - kept the PREVIOUS
+  // recording's offset and appended the new transcript onto the old text, at an
+  // offset that means nothing in the new document. startedIso identifies the
+  // capture and, unlike docPath, does not change when finalize() files the
+  // document into the archive mid-flight.
+  const recordingRef = useRef("");
   const tick = useCallback(async () => {
     if (inFlight.current) return;
     inFlight.current = true;
@@ -58,6 +66,14 @@ export function Record({ s }: { s: UiStatePayload }) {
       const st = await window.flowui.longState();
       setSnap(st);
       const running = st.active || st.finalizing;
+      if (st.startedIso !== recordingRef.current) {
+        // A different recording than the one on screen: start from zero, before
+        // any increment is fetched against a stale offset.
+        recordingRef.current = st.startedIso;
+        sinceRef.current = 0;
+        setTranscript("");
+        wasRunning.current = false;
+      }
       if (st.active) {
         const inc = await window.flowui.longTranscript(sinceRef.current);
         if (inc.text) {
@@ -117,10 +133,10 @@ export function Record({ s }: { s: UiStatePayload }) {
     try {
       const r = await window.flowui.longStart({ source, title: title.trim() || undefined, keepAudio });
       if (!r.ok) setError(r.error ?? "Flow could not start the recording.");
-      else {
-        setTranscript("");
-        sinceRef.current = 0;
-      }
+      // No transcript reset here: the tick below sees a new startedIso and does
+      // it. ONE mechanism, which is the point - this page's own start() being
+      // the only thing that ever reset the offset is exactly how a recording
+      // begun from the tray or the API ended up appended to the previous one.
       await tick();
     } finally {
       setBusy(false);
@@ -209,7 +225,11 @@ export function Record({ s }: { s: UiStatePayload }) {
 
           <div className="card rec-pill">
             <div className="pill-shell">
-              <Ribbon strandCount={6} width={360} height={52} cssWidth={180} cssHeight={26} />
+              {/* Review U4 (major): only a LIVE capture animates. This is the
+                  same visual language as the dictation overlay's "I hear you"
+                  indicator, so a full-amplitude ribbon above the word "Idle"
+                  was the app claiming to be listening when it was not. */}
+              <Ribbon strandCount={6} width={360} height={52} cssWidth={180} cssHeight={26} active={active} />
             </div>
             <div className="rec-time num">{formatDuration(snap?.durationMs ?? 0)}</div>
             <div className="rec-meta">

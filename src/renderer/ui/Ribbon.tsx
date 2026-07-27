@@ -24,12 +24,22 @@ interface Strand {
   sg: number;
 }
 
-export function Ribbon({ strandCount = 5, width = 420, height = 46, cssWidth = 210, cssHeight = 23 }: {
+export function Ribbon({ strandCount = 5, width = 420, height = 46, cssWidth = 210, cssHeight = 23, active = true }: {
   strandCount?: number;
   width?: number;
   height?: number;
   cssWidth?: number;
   cssHeight?: number;
+  /** U4 (review, major): whether anything is actually being captured right now.
+   * The ribbon is the same visual language as the dictation overlay's "I hear
+   * you" indicator, so waving it at full amplitude while nothing is captured is
+   * the app telling the user something untrue - and on the Record page it did
+   * exactly that, next to the word "Idle". False renders ONE resting line, and
+   * no animation loop at all.
+   *
+   * Defaults to true for Home's hero card, where the ribbon is decoration on a
+   * page that claims nothing about a live capture. */
+  active?: boolean;
 }) {
   const ref = useRef<HTMLCanvasElement | null>(null);
 
@@ -60,6 +70,24 @@ export function Ribbon({ strandCount = 5, width = 420, height = 46, cssWidth = 2
 
     const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
     let raf = 0;
+
+    // Nothing is being captured: ONE flat line at rest, drawn once. Not a
+    // slowed-down wave and not an empty box - the shape stays, so the card does
+    // not jump when a recording starts, but it visibly says "silent".
+    function drawResting() {
+      if (!ctx) return;
+      ctx.clearRect(0, 0, W, H);
+      ctx.lineCap = "round";
+      ctx.strokeStyle = grad;
+      ctx.globalAlpha = 0.35;
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.moveTo(x0, H / 2);
+      ctx.lineTo(x0 + span, H / 2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+
     function draw(now: number) {
       if (!ctx) return;
       const t = now / 1000;
@@ -85,11 +113,13 @@ export function Ribbon({ strandCount = 5, width = 420, height = 46, cssWidth = 2
       ctx.globalAlpha = 1;
       if (!reduced) raf = requestAnimationFrame(draw);
     }
+    // Nothing captured -> no rAF loop at all (a hidden cost that also lied).
+    if (!active) drawResting();
     // Reduced motion: one static, mid-phase frame instead of an animation.
-    if (reduced) draw(4200);
+    else if (reduced) draw(4200);
     else raf = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(raf);
-  }, [strandCount]);
+  }, [strandCount, active]);
 
   return (
     <canvas

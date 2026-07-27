@@ -1,4 +1,4 @@
-import { Tray, Menu, nativeImage, app } from "electron";
+import { Tray, Menu, nativeImage, app, dialog, type BrowserWindow } from "electron";
 import { resourcePath } from "./resources";
 
 // The tray (plan V1, A3): the app's ONLY always-there surface once the main
@@ -20,6 +20,15 @@ export interface FlowTrayDeps {
   getStatus(): string;
   /** Suspend/resume the push-to-talk hotkey (HotkeyAdapter.suspend). */
   pauseHotkey(paused: boolean): void;
+  /** U4 (blocking review): longRec.isBusy - a long recording running or still
+   * finalizing. The updater already holds itself back on this exact value; the
+   * tray's own "Quit Flow" was the one control that quit straight through it,
+   * with no way for the user to know a meeting was in flight. */
+  isRecording(): boolean;
+  /** The main window, when it exists, so the confirmation is parented to it
+   * instead of opening as a detached app-modal box behind everything. Null is
+   * normal (the window is lazy and may never have been shown). */
+  parentWindow(): BrowserWindow | null;
 }
 
 const PAUSE_MS = 30 * 60 * 1000;
@@ -96,10 +105,42 @@ export class FlowTray {
         click: () => this.togglePause(),
       },
       { type: "separator" },
-      { label: "Quit Flow", click: () => app.quit() },
+      { label: "Quit Flow", click: () => this.quit() },
     ]);
     this.tray.setContextMenu(menu);
     this.tray.setToolTip(`Flow - ${this.deps.getStatus()}`);
+  }
+
+  /** U4 (blocking review): "Quit Flow" used to call app.quit() without ever
+   * looking at whether a recording was running - the same isBusy the updater
+   * already refuses to install through. Quitting mid-meeting is still allowed
+   * (before-quit's rescueOnQuit files the document into the archive whatever
+   * the user chooses here, so nothing is lost either way); what was missing is
+   * that nobody TOLD them, and a meeting filed without its summary or its
+   * queued transcription is not what someone clicking a menu item expects. */
+  private quit(): void {
+    if (this.deps.isRecording() && !this.confirmQuit()) return;
+    app.quit();
+  }
+
+  /** Synchronous on purpose: this runs inside a menu click, and the answer has
+   * to gate the quit that follows it on the same tick. */
+  private confirmQuit(): boolean {
+    const opts: Electron.MessageBoxSyncOptions = {
+      type: "warning",
+      buttons: ["Keep recording", "Quit anyway"],
+      defaultId: 0,
+      cancelId: 0, // Esc / the close button = the safe answer
+      noLink: true,
+      title: "Flow is recording",
+      message: "A recording is still running.",
+      detail:
+        "Flow will file it into your recordings as it stands: it gets no summary, " +
+        "and any audio still waiting to be transcribed is lost.",
+    };
+    const parent = this.deps.parentWindow();
+    const choice = parent ? dialog.showMessageBoxSync(parent, opts) : dialog.showMessageBoxSync(opts);
+    return choice === 1;
   }
 
   destroy(): void {
