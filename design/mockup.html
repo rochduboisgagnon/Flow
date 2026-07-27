@@ -1,0 +1,744 @@
+<title>Flow, le design des pages</title>
+<style>
+/* ============================================================
+   Flow app mockup - two themes on the same AGR-derived amber charte:
+   dark (the app's signature, from the dictation pill) and light (the
+   original light charte). Both follow the viewer, switchable above.
+   Icons: inline SVG, 24-grid, stroke 1.75, round caps
+   (discipline borrowed from Tabler; CSP forbids icon CDNs).
+   ============================================================ */
+:root{
+  --bg0:#131110;       /* stage behind the window */
+  --bg:#191613;        /* window ground */
+  --panel:#211d18;     /* cards */
+  --panel2:#292319;    /* inset / hover */
+  --line:#2d2823;
+  --line2:#3d362d;
+  --ink:#f2ede4;
+  --ink2:#a89e90;
+  --ink3:#6e675d;
+  --amber:#c98a3a;     /* accent, lightened from #b9762a for AA on dark */
+  --amber-deep:#9c6222;
+  --amber-soft:rgba(201,138,58,.13);
+  --err:#cf6a5c;
+  --shadow-win:0 30px 80px rgba(0,0,0,.55),0 4px 18px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.045);
+  --hero-grad:linear-gradient(160deg,#241e16,#1d1915 55%);
+  --r:10px;
+  --font:"Helvetica Neue","Segoe UI",system-ui,sans-serif;
+}
+/* Light theme: the original AGR light charte (warm near-white + the SAME single
+   amber, back at its native #b9762a which holds AA on light grounds). Follows
+   the viewer's theme by default; the button above the frame switches it. */
+html.light{
+  --bg0:#eceae5;
+  --bg:#f6f4f0;
+  --panel:#fdfcfa;
+  --panel2:#efece6;
+  --line:#e4e0d8;
+  --line2:#d3cdc2;
+  --ink:#1b1917;
+  --ink2:#6f6a61;
+  --ink3:#a09a8f;
+  --amber:#b9762a;
+  --amber-deep:#9c6222;
+  --amber-soft:rgba(185,118,42,.11);
+  --err:#a03d31;
+  --shadow-win:0 24px 60px rgba(27,25,23,.16),0 3px 14px rgba(27,25,23,.09),inset 0 1px 0 rgba(255,255,255,.7);
+  --hero-grad:linear-gradient(160deg,#fbf8f2,#f3efe7 55%);
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg0);color:var(--ink);font-family:var(--font);font-size:13.5px;line-height:1.5}
+::selection{background:rgba(201,138,58,.28)}
+
+/* ---- presentation chrome (outside the app frame) ---- */
+.stage{max-width:1280px;margin:0 auto;padding:34px 24px 60px}
+.stage-head{display:flex;align-items:baseline;gap:14px;margin:0 0 20px;flex-wrap:wrap}
+.stage-head h1{font-size:17px;font-weight:600;letter-spacing:-.01em;margin:0}
+.stage-head p{margin:0;color:var(--ink3);font-size:12.5px}
+.stage-head .themeswap{margin-left:auto;font:inherit;font-size:12px;border:1px solid var(--line2);background:var(--panel);color:var(--ink2);border-radius:999px;padding:4px 13px;cursor:pointer}
+.stage-head .themeswap:hover{color:var(--ink);border-color:var(--ink3)}
+
+/* ---- the app window (frameless, custom titlebar) ---- */
+.window{
+  background:var(--bg);
+  border:1px solid var(--line2);
+  border-radius:14px;
+  box-shadow:var(--shadow-win);
+  overflow:hidden;
+  min-height:730px;
+  display:flex;flex-direction:column;
+}
+
+/* titlebar: brand left, drag field, caption buttons integrated right */
+.titlebar{display:flex;align-items:stretch;height:40px;border-bottom:1px solid var(--line);flex:none;user-select:none}
+.tb-brand{display:flex;align-items:center;gap:9px;padding:0 14px}
+.tb-icon{width:20px;height:20px;display:block;border-radius:5px}
+.tb-name{font-weight:600;font-size:13px;letter-spacing:.01em}
+.tb-drag{flex:1}
+.tb-status{display:flex;align-items:center;gap:7px;color:var(--ink3);font-size:11.5px;padding-right:6px}
+.tb-status .dot{width:6px;height:6px;border-radius:50%;background:var(--amber)}
+.caption{display:flex;align-items:stretch}
+.caption button{width:46px;border:0;background:transparent;color:var(--ink2);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:background .13s,color .13s}
+.caption button:hover{background:var(--panel2);color:var(--ink)}
+.caption button.close:hover{background:#a03d31;color:#f7efe9}
+.caption svg{width:12px;height:12px;stroke:currentColor;stroke-width:1.4;fill:none;stroke-linecap:round}
+
+/* ---- body: rail + content ---- */
+.body{display:flex;flex:1;min-height:0}
+.rail{width:212px;flex:none;border-right:1px solid var(--line);padding:12px 9px 10px;display:flex;flex-direction:column;gap:1px;overflow-y:auto}
+.rail .grp{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.09em;color:var(--ink3);padding:13px 9px 5px}
+.rail button{display:flex;align-items:center;gap:9px;width:100%;border:0;background:transparent;font:inherit;color:var(--ink2);padding:7px 9px;border-radius:8px;cursor:pointer;text-align:left;transition:background .12s,color .12s}
+.rail button:hover{background:var(--panel2);color:var(--ink)}
+.rail button[aria-current="page"]{background:var(--amber-soft);color:var(--ink);font-weight:600}
+.rail button[aria-current="page"] svg{stroke:var(--amber)}
+.rail svg{width:15px;height:15px;stroke:currentColor;stroke-width:1.75;fill:none;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.rail .spacer{flex:1}
+
+.content{flex:1;overflow-y:auto;padding:26px 30px 38px;min-width:0}
+.page{display:none}
+.page.on{display:block;animation:pagein .18s ease}
+@keyframes pagein{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.page.on{animation:none}}
+
+h2{font-size:18px;font-weight:600;letter-spacing:-.01em;margin:0 0 3px}
+.sub{color:var(--ink2);font-size:12.5px;margin:0 0 20px;max-width:62ch}
+.lbl{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.09em;color:var(--ink3)}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px}
+.kbd{font-weight:600;background:var(--panel2);border:1px solid var(--line2);border-bottom-width:2px;border-radius:6px;padding:2px 9px;font-size:12.5px}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:7px;vertical-align:1px}
+.dot.on{background:var(--amber)}.dot.off{background:transparent;border:1.4px solid var(--ink3)}.dot.err{background:var(--err)}
+.chip{display:inline-block;background:var(--panel2);border:1px solid var(--line2);border-radius:999px;padding:2.5px 10px;font-size:11.5px;color:var(--ink2)}
+.num{font-variant-numeric:tabular-nums}
+
+.btn{font:inherit;border:1px solid var(--line2);background:var(--panel);color:var(--ink);border-radius:8px;padding:6px 14px;cursor:pointer;transition:border-color .12s,background .12s}
+.btn:hover{border-color:var(--ink3)}
+.btn:active{transform:translateY(1px)}
+.btn.amber{background:var(--amber);border-color:var(--amber);color:#171310;font-weight:600}
+.btn.amber:hover{background:#d69745;border-color:#d69745}
+.btn.ghost{border-color:transparent;color:var(--ink2)}
+.btn.ghost:hover{color:var(--ink);border-color:var(--line2)}
+
+.toggle{position:relative;width:34px;height:19px;border-radius:999px;border:1px solid var(--line2);background:var(--line2);cursor:pointer;flex:none;transition:background .14s,border-color .14s,box-shadow .14s}
+.toggle:hover{border-color:var(--ink3)}
+.toggle:focus-visible{outline:2px solid rgba(201,138,58,.55);outline-offset:2px}
+.toggle::after{content:"";position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;background:#fdfcfa;border:1px solid rgba(0,0,0,.18);box-shadow:0 1px 3px rgba(0,0,0,.35);transition:left .14s,transform .1s}
+.toggle:active::after{transform:scale(.92)}
+.toggle.on{background:var(--amber);border-color:var(--amber)}
+.toggle.on:hover{background:#d69745;border-color:#d69745}
+html.light .toggle.on:hover{background:#a8691f;border-color:#a8691f}
+.toggle.on::after{left:17px}
+
+select,input[type=text]{font:inherit;color:var(--ink);background:var(--panel2);border:1px solid var(--line2);border-radius:8px;padding:6px 10px;min-width:180px}
+select:focus,input:focus,button:focus-visible{outline:2px solid rgba(201,138,58,.5);outline-offset:1px}
+
+/* ---------- HOME ---------- */
+.home-grid{display:grid;grid-template-columns:1.5fr 1fr;gap:14px}
+.hero-card{grid-row:span 2;display:flex;flex-direction:column;justify-content:space-between;background:var(--hero-grad);border:1px solid var(--line2)}
+.hero-card .big{font-size:21px;font-weight:600;letter-spacing:-.01em;margin:10px 0 4px}
+.hero-card .ribbon-mini{margin:22px 0 8px}
+.homerow{display:flex;gap:14px;margin-top:14px}
+.homerow .card{flex:1}
+.stat-inline{display:flex;align-items:baseline;gap:8px}
+.stat-inline b{font-size:22px;font-weight:600;letter-spacing:-.01em}
+.spark{display:flex;align-items:flex-end;gap:3px;height:34px;margin-top:10px}
+.spark i{flex:1;background:var(--amber-deep);border-radius:2px 2px 0 0;opacity:.55}
+.spark i.hi{background:var(--amber);opacity:1}
+
+/* ---------- RECORD ---------- */
+.rec-wrap{display:grid;grid-template-columns:300px 1fr;gap:14px;align-items:start}
+.rec-side{display:flex;flex-direction:column;gap:14px}
+.seg{display:flex;background:var(--panel2);border:1px solid var(--line2);border-radius:9px;padding:3px;gap:3px}
+.seg button{flex:1;border:0;background:transparent;color:var(--ink2);font:inherit;font-size:12px;padding:6px 4px;border-radius:6px;cursor:pointer}
+.seg button.on{background:var(--panel);color:var(--ink);font-weight:600;box-shadow:0 1px 4px rgba(0,0,0,.35)}
+.rec-pill{display:flex;flex-direction:column;align-items:center;gap:14px;padding:26px 18px 20px}
+.pill-shell{background:rgba(18,15,12,.9);border:1px solid var(--line2);border-radius:999px;padding:10px 22px;box-shadow:0 6px 22px rgba(0,0,0,.5)}
+.rec-time{font-size:26px;font-weight:600;letter-spacing:.02em}
+.transcript{display:flex;flex-direction:column;gap:12px;max-height:430px;overflow:hidden}
+.tl{display:flex;gap:12px}
+.tl .t{color:var(--ink3);font-size:11.5px;flex:none;padding-top:2px}
+.tl p{margin:0;color:var(--ink2);max-width:60ch}
+.tl.mark p{color:var(--amber)}
+
+/* ---------- IMPORT ---------- */
+.drop{border:1.5px dashed var(--line2);border-radius:var(--r);padding:40px 20px;text-align:center;color:var(--ink2);transition:border-color .15s,background .15s}
+.drop:hover{border-color:var(--amber-deep);background:rgba(201,138,58,.04)}
+.drop svg{width:26px;height:26px;stroke:var(--ink3);stroke-width:1.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
+.queue{margin-top:14px;display:flex;flex-direction:column;gap:10px}
+.qitem{display:flex;align-items:center;gap:14px;padding:12px 16px}
+.qitem .nm{font-weight:600}
+.qitem .meta{color:var(--ink3);font-size:11.5px}
+.qbar{height:4px;border-radius:999px;background:var(--panel2);overflow:hidden;margin-top:7px}
+.qbar i{display:block;height:100%;background:var(--amber);border-radius:999px}
+
+/* ---------- NOTES ---------- */
+.notes-grid{display:grid;grid-template-columns:290px 1fr;gap:14px;align-items:start}
+.note-list{display:flex;flex-direction:column;gap:8px}
+.note-item{padding:12px 14px;cursor:pointer;transition:border-color .12s}
+.note-item:hover{border-color:var(--line2)}
+.note-item.sel{border-color:var(--amber-deep);background:linear-gradient(160deg,rgba(201,138,58,.07),transparent 60%)}
+.note-item .d{color:var(--ink3);font-size:11.5px;margin-top:2px}
+.doc h3{font-size:13px;font-weight:600;margin:16px 0 7px;color:var(--amber)}
+.doc h3:first-child{margin-top:0}
+.doc ul{margin:0;padding-left:17px;color:var(--ink2)}
+.doc li{margin-bottom:5px}
+.player{display:flex;align-items:center;gap:12px;margin-top:16px;padding:10px 14px;background:var(--panel2);border-radius:9px}
+.player .track{flex:1;height:3px;border-radius:999px;background:var(--line2);position:relative}
+.player .track i{position:absolute;inset:0 68% 0 0;background:var(--amber);border-radius:999px}
+.player .t{font-size:11.5px;color:var(--ink3)}
+
+/* ---------- STATS ---------- */
+.tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:14px}
+.tile b{font-size:26px;font-weight:600;letter-spacing:-.02em;display:block;margin:4px 0 2px}
+.tile .delta{font-size:11.5px;color:var(--amber)}
+.stats-low{display:grid;grid-template-columns:1.4fr 1fr;gap:14px}
+.heat{display:grid;grid-template-columns:repeat(26,1fr);gap:3px;margin-top:12px}
+.heat i{aspect-ratio:1;border-radius:2.5px;background:var(--panel2)}
+.heat i.l1{background:#4a3417}.heat i.l2{background:#7a5424}.heat i.l3{background:var(--amber)}
+.bars{display:flex;flex-direction:column;gap:11px;margin-top:12px}
+.bar .t{display:flex;justify-content:space-between;font-size:12px;color:var(--ink2);margin-bottom:5px}
+.bar .rail2{height:5px;border-radius:999px;background:var(--panel2)}
+.bar .rail2 i{display:block;height:100%;border-radius:999px;background:var(--amber-deep)}
+.bar:first-child .rail2 i{background:var(--amber)}
+
+/* ---------- DIAG ---------- */
+table.diag{border-collapse:collapse;width:100%;max-width:640px}
+table.diag td{padding:9px 14px 9px 0;border-bottom:1px solid var(--line);vertical-align:top}
+table.diag tr:last-child td{border-bottom:0}
+table.diag td:first-child{color:var(--ink3);white-space:nowrap;width:180px}
+.mono{font-family:Consolas,monospace;font-size:12px;color:var(--ink2);word-break:break-all}
+
+/* ---------- DICTIONARY ---------- */
+.dict-add{display:flex;gap:9px;margin-bottom:14px}
+.dict-add input{flex:1}
+.dict{display:flex;flex-direction:column;gap:8px}
+.drow{display:flex;align-items:center;gap:12px;padding:11px 15px}
+.drow .term{font-weight:600;min-width:130px}
+.drow .arrow{color:var(--ink3)}
+.drow .star{margin-left:auto;color:var(--amber);font-size:15px;cursor:pointer}
+.drow .star.off{color:var(--ink3)}
+.drow .kind{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--ink3)}
+
+/* ---------- FUNCTIONS / SNIPPETS ---------- */
+.fx-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+.fx{display:flex;flex-direction:column;gap:9px}
+.fx header{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.fx .nm{font-weight:600;font-size:14px}
+.fx .desc{color:var(--ink2);font-size:12.5px;margin:0}
+.fx .chips{display:flex;gap:6px;flex-wrap:wrap}
+/* A disabled card reads as disabled at a glance: content recedes, the switch
+   stays crisp so re-enabling is obvious. State encoded in form, not just hue. */
+.fx.off .desc,.fx.off .chips,.fx.off pre,.fx.off .rich{opacity:.42}
+.fx.off .nm{color:var(--ink2)}
+.fx.off .fmt{opacity:.55}
+.snip .cue{color:var(--amber);font-weight:600}
+.fmt{font-size:9.5px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--amber);border:1px solid var(--amber-deep);border-radius:5px;padding:1.5px 6px;margin-left:7px;vertical-align:2px}
+.fmt.plain{color:var(--ink3);border-color:var(--line2)}
+.rich{margin:8px 0 0;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px 13px;font-size:12.5px;color:var(--ink2)}
+.rich b{color:var(--ink)}
+.rich a{color:var(--amber);text-decoration:underline;text-underline-offset:2px;cursor:pointer}
+.snip pre{margin:8px 0 0;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px 13px;font-family:Consolas,monospace;font-size:11.5px;color:var(--ink2);white-space:pre-wrap}
+
+/* ---------- SETTINGS ---------- */
+.tabs{display:flex;flex-wrap:wrap;gap:2px;border-bottom:1px solid var(--line);margin-bottom:20px}
+.tabs button{border:0;background:transparent;font:inherit;color:var(--ink2);padding:8px 12px 9px;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tabs button:hover{color:var(--ink)}
+.tabs button.on{color:var(--ink);font-weight:600;border-bottom-color:var(--amber)}
+.rows{max-width:620px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:22px;padding:13px 2px;border-bottom:1px solid var(--line)}
+.row:last-child{border-bottom:0}
+.row .l b{display:block;font-weight:600}
+.row .l span{color:var(--ink2);font-size:12.5px;max-width:360px;display:block;margin-top:2px}
+.row .c{flex:none;display:flex;align-items:center;gap:8px}
+
+@media (max-width:960px){
+  .home-grid,.rec-wrap,.notes-grid,.stats-low,.fx-grid{grid-template-columns:1fr}
+  .tiles{grid-template-columns:1fr 1fr}
+}
+</style>
+
+<div class="stage">
+  <div class="stage-head">
+    <h1>Flow, le design des pages</h1>
+    <p>Fenetre sans cadre, boutons de fenetre integres, deux themes sur la meme charte ambre. Naviguez avec le rail.</p>
+    <button class="themeswap" id="themeswap">Voir en clair</button>
+  </div>
+
+  <div class="window" role="application" aria-label="Flow app mockup">
+
+    <!-- titlebar with integrated caption buttons -->
+    <div class="titlebar">
+      <div class="tb-brand">
+        <img class="tb-icon" src="data:image/png;base64,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" alt="" width="20" height="20">
+        <span class="tb-name">Flow</span>
+      </div>
+      <div class="tb-drag"></div>
+      <div class="tb-status"><span class="dot"></span>Engine ready</div>
+      <div class="caption">
+        <button aria-label="Minimize"><svg viewBox="0 0 12 12"><path d="M2 6h8"/></svg></button>
+        <button aria-label="Maximize"><svg viewBox="0 0 12 12"><rect x="2.2" y="2.2" width="7.6" height="7.6" rx="1"/></svg></button>
+        <button class="close" aria-label="Close"><svg viewBox="0 0 12 12"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7"/></svg></button>
+      </div>
+    </div>
+
+    <div class="body">
+      <!-- rail -->
+      <nav class="rail" aria-label="Sections">
+        <button data-p="home" aria-current="page"><svg viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5V21h-6v-6H9v6H3z"/></svg>Home</button>
+        <button data-p="record"><svg viewBox="0 0 24 24"><path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3z"/><path d="M5 11v1a7 7 0 0 0 14 0v-1M12 19v3"/></svg>Record</button>
+        <button data-p="import"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 21h16"/></svg>Import</button>
+        <button data-p="notes"><svg viewBox="0 0 24 24"><path d="M6 2h9l5 5v15H6zM14 2v6h6"/></svg>Notes</button>
+        <button data-p="stats"><svg viewBox="0 0 24 24"><path d="M4 21V10M10 21V4M16 21v-7M22 21H2"/></svg>Statistics</button>
+        <button data-p="diag"><svg viewBox="0 0 24 24"><path d="M2 12h4l3 8 4-16 3 8h6"/></svg>Diagnostics</button>
+        <div class="grp">Library</div>
+        <button data-p="dict"><svg viewBox="0 0 24 24"><path d="M4 20V5a2 2 0 0 1 2-2h13v14H6a2 2 0 0 0-2 2zm0 0a2 2 0 0 0 2 2h13"/></svg>Dictionary</button>
+        <button data-p="fx"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6z"/></svg>Functions</button>
+        <button data-p="snip"><svg viewBox="0 0 24 24"><path d="M9 3v18M4 8h14a3 3 0 0 1 0 6H4"/></svg>Snippets</button>
+        <div class="spacer"></div>
+        <button data-p="settings"><svg viewBox="0 0 24 24"><path d="M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.5-2-3.5-2.4 1a7 7 0 0 0-2-1.2L14 3h-4l-.5 2.6a7 7 0 0 0-2 1.2l-2.4-1-2 3.5 2 1.5a7 7 0 0 0 0 2.4l-2 1.5 2 3.5 2.4-1a7 7 0 0 0 2 1.2L10 21h4l.5-2.6a7 7 0 0 0 2-1.2l2.4 1 2-3.5-2-1.5c.06-.4.1-.8.1-1.2z"/></svg>Settings</button>
+      </nav>
+
+      <!-- content -->
+      <main class="content">
+
+        <!-- HOME -->
+        <section class="page on" id="p-home">
+          <h2>Home</h2>
+          <p class="sub">Local, on-device voice transcription. Nothing ever leaves this machine.</p>
+          <div class="home-grid">
+            <div class="card hero-card">
+              <div>
+                <span class="lbl">Dictation</span>
+                <div class="big"><span class="dot on"></span>Armed</div>
+                <p class="sub" style="margin:6px 0 0">Hold <span class="kbd">Ctrl + Win</span> anywhere and speak. Double-tap for hands-free.</p>
+              </div>
+              <div class="ribbon-mini"><canvas id="rib-home" width="420" height="46" style="width:210px;height:23px;display:block"></canvas></div>
+              <div style="display:flex;gap:10px">
+                <button class="btn amber">Start a recording</button>
+                <button class="btn ghost">Import audio</button>
+              </div>
+            </div>
+            <div class="card">
+              <span class="lbl">Speech engine</span>
+              <div class="stat-inline" style="margin-top:8px"><span class="dot on"></span><b style="font-size:14px">Ready</b></div>
+              <p class="sub" style="margin:5px 0 0">large-v3 on Vulkan GPU. Loads once, stays warm.</p>
+            </div>
+            <div class="card">
+              <span class="lbl">Last capture</span>
+              <div style="margin-top:8px;font-weight:600">Weekly product sync</div>
+              <p class="sub" style="margin:3px 0 0">Today, 9:06. 71 min, notes ready.</p>
+            </div>
+          </div>
+          <div class="homerow">
+            <div class="card">
+              <span class="lbl">Words today</span>
+              <div class="stat-inline" style="margin-top:6px"><b class="num">2 348</b><span class="delta" style="color:var(--amber);font-size:11.5px">+412 vs yesterday</span></div>
+              <div class="spark" aria-hidden="true"><i style="height:35%"></i><i style="height:52%"></i><i style="height:40%"></i><i style="height:64%"></i><i style="height:47%"></i><i style="height:78%"></i><i class="hi" style="height:100%"></i></div>
+            </div>
+            <div class="card">
+              <span class="lbl">This week</span>
+              <div class="stat-inline" style="margin-top:6px"><b class="num">96</b><span style="color:var(--ink3);font-size:12px">words per minute on average</span></div>
+              <p class="sub" style="margin:8px 0 0">Faster than 94% of keyboard typists.</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- RECORD -->
+        <section class="page" id="p-record">
+          <h2>Record</h2>
+          <p class="sub">Capture a meeting from this PC. The transcript grows on disk as you speak.</p>
+          <div class="rec-wrap">
+            <div class="rec-side">
+              <div class="card">
+                <span class="lbl">Source</span>
+                <div class="seg" style="margin-top:9px">
+                  <button>Microphone</button>
+                  <button>System audio</button>
+                  <button class="on">Both</button>
+                </div>
+                <p class="sub" style="margin:9px 0 0">Both mixes what the PC plays with your microphone. No bot joins the call.</p>
+              </div>
+              <div class="card rec-pill">
+                <div class="pill-shell"><canvas id="rib-rec" width="360" height="52" style="width:180px;height:26px;display:block"></canvas></div>
+                <div class="rec-time num">00:12:47</div>
+                <div style="display:flex;gap:9px">
+                  <button class="btn">Mark this moment</button>
+                  <button class="btn amber">Stop</button>
+                </div>
+              </div>
+            </div>
+            <div class="card">
+              <span class="lbl">Live transcript</span>
+              <div class="transcript" style="margin-top:12px">
+                <div class="tl"><span class="t num">00:09:12</span><p>The rollout stays in two phases. Pilot accounts first, then the full fleet once support is staffed.</p></div>
+                <div class="tl"><span class="t num">00:10:03</span><p>Marie takes the onboarding checklist and brings a draft on Thursday.</p></div>
+                <div class="tl mark"><span class="t num">00:10:41</span><p>Moment marked.</p></div>
+                <div class="tl"><span class="t num">00:11:02</span><p>Budget question stays open: licensing depends on the seat count we confirm next week.</p></div>
+                <div class="tl"><span class="t num">00:12:19</span><p>Next sync moves to Tuesday mornings so the Quebec team can join.</p></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- IMPORT -->
+        <section class="page" id="p-import">
+          <h2>Import</h2>
+          <p class="sub">Drop audio files, get notes. Phone memos, downloaded recordings, any common format.</p>
+          <div class="drop">
+            <svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+            <div style="margin-top:9px;font-weight:600;color:var(--ink)">Drop audio here</div>
+            <div style="font-size:12px;margin-top:3px">m4a, mp3, wav, ogg, flac. Or <span style="color:var(--amber);cursor:pointer">browse files</span></div>
+          </div>
+          <div class="queue">
+            <div class="card qitem">
+              <div style="flex:1">
+                <div class="nm">voice-memo-0723.m4a</div>
+                <div class="meta">14 min. Meeting notes. Transcribing, 64%</div>
+                <div class="qbar"><i style="width:64%"></i></div>
+              </div>
+              <button class="btn ghost">Cancel</button>
+            </div>
+            <div class="card qitem">
+              <div style="flex:1">
+                <div class="nm">team-standup-jul25.mp3</div>
+                <div class="meta">22 min. Raw transcript. Queued</div>
+              </div>
+              <button class="btn ghost">Remove</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- NOTES -->
+        <section class="page" id="p-notes">
+          <h2>Notes</h2>
+          <p class="sub">Every capture Flow has produced, searchable and readable in place.</p>
+          <div class="notes-grid">
+            <div class="note-list">
+              <input type="text" placeholder="Search notes" aria-label="Search notes" style="min-width:0;width:100%">
+              <div class="card note-item sel">
+                <div style="font-weight:600">Weekly product sync</div>
+                <div class="d">Today, 9:06. 71 min. Audio kept</div>
+              </div>
+              <div class="card note-item">
+                <div style="font-weight:600">Client kickoff, cadrage</div>
+                <div class="d">Jul 25. 48 min</div>
+              </div>
+              <div class="card note-item">
+                <div style="font-weight:600">SharePoint structure</div>
+                <div class="d">Jul 21. 71 min. Audio kept</div>
+              </div>
+            </div>
+            <div class="card doc">
+              <h3>Notes</h3>
+              <ul>
+                <li>Rollout confirmed in two phases: pilot accounts first, full fleet after support staffing.</li>
+                <li>Marie owns the onboarding checklist, draft due Thursday.</li>
+                <li>Licensing budget stays open until the seat count lands next week.</li>
+              </ul>
+              <h3>Decisions</h3>
+              <ul><li>Weekly sync moves to Tuesday mornings.</li></ul>
+              <h3>Transcript</h3>
+              <ul style="list-style:none;padding-left:0">
+                <li><span class="num" style="color:var(--ink3);font-size:11.5px">00:00:04</span>&nbsp; Good morning everyone, let's get started with the roadmap.</li>
+                <li><span class="num" style="color:var(--ink3);font-size:11.5px">00:00:19</span>&nbsp; First item is the rollout schedule for the fall.</li>
+              </ul>
+              <div class="player">
+                <button class="btn ghost" aria-label="Play" style="padding:4px 10px">&#9654;</button>
+                <span class="t num">22:41</span>
+                <div class="track"><i></i></div>
+                <span class="t num">1:11:08</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- STATS -->
+        <section class="page" id="p-stats">
+          <h2>Statistics</h2>
+          <p class="sub">Counters only. Your words are never stored, so there is nothing here to leak.</p>
+          <div class="tiles">
+            <div class="card tile"><span class="lbl">Words this month</span><b class="num">12 480</b><span class="delta">+18% vs June</span></div>
+            <div class="card tile"><span class="lbl">Average speed</span><b class="num">96 <span style="font-size:13px;color:var(--ink2)">wpm</span></b><span class="delta">typing average is 52</span></div>
+            <div class="card tile"><span class="lbl">Streak</span><b class="num">14 <span style="font-size:13px;color:var(--ink2)">days</span></b><span class="delta">best: 21</span></div>
+          </div>
+          <div class="stats-low">
+            <div class="card">
+              <span class="lbl">Activity, last 6 months</span>
+              <div class="heat" id="heat" aria-hidden="true"></div>
+            </div>
+            <div class="card">
+              <span class="lbl">Where you dictate</span>
+              <div class="bars">
+                <div class="bar"><div class="t"><span>VS Code</span><span class="num">4 890</span></div><div class="rail2"><i style="width:82%"></i></div></div>
+                <div class="bar"><div class="t"><span>Outlook</span><span class="num">3 214</span></div><div class="rail2"><i style="width:54%"></i></div></div>
+                <div class="bar"><div class="t"><span>Discord</span><span class="num">2 077</span></div><div class="rail2"><i style="width:35%"></i></div></div>
+                <div class="bar"><div class="t"><span>Notion</span><span class="num">1 402</span></div><div class="rail2"><i style="width:24%"></i></div></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- DIAG -->
+        <section class="page" id="p-diag">
+          <h2>Diagnostics</h2>
+          <p class="sub">What the engine is doing right now, copyable and honest.</p>
+          <div class="card">
+            <table class="diag">
+              <tr><td>App version</td><td class="num">1.0.1</td></tr>
+              <tr><td>Engine</td><td><span class="dot on"></span>Ready, warm</td></tr>
+              <tr><td>Speech backend</td><td>whisper-server, Vulkan GPU</td></tr>
+              <tr><td>Model</td><td class="mono">ggml-large-v3-q5_0.bin</td></tr>
+              <tr><td>Local API</td><td class="mono">127.0.0.1:8176, loopback only</td></tr>
+              <tr><td>Data folder</td><td><span class="mono">C:\Users\roch\.flow</span> &nbsp;<button class="btn ghost" style="padding:3px 10px">Open</button></td></tr>
+              <tr><td>Engine log</td><td><span class="mono">C:\Users\roch\.flow\flow.log</span> &nbsp;<button class="btn ghost" style="padding:3px 10px">Open</button></td></tr>
+            </table>
+          </div>
+        </section>
+
+        <!-- DICTIONARY -->
+        <section class="page" id="p-dict">
+          <h2>Dictionary</h2>
+          <p class="sub">Teach the engine your names, acronyms and jargon. Starred terms get priority.</p>
+          <div class="dict-add">
+            <input type="text" placeholder="Add a word or a correction rule" aria-label="Add a term">
+            <button class="btn amber">Add</button>
+            <button class="btn">Import CSV</button>
+          </div>
+          <div class="dict">
+            <div class="card drow"><span class="term">AGR Labs</span><span class="arrow">&#8592;</span><span class="chip">agile air</span><span class="chip">a g r labs</span><span class="kind">replacement</span><span class="star" role="button" aria-label="Starred">&#9733;</span></div>
+            <div class="card drow"><span class="term">whisper.cpp</span><span class="kind">vocabulary</span><span class="star" role="button" aria-label="Starred">&#9733;</span></div>
+            <div class="card drow"><span class="term">Loi 25</span><span class="arrow">&#8592;</span><span class="chip">loi vingt-cinq</span><span class="kind">replacement</span><span class="star off" role="button" aria-label="Not starred">&#9734;</span></div>
+            <div class="card drow"><span class="term">keyspy</span><span class="kind">vocabulary</span><span class="star off" role="button" aria-label="Not starred">&#9734;</span></div>
+            <div class="card drow"><span class="term">Tailscale</span><span class="kind">vocabulary</span><span class="star off" role="button" aria-label="Not starred">&#9734;</span></div>
+          </div>
+        </section>
+
+        <!-- FUNCTIONS -->
+        <section class="page" id="p-fx">
+          <h2>Functions</h2>
+          <p class="sub">Say a trigger at the start of an utterance and Flow transforms everything after it. If the model fails, your raw words land anyway.</p>
+          <div class="fx-grid">
+            <div class="card fx">
+              <header><span class="nm">Translate</span><span class="toggle on" role="switch" tabindex="0" aria-checked="true" aria-label="Translate"></span></header>
+              <p class="desc">Any language pair, both directions. The target is spoken, not configured.</p>
+              <div class="chips"><span class="chip">traduis ceci en &#8230;</span><span class="chip">translate this into &#8230;</span></div>
+            </div>
+            <div class="card fx">
+              <header><span class="nm">Write an email</span><span class="toggle on" role="switch" tabindex="0" aria-checked="true" aria-label="Write an email"></span></header>
+              <p class="desc">Subject, body, sign-off. Never invents facts you did not say.</p>
+              <div class="chips"><span class="chip">ecris un courriel</span><span class="chip">write an email</span></div>
+            </div>
+            <div class="card fx">
+              <header><span class="nm">Summarize</span><span class="toggle" role="switch" tabindex="0" aria-checked="false" aria-label="Summarize"></span></header>
+              <p class="desc">A few tight lines out of a long thought.</p>
+              <div class="chips"><span class="chip">resume ceci</span><span class="chip">summarize this</span></div>
+            </div>
+            <div class="card fx">
+              <header><span class="nm">Turn into actions</span><span class="toggle" role="switch" tabindex="0" aria-checked="false" aria-label="Turn into actions"></span></header>
+              <p class="desc">Action list with owners and deadlines when you said them.</p>
+              <div class="chips"><span class="chip">transforme en taches</span><span class="chip">turn this into actions</span></div>
+            </div>
+          </div>
+          <div style="margin-top:14px"><button class="btn">Create a function</button></div>
+        </section>
+
+        <!-- SNIPPETS -->
+        <section class="page" id="p-snip">
+          <h2>Snippets</h2>
+          <p class="sub">Say a cue, insert a full block. Deterministic, instant, no model involved.</p>
+          <div class="fx-grid">
+            <div class="card fx snip">
+              <header><span class="nm">Signature <span class="fmt">HTML</span></span><span class="toggle on" role="switch" tabindex="0" aria-checked="true" aria-label="Signature"></span></header>
+              <p class="desc">Say <span class="cue">"insere ma signature"</span></p>
+              <div class="rich">Merci,<br><b>Roch Dubois-Gagnon</b><br><a>AGR Labs</a></div>
+            </div>
+            <div class="card fx snip">
+              <header><span class="nm">Booking link <span class="fmt">HTML</span></span><span class="toggle on" role="switch" tabindex="0" aria-checked="true" aria-label="Booking link"></span></header>
+              <p class="desc">Say <span class="cue">"insert my booking link"</span></p>
+              <div class="rich">You can grab a time here: <a>cal.agrlabs.ca/roch</a></div>
+            </div>
+            <div class="card fx snip">
+              <header><span class="nm">Standup opener <span class="fmt plain">Plain text</span></span><span class="toggle on" role="switch" tabindex="0" aria-checked="true" aria-label="Standup opener"></span></header>
+              <p class="desc">Say <span class="cue">"insert my standup"</span></p>
+              <pre>Yesterday: / Today: / Blockers:</pre>
+            </div>
+          </div>
+          <p class="sub" style="margin:14px 0 0;max-width:56ch">HTML snippets paste as rich text (bold, links) in apps that accept it, and fall back to plain text everywhere else.</p>
+          <div style="margin-top:12px"><button class="btn">Create a snippet</button></div>
+        </section>
+
+        <!-- SETTINGS -->
+        <section class="page" id="p-settings">
+          <h2>Settings</h2>
+          <p class="sub">Every setting lives here, and nowhere else.</p>
+          <div class="tabs" role="tablist">
+            <button class="on" role="tab" aria-selected="true">General</button>
+            <button role="tab" aria-selected="false">Dictation</button>
+            <button role="tab" aria-selected="false">Audio</button>
+            <button role="tab" aria-selected="false">Engine</button>
+            <button role="tab" aria-selected="false">Local AI</button>
+            <button role="tab" aria-selected="false">Storage &amp; Privacy</button>
+            <button role="tab" aria-selected="false">Updates</button>
+            <button role="tab" aria-selected="false">About</button>
+          </div>
+          <div class="rows" id="set-rows"></div>
+        </section>
+
+      </main>
+    </div>
+  </div>
+</div>
+
+<script>
+// ---- theme: follow the viewer's theme until the user picks one here ----
+const rootEl = document.documentElement;
+const swap = document.getElementById('themeswap');
+let themeLocked = false;
+function applyTheme(light){
+  rootEl.classList.toggle('light', light);
+  swap.textContent = light ? 'Voir en sombre' : 'Voir en clair';
+}
+function viewerPrefersLight(){
+  const dt = rootEl.getAttribute('data-theme');
+  if (dt === 'light') return true;
+  if (dt === 'dark') return false;
+  return matchMedia('(prefers-color-scheme: light)').matches;
+}
+applyTheme(viewerPrefersLight());
+new MutationObserver(() => { if (!themeLocked) applyTheme(viewerPrefersLight()); })
+  .observe(rootEl, { attributes: true, attributeFilter: ['data-theme'] });
+swap.addEventListener('click', () => { themeLocked = true; applyTheme(!rootEl.classList.contains('light')); });
+
+// ---- page navigation (the rail is the selector) ----
+const rail = document.querySelectorAll('.rail button[data-p]');
+rail.forEach(b => b.addEventListener('click', () => {
+  rail.forEach(x => x.removeAttribute('aria-current'));
+  b.setAttribute('aria-current','page');
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('on'));
+  document.getElementById('p-' + b.dataset.p).classList.add('on');
+}));
+
+// ---- settings tabs: content per tab, one source of truth ----
+const SET = {
+  "General":[
+    ["Launch at login","Start Flow quietly when you sign in. Recommended: dictation only works while Flow runs.","toggle-on"],
+    ["Window behavior","Closing this window hides it. Flow keeps running in the tray.","none"]],
+  "Dictation":[
+    ["Shortcut","Hold to talk, release to insert. Recording a new one captures every key.","kbd"],
+    ["Insertion mode","Paste restores your clipboard after. Type presses each key for paste-hostile apps.","select:Paste (default),Type keystrokes"],
+    ["Start and stop sound","A soft synthesized cue on press and release.","toggle-on"]],
+  "Audio":[
+    ["Microphone","Falls back to the system default if your pick is unplugged.","select:System default,RODE NT-USB,Headset"],
+    ["System-audio capture","Long recordings can mix what the PC plays with your mic.","none"]],
+  "Engine":[
+    ["Speech model","Bigger models transcribe better and load slower. Downloads once.","select:Large v3 (best French),Large v3 Turbo,Small (fastest)"],
+    ["Language","Forcing a language beats auto-detect on short clips.","select:French,English,Auto-detect"],
+    ["Force CPU","Skip the GPU backend. Applies right away.","toggle-off"]],
+  "Local AI":[
+    ["Meeting summary model","Optional. Without it, recordings still produce the full transcript.","select:Automatic,gemma3:4b,qwen2.5:14b"]],
+  "Storage & Privacy":[
+    ["Recordings folder","Lives inside Flow's data folder, not configurable. Kept 90 days, then purged.","path"],
+    ["Dictation retention","None, by design. Audio and text live for one utterance only.","none"]],
+  "Updates":[
+    ["Current version","Updates install themselves, never while you dictate or record.","ver"],
+    ["Check for updates","Checks GitHub for a newer release.","btn-amber:Check now"]],
+  "About":[
+    ["Flow","Local, on-device voice transcription. By AGR Labs. MIT license.","ver"],
+    ["Source code","github.com/rochduboisgagnon/Flow","btn:Open on GitHub"]]
+};
+const rowsEl = document.getElementById('set-rows');
+function renderTab(name){
+  rowsEl.innerHTML = '';
+  for (const [t, h, c] of SET[name]) {
+    const r = document.createElement('div'); r.className = 'row';
+    const l = document.createElement('div'); l.className = 'l';
+    l.innerHTML = '<b></b><span></span>';
+    l.querySelector('b').textContent = t;
+    l.querySelector('span').textContent = h;
+    const ctl = document.createElement('div'); ctl.className = 'c';
+    if (c.startsWith('toggle')) { const tg = document.createElement('span'); tg.className = 'toggle' + (c.endsWith('on') ? ' on' : ''); tg.setAttribute('role','switch'); tg.tabIndex = 0; tg.setAttribute('aria-checked', c.endsWith('on')); tg.setAttribute('aria-label', t); const flip = () => { tg.classList.toggle('on'); tg.setAttribute('aria-checked', tg.classList.contains('on')); }; tg.onclick = flip; tg.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); } }; ctl.appendChild(tg); }
+    else if (c.startsWith('select')) { const s = document.createElement('select'); s.setAttribute('aria-label', t); for (const o of c.slice(7).split(',')) { const op = document.createElement('option'); op.textContent = o; s.appendChild(op); } ctl.appendChild(s); }
+    else if (c === 'path') { ctl.innerHTML = '<span class="mono">C:\\Users\\roch\\.flow\\history</span>'; const b = document.createElement('button'); b.className = 'btn ghost'; b.textContent = 'Open'; ctl.appendChild(b); }
+    else if (c === 'kbd') { ctl.innerHTML = '<span class="kbd">Ctrl + Win</span>'; const b = document.createElement('button'); b.className = 'btn'; b.textContent = 'Change'; ctl.appendChild(b); }
+    else if (c === 'ver') { const b = document.createElement('b'); b.className = 'num'; b.style.fontSize = '15px'; b.textContent = '1.0.1'; ctl.appendChild(b); }
+    else if (c.startsWith('btn-amber')) { const b = document.createElement('button'); b.className = 'btn amber'; b.textContent = c.split(':')[1]; ctl.appendChild(b); }
+    else if (c.startsWith('btn')) { const b = document.createElement('button'); b.className = 'btn'; b.textContent = c.split(':')[1]; ctl.appendChild(b); }
+    r.appendChild(l); r.appendChild(ctl); rowsEl.appendChild(r);
+  }
+}
+renderTab('General');
+document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('.tabs button').forEach(x => { x.classList.remove('on'); x.setAttribute('aria-selected','false'); });
+  b.classList.add('on'); b.setAttribute('aria-selected','true');
+  renderTab(b.textContent);
+}));
+
+// ---- card toggles (Functions, Snippets): flip the switch AND the card state ----
+function flipCardToggle(tg){
+  const on = !tg.classList.contains('on');
+  tg.classList.toggle('on', on);
+  tg.setAttribute('aria-checked', on);
+  const card = tg.closest('.fx');
+  if (card) card.classList.toggle('off', !on);
+}
+document.addEventListener('click', e => {
+  const tg = e.target.closest('.fx .toggle');
+  if (tg) flipCardToggle(tg);
+});
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const tg = e.target.closest && e.target.closest('.fx .toggle');
+  if (tg) { e.preventDefault(); flipCardToggle(tg); }
+});
+// initial state: cards whose switch starts off render as off
+document.querySelectorAll('.fx').forEach(c => {
+  const tg = c.querySelector('.toggle');
+  if (tg && !tg.classList.contains('on')) c.classList.add('off');
+});
+
+// ---- the amber ribbon, Flow's signature (ported from the real overlay) ----
+const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
+function ribbon(id, strandCount){
+  const cv = document.getElementById(id); if (!cv) return;
+  const ctx = cv.getContext('2d');
+  const W = cv.width, H = cv.height;
+  let s = 1416; const rng = () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296;
+  const strands = Array.from({length: strandCount}, () => ({
+    amp: .2 + .8 * Math.pow(rng(), 1.5), freq: .85 + rng() * 1.7, ph: rng() * Math.PI * 2,
+    sp: .55 + rng() * .9, bob: rng() * 2 - 1, al: .55 + .45 * rng(), sg: rng() < .5 ? -1 : 1
+  }));
+  const span = W * .86, x0 = (W - span) / 2, maxAmp = H * .34;
+  const grad = ctx.createLinearGradient(x0, 0, x0 + span, 0);
+  ["#9c6222","#c98a3a","#d69745","#c98a3a","#9c6222"].forEach((c, i) => grad.addColorStop(i / 4, c));
+  function draw(now){
+    const t = now / 1000, act = .62;
+    ctx.clearRect(0, 0, W, H);
+    ctx.lineCap = "round"; ctx.strokeStyle = grad;
+    for (const st of strands) {
+      ctx.beginPath();
+      for (let k = 0; k <= 90; k++) {
+        const tt = k / 90, x = x0 + tt * span;
+        const env = Math.pow(Math.sin(Math.PI * Math.pow(tt, .86)), 1.12);
+        const wave = Math.sin(tt * st.freq * Math.PI * 2 + st.ph + t * st.sp * 1.2);
+        const y = H / 2 + env * maxAmp * act * (st.amp * st.sg * wave * .9 + Math.sin(t * .45 + st.ph) * .32 * st.bob);
+        k ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      }
+      ctx.globalAlpha = Math.min(1, .75 * st.al); ctx.lineWidth = 2.2; ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    if (!REDUCED) requestAnimationFrame(draw);
+  }
+  REDUCED ? draw(4200) : requestAnimationFrame(draw);
+}
+ribbon('rib-home', 5);
+ribbon('rib-rec', 6);
+
+// ---- stats heatmap (26 weeks x 1 row of density) ----
+const heat = document.getElementById('heat');
+let hs = 77; const hr = () => (hs = (hs * 1103515245 + 12345) >>> 0) / 4294967296;
+for (let i = 0; i < 26 * 5; i++) {
+  const v = hr(), el = document.createElement('i');
+  if (v > .82) el.className = 'l3'; else if (v > .55) el.className = 'l2'; else if (v > .3) el.className = 'l1';
+  heat.appendChild(el);
+}
+</script>
