@@ -1,4 +1,4 @@
-import { app, session, ipcMain } from "electron";
+import { app, session, ipcMain, nativeTheme } from "electron";
 import path from "node:path";
 import fs from "node:fs";
 import { HotkeyAdapter } from "./hotkey";
@@ -62,6 +62,9 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on("second-instance", () => mainWindow.show(DEV));
+  // Dark charte (Roch 2026-07-27): the Windows title bar follows this, so the
+  // frame matches main.css instead of flashing a white caption.
+  nativeTheme.themeSource = "dark";
   app.whenReady().then(async () => {
     // A5: FIRST thing on this machine - move ~/.agr-flow -> ~/.flow, move the
     // model store, and retire the AGR Manager install. It runs AFTER the single

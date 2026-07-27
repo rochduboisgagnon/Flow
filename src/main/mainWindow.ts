@@ -28,7 +28,7 @@ export class MainWindow {
       minHeight: 600,
       show: false, // shown on ready-to-show: no white flash
       autoHideMenuBar: true,
-      backgroundColor: "#f6f4f0", // charte: warm near-white
+      backgroundColor: "#171512", // dark charte: warm near-black (matches main.css --bg)
       webPreferences: {
         preload: path.join(__dirname, "preload.js"),
         contextIsolation: true,
