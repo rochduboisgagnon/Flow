@@ -69,6 +69,25 @@ jobs:
       #    so CI is cleared and a missing hook binary fails the job loudly.
       #  - resources/bin/whisper-server-*.exe = the speech engine itself
       #    (gitignored, ~120 MB, fetched from the whisper.cpp fork releases).
+      #
+      # keyspy's own postinstall downloads its archive ANONYMOUSLY from
+      # github.com/teomyth/keyspy - and the runners' shared IPs get
+      # rate-limited, which is exactly how the v1.0.1 run died at the gate.
+      # Re-fetch AUTHENTICATED (gh quota) when the postinstall came up empty,
+      # extracting with the System32 tar by absolute path (Git's MSYS tar
+      # reads C:\ as a remote host - documented trap in ensure-keyspy.cjs).
+      - name: Fetch keyspy runtime (authenticated fallback)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RT=node_modules/keyspy/runtime
+          if [ ! -f "$RT/WinKeyServer.exe" ]; then
+            KV=$(node -p "require('./node_modules/keyspy/package.json').version")
+            mkdir -p "$RT"
+            gh release download "v$KV" --repo teomyth/keyspy --pattern "keyspy-win32-x64.tar.gz" --dir "$RT" --clobber
+            "/c/Windows/System32/tar.exe" -xzf "$RT/keyspy-win32-x64.tar.gz" -C "$RT"
+          fi
+          ls "$RT"
       - name: Ensure push-to-talk binary (hard gate)
         env:
           CI: ""
