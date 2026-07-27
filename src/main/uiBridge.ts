@@ -45,7 +45,7 @@ const REPO_URL = "https://github.com/rochduboisgagnon/Flow";
 // forever - the toggle then shows OFF while the entry exists, and turning it
 // "off" from that state is a no-op. One constant, used by set AND get, so the
 // two can never diverge again.
-const LOGIN_ARGS = ["--hidden"];
+export const LOGIN_ARGS = ["--hidden"];
 
 export class UiBridge {
   private deps: UiBridgeDeps;

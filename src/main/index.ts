@@ -20,7 +20,7 @@ import { LocalApi } from "./api";
 import { LongRecorder, historyRoot, listHistory, resolveHistoryEntry } from "./longform";
 import { MainWindow } from "./mainWindow";
 import { resourcePath } from "./resources";
-import { UiBridge } from "./uiBridge";
+import { UiBridge, LOGIN_ARGS } from "./uiBridge";
 import { FlowTray } from "./tray";
 import { FlowUpdater } from "./updater";
 import {
@@ -100,6 +100,7 @@ if (!app.requestSingleInstanceLock()) {
       mainWindow.applyTheme(resolved);
       uiBridge?.pushNow();
     });
+    ensureLaunchAtLogin();
 
     // The overlay captures the microphone from a renderer: grant media
     // requests from OUR OWN windows only, without a system-style popup.
@@ -650,6 +651,34 @@ async function swapModel(file: string) {
     modelSwapping = false;
     modelTransfers--;
     markActivity();
+  }
+}
+
+/** Roch 2026-07-27: Flow starts with Windows by DEFAULT. A dictation daemon
+ * that is not running dictates nothing, and the AGR Manager watchdog that used
+ * to guarantee it is gone since the standalone turn.
+ *
+ * Registered exactly ONCE, gated by a persisted flag rather than re-asserted at
+ * every boot: re-registering each time would silently undo a user who turned
+ * the toggle off, which is the difference between a sane default and a fight.
+ * Skipped entirely outside a packaged build (a dev checkout must never write
+ * itself into the user's startup entries), and the flag is still recorded so
+ * the packaged app owns the decision.
+ *
+ * LOGIN_ARGS lives in uiBridge (--hidden: the engine comes up, the window does
+ * not); reusing the same constant keeps the registry entry identical to the one
+ * the Settings toggle reads, otherwise the toggle would report OFF forever. */
+function ensureLaunchAtLogin(): void {
+  if (settings.loginItemInitialized) return;
+  try {
+    if (app.isPackaged) {
+      app.setLoginItemSettings({ openAtLogin: true, args: LOGIN_ARGS });
+      flowLog("[startup] registered Flow to start with Windows (default on first run; the Settings toggle owns it from now on)");
+    }
+    applySettings({ loginItemInitialized: true });
+  } catch (err) {
+    // A locked registry hive must never cost the engine its boot.
+    flowLog(`[startup] could not register the login item: ${String(err)}`);
   }
 }
 

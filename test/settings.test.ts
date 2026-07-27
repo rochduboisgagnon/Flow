@@ -79,3 +79,17 @@ test("theme: valid preferences kept, junk falls back to the default (U0/U1)", ()
 test("a settings.json written before U0 (no theme field) follows Windows (U1)", () => {
   assert.equal(sanitizeSettings({ combo: ["CTRL", "WIN"], language: "fr" }).theme, "system");
 });
+
+// Roch 2026-07-27: Flow starts with Windows by default, registered ONCE. The
+// flag is what makes "default on" different from "forced on at every boot":
+// a user who turns the toggle off must stay off.
+test("loginItemInitialized: absent means the one-time registration still owes a run", () => {
+  assert.equal(SETTINGS_DEFAULTS.loginItemInitialized, false);
+  assert.equal(sanitizeSettings({ combo: ["CTRL", "WIN"] }).loginItemInitialized, false);
+});
+
+test("loginItemInitialized: once recorded, it survives a reload (never re-registers)", () => {
+  assert.equal(sanitizeSettings({ loginItemInitialized: true }).loginItemInitialized, true);
+  // Junk must not silently re-arm the registration on a corrupt file.
+  assert.equal(sanitizeSettings({ loginItemInitialized: "yes" }).loginItemInitialized, false);
+});

@@ -24,6 +24,12 @@ export interface FlowSettings {
   historyDir: string; // C10: recording history root; "" = default (dataDir()/history)
   insertMode: "paste" | "type"; // how dictation lands in an editable field: clipboard paste (default) or typed keystrokes for paste-hostile apps
   theme: ThemePref; // U0: "system" | "dark" | "light", resolved in index.ts against nativeTheme
+  /** Roch 2026-07-27: Flow registers itself at login ON FIRST RUN, because a
+   * dictation daemon that is not running dictates nothing (the Manager's
+   * watchdog used to do this). This flag records that the one-time
+   * registration happened, so a user who deliberately turns the toggle OFF is
+   * never overridden at the next boot. Never reset it. */
+  loginItemInitialized: boolean;
 }
 
 export const SETTINGS_DEFAULTS: FlowSettings = {
@@ -37,6 +43,7 @@ export const SETTINGS_DEFAULTS: FlowSettings = {
   historyDir: "", // C10: default location (dataDir()/history)
   insertMode: "paste", // clipboard paste + restore; "type" keystrokes the text (paste-hostile apps, never touches the clipboard)
   theme: "system", // U1: follow Windows now that both themes exist; dark stays one click away
+  loginItemInitialized: false, // false = the one-time "start with Windows" registration has not run yet
 };
 
 // A5: the folder is ~/.flow since 1.0.0, but a machine coming from an AGR
@@ -99,6 +106,7 @@ export function sanitizeSettings(raw: unknown): FlowSettings {
   }
   if (r.insertMode === "type" || r.insertMode === "paste") out.insertMode = r.insertMode;
   if (isThemePref(r.theme)) out.theme = r.theme;
+  if (typeof r.loginItemInitialized === "boolean") out.loginItemInitialized = r.loginItemInitialized;
   return out;
 }
 
