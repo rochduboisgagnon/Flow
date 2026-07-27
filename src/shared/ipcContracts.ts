@@ -66,7 +66,7 @@ export const UI_SET_SETTINGS = "ui:set-settings";
 export const UI_RECORD_SHORTCUT = "ui:record-shortcut";
 export const UI_LIST_MICS = "ui:list-mics";
 export const UI_OLLAMA_MODELS = "ui:ollama-models";
-export const UI_OPEN_PATH = "ui:open-path"; // "log" | "data" | "history" | "repo"
+export const UI_OPEN_PATH = "ui:open-path"; // "log" | "data" | "history" | "legacy-history" | "repo"
 export const UI_PICK_FOLDER = "ui:pick-folder";
 export const UI_GET_LOGIN_ITEM = "ui:get-login-item";
 export const UI_SET_LOGIN_ITEM = "ui:set-login-item";
@@ -102,7 +102,6 @@ export interface UiStatePayload {
     sounds: boolean;
     summaryModel: string;
     forceCpu: boolean;
-    historyDir: string;
     insertMode: "paste" | "type";
     theme: ThemePref;
   };
@@ -116,6 +115,19 @@ export interface UiStatePayload {
   apiPort: number;
   dataDir: string;
   logPath: string;
+  /** U2b/U2c: the recordings folder this machine had configured before the
+   * setting was removed, when it differs from the fixed one. Present only for
+   * the few users concerned - the Settings page shows a note ONLY when it is
+   * set, and the note is purely informational: those recordings were never
+   * moved. `exists` is PROBED in main, never assumed: the note claims the files
+   * are still there only when Flow has actually looked, and the "Open" button
+   * exists only when there is something to open. */
+  legacyHistory?: { dir: string; exists: boolean };
+  /** U2c: the 90-day retention purge is off (Flow does not manage what is in
+   * the history folder). Drives the "Resume automatic cleanup" control and the
+   * wording of the retention line - a UI that still promised a 90-day purge
+   * while it is suspended would be the same lie in the other direction. */
+  historyPurgeSuspended: boolean;
   recent: UiRecentCapture[];
 }
 

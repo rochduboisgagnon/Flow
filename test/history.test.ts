@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { LongRecorder, historyRoot, listHistory, resolveHistoryEntry } from "../src/main/longform";
-import { dataDir } from "../src/main/settings";
+import { LongRecorder, historyRoot, historyRootFor, listHistory, resolveHistoryEntry } from "../src/main/longform";
+import { dataDir, sanitizeSettings } from "../src/main/settings";
+import { resolveDataDir, runMigration, DATA_DIR_NEW } from "../src/main/migrate";
 import type { WhisperSidecar } from "../src/main/asr/sidecar";
 
 // C10: recording history (3-month retention). A staged recording (no
@@ -284,12 +285,115 @@ test("C10: purgeHistory is a silent no-op when the history folder does not exist
   fs.rmSync(work, { recursive: true, force: true });
 });
 
-test("C10: historyRoot() defaults under dataDir(), and settings.historyDir overrides it", () => {
+test("U2a: historyRoot() is fixed under dataDir(), no longer configurable", () => {
   // A5: the folder name is resolved (~/.flow, or ~/.agr-flow until the machine
   // is migrated), so assert the RELATION to dataDir() rather than a literal name.
-  assert.equal(historyRoot(""), path.join(dataDir(), "history"), "default lives under Flow's data folder");
-  assert.equal(historyRoot("D:\\Recordings\\History"), "D:\\Recordings\\History", "a configured historyDir wins");
-  assert.equal(historyRoot("  "), historyRoot(""), "a blank/whitespace-only override falls back to the default");
+  const root = historyRoot();
+  assert.equal(root, path.join(dataDir(), "history"), "always lives under Flow's data folder");
+  // U2c: the previous line here compared historyRoot() to itself, which is true
+  // whatever the implementation does. These bite instead.
+  assert.equal(path.basename(root), "history");
+  assert.equal(path.dirname(root), dataDir(), "exactly one level under the data folder");
+  assert.ok(path.isAbsolute(root), "an absolute path, never relative to the cwd");
+  assert.equal(historyRoot.length, 0, "takes no argument: nothing can point it elsewhere");
+  // The seam used everywhere else agrees with the real thing.
+  assert.equal(historyRootFor(dataDir()), root);
+});
+
+test("U2c: a settings.json still carrying historyDir yields the FIXED history root, and the old folder is captured", async () => {
+  // The chain the two waves left untested end to end: a raw settings.json from
+  // a machine that had chosen D:\Reunions must (a) still resolve the history
+  // root to the fixed folder, (b) have its choice CAPTURED by the migration,
+  // and (c) lose the field on the way through sanitizeSettings.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-u2c-chain-"));
+  const home = path.join(root, "home");
+  const local = path.join(root, "local");
+  const dataDirNew = path.join(home, DATA_DIR_NEW);
+  fs.mkdirSync(dataDirNew, { recursive: true });
+  fs.mkdirSync(local, { recursive: true });
+  const chosen = path.join(root, "Reunions");
+  fs.mkdirSync(chosen, { recursive: true });
+  const raw = { language: "fr", historyDir: chosen };
+  fs.writeFileSync(path.join(dataDirNew, "settings.json"), JSON.stringify(raw));
+
+  const out = await runMigration({
+    home,
+    localAppData: local,
+    selfVersion: "1.0.0",
+    selfPid: process.pid,
+    isAlive: () => false,
+    requestQuit: () => Promise.resolve(false),
+    sleep: () => Promise.resolve(),
+    graceMs: 0,
+  });
+
+  assert.equal(out.dataDir, dataDirNew);
+  assert.equal(out.legacyHistoryDir, chosen, "the choice is captured, exactly once, by the migration");
+  const fixed = historyRootFor(out.dataDir);
+  assert.equal(fixed, path.join(dataDirNew, "history"), "the history root ignores the setting entirely");
+  assert.notEqual(path.resolve(fixed), path.resolve(chosen), "and is NOT where the user's recordings are");
+  assert.equal(historyRootFor(resolveDataDir(home)), fixed, "same answer the app itself would compute for this machine");
+  // (c) the setting really is gone once it goes through the sanitizer.
+  const s = sanitizeSettings(raw);
+  assert.equal("historyDir" in s, false, "the retired field is dropped");
+  assert.equal(s.legacyHistoryDir, "", "and does NOT leak into the new field by itself: index.ts writes it");
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("U2c: a suspended purge deletes NOTHING, however old the folders are", () => {
+  // The blocking finding: on a machine that had moved its recordings elsewhere,
+  // the fixed folder is a frozen archive carrying the marker from when it WAS
+  // the default. Every other guardrail waves the deletion through - only the
+  // suspension flag stands between an untouched 200-day-old archive and rmSync.
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-purge-suspended-"));
+  const history = path.join(work, "history");
+  fs.mkdirSync(history, { recursive: true });
+  fs.writeFileSync(path.join(history, ".agr-flow-history"), "marker written back when this folder was the default\n");
+  const dayMs = 24 * 60 * 60 * 1000;
+  const oldDir = path.join(history, ymd(new Date(Date.now() - 200 * dayMs)));
+  fs.mkdirSync(oldDir);
+  const precious = path.join(oldDir, "board-meeting.md");
+  fs.writeFileSync(precious, "a meeting that cannot be re-recorded");
+
+  const logs: string[] = [];
+  const rec = new LongRecorder({
+    getSidecar: () => null,
+    historyRootOverride: history,
+    historyPurgeSuspended: () => true,
+    log: (m) => logs.push(m),
+  });
+  rec.purgeHistory();
+
+  assert.equal(fs.existsSync(precious), true, "a suspended purge must not delete a single file");
+  assert.equal(fs.existsSync(oldDir), true, "nor the dated folder itself");
+  assert.ok(logs.some((m) => /SUSPENDED/.test(m)), "and it says so, out loud, in the log");
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+test("U2c: with the flag off, the purge still does its job (no regression)", () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-purge-notsuspended-"));
+  const history = path.join(work, "history");
+  fs.mkdirSync(history, { recursive: true });
+  fs.writeFileSync(path.join(history, ".agr-flow-history"), "marker\n");
+  const dayMs = 24 * 60 * 60 * 1000;
+  const oldDir = path.join(history, ymd(new Date(Date.now() - 200 * dayMs)));
+  const keepDir = path.join(history, ymd(new Date(Date.now() - 10 * dayMs)));
+  fs.mkdirSync(oldDir);
+  fs.writeFileSync(path.join(oldDir, "note.md"), "old");
+  fs.mkdirSync(keepDir);
+  fs.writeFileSync(path.join(keepDir, "note.md"), "recent");
+
+  const rec = new LongRecorder({
+    getSidecar: () => null,
+    historyRootOverride: history,
+    historyPurgeSuspended: () => false, // explicitly NOT suspended
+  });
+  rec.purgeHistory();
+
+  assert.equal(fs.existsSync(oldDir), false, "the normal retention still removes what is past 90 days");
+  assert.equal(fs.existsSync(keepDir), true, "and still keeps what is inside the window");
+  fs.rmSync(work, { recursive: true, force: true });
 });
 
 // ---- Archive 2026-07-14: history browsing (listHistory + resolveHistoryEntry) ----

@@ -21,7 +21,6 @@ export interface FlowSettings {
   sounds: boolean; // audible start/stop cues
   summaryModel: string; // Ollama model for meeting summaries; "" = first installed model
   forceCpu: boolean; // R1: escape hatch for capricious GPUs (skip the Vulkan backend)
-  historyDir: string; // C10: recording history root; "" = default (dataDir()/history)
   insertMode: "paste" | "type"; // how dictation lands in an editable field: clipboard paste (default) or typed keystrokes for paste-hostile apps
   theme: ThemePref; // U0: "system" | "dark" | "light", resolved in index.ts against nativeTheme
   /** Roch 2026-07-27: Flow registers itself at login ON FIRST RUN, because a
@@ -30,6 +29,21 @@ export interface FlowSettings {
    * registration happened, so a user who deliberately turns the toggle OFF is
    * never overridden at the next boot. Never reset it. */
   loginItemInitialized: boolean;
+  /** U2c: the recordings folder this machine had CHOSEN back when the folder
+   * was a setting. Stored as a FACT, never as configuration - no code reads it
+   * to decide where to write anything. Two reasons it must be PERSISTED rather
+   * than recomputed at each boot: the migration is the only code that ever sees
+   * the raw `historyDir`, and the very first applySettings() of the run erases
+   * that field for good (sanitizeSettings drops it). "" = nothing to say, which
+   * is the case on the overwhelming majority of machines. */
+  legacyHistoryDir: string;
+  /** U2c: the 90-day retention purge is SUSPENDED on this machine. Set once,
+   * together with the field above, when we learn the (now fixed) history folder
+   * is not the one Flow was actually filing into: its dated folders are then a
+   * frozen archive Flow never managed, and Flow never deletes recordings it was
+   * not managing (non-negotiable rule: Roch). Settings > Storage is the only
+   * way back to false. */
+  historyPurgeSuspended: boolean;
 }
 
 export const SETTINGS_DEFAULTS: FlowSettings = {
@@ -40,10 +54,11 @@ export const SETTINGS_DEFAULTS: FlowSettings = {
   sounds: false, // v5 c5: no audible cues at all
   summaryModel: "", // "" = the first installed Ollama model
   forceCpu: false, // R1: Vulkan first by default; on = CPU only
-  historyDir: "", // C10: default location (dataDir()/history)
   insertMode: "paste", // clipboard paste + restore; "type" keystrokes the text (paste-hostile apps, never touches the clipboard)
   theme: "system", // U1: follow Windows now that both themes exist; dark stays one click away
   loginItemInitialized: false, // false = the one-time "start with Windows" registration has not run yet
+  legacyHistoryDir: "", // "" = this machine never had its own recordings folder
+  historyPurgeSuspended: false, // retention runs normally until we learn otherwise
 };
 
 // A5: the folder is ~/.flow since 1.0.0, but a machine coming from an AGR
@@ -88,7 +103,10 @@ export function sanitizeSettings(raw: unknown): FlowSettings {
     out.model = r.model;
   }
   if (typeof r.micDeviceId === "string") out.micDeviceId = r.micDeviceId;
-  if (typeof r.historyDir === "string") out.historyDir = r.historyDir; // C10: same permissiveness as micDeviceId
+  // U2a: historyDir is gone (the recordings folder is fixed under dataDir()/history).
+  // A leftover historyDir from an older settings.json falls through unread here -
+  // the tolerant merge drops unknown fields by construction, same as any other
+  // retired setting.
   if (typeof r.sounds === "boolean") out.sounds = r.sounds;
   if (typeof r.forceCpu === "boolean") out.forceCpu = r.forceCpu;
   if (typeof r.summaryModel === "string" && /^[\w.:-]*$/.test(r.summaryModel)) {
@@ -107,6 +125,12 @@ export function sanitizeSettings(raw: unknown): FlowSettings {
   if (r.insertMode === "type" || r.insertMode === "paste") out.insertMode = r.insertMode;
   if (isThemePref(r.theme)) out.theme = r.theme;
   if (typeof r.loginItemInitialized === "boolean") out.loginItemInitialized = r.loginItemInitialized;
+  // U2c: a remembered FACT and the safety flag it justifies. Trimmed only - the
+  // value is a path this app never writes into, so there is nothing to validate
+  // beyond "is it a string"; a wrong-typed field falls back to "no legacy folder",
+  // which is the safe direction (no note, no claim about anyone's data).
+  if (typeof r.legacyHistoryDir === "string") out.legacyHistoryDir = r.legacyHistoryDir.trim();
+  if (typeof r.historyPurgeSuspended === "boolean") out.historyPurgeSuspended = r.historyPurgeSuspended;
   return out;
 }
 

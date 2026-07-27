@@ -140,6 +140,18 @@ export interface MigrationOutcome {
   dataMoved: boolean;
   modelsMoved: boolean;
   managedInstallRemoved: boolean;
+  /** U2b: the recordings folder this machine had CHOSEN back when the folder
+   * was a setting, when it is not the fixed one we use now. Undefined is the
+   * normal case (the overwhelming majority never changed it).
+   *
+   * This module is the only code that ever sees the raw settings.json:
+   * loadSettings() runs it through sanitizeSettings(), which drops retired
+   * fields by construction, so U2a's removal of `historyDir` is silent unless
+   * it is caught HERE. index.ts persists it (U2c: this is the ONLY boot that
+   * can see it) and the Settings page tells the user where their old recordings
+   * are - they are never moved. Rebased onto the post-migration data folder
+   * when it pointed inside the old one. */
+  legacyHistoryDir?: string;
 }
 
 const POLL_MS = 100;
@@ -163,6 +175,29 @@ export async function runMigration(opts: MigrationOptions = {}): Promise<Migrati
 
   const oldData = path.join(home, DATA_DIR_OLD);
   const newData = path.join(home, DATA_DIR_NEW);
+
+  // U2b: one helper called from BOTH exits below, so the notice does not depend
+  // on whether this machine happened to have anything to migrate - a user who
+  // never came from AGR Manager can still carry a chosen historyDir. It informs
+  // and nothing else: moving a 90-day archive of meetings at boot could fail
+  // halfway, on the one thing the user cannot re-record (decision: Roch).
+  const captureLegacyHistoryDir = (dir: string): string | undefined => {
+    const raw = readLegacyHistoryDir(io, dir);
+    if (!raw) return undefined;
+    // U2c: rebase BEFORE comparing to the fixed folder. A value written under
+    // ~/.agr-flow is stale the instant this migration renames that folder, and
+    // the very common case is the old DEFAULT (~/.agr-flow/history) written out
+    // explicitly - which, rebased, IS the fixed folder and must produce no
+    // notice at all.
+    const legacy = rebaseLegacyHistoryDir(raw, oldData, dir);
+    if (samePath(legacy, path.join(dir, "history"))) return undefined;
+    log(
+      `recordings folder: settings.json still points at ${legacy}; the folder is now fixed at ` +
+        `${path.join(dir, "history")}. Existing recordings were LEFT where they are - nothing was moved or deleted.`,
+    );
+    return legacy;
+  };
+
   const oldModels = path.join(local, MODELS_ROOT_OLD);
   const newModels = path.join(local, MODELS_ROOT_NEW);
   const managedDir = path.join(local, MANAGER_DIR, MANAGED_APP_DIR);
@@ -176,13 +211,16 @@ export async function runMigration(opts: MigrationOptions = {}): Promise<Migrati
   // that logs on every boot would just train the user to ignore flow.log.
   const stale = safeExists(io, oldData) || safeExists(io, oldModels);
   if (!managed && !stale) {
+    const settledDataDir = resolveDataDir(home, io);
+    const legacyHistoryDir = captureLegacyHistoryDir(settledDataDir);
     return {
       logs,
-      dataDir: resolveDataDir(home, io),
+      dataDir: settledDataDir,
       modelsRoot: resolveModelsRoot(local, io),
       dataMoved: false,
       modelsMoved: false,
       managedInstallRemoved: false,
+      legacyHistoryDir,
     };
   }
 
@@ -251,14 +289,65 @@ export async function runMigration(opts: MigrationOptions = {}): Promise<Migrati
     else log(`the managed install at ${managedDir} is still there; it is no longer used`);
   }
 
+  // Read AFTER the moves: settings.json travels with the folder (one rename),
+  // so this reads the same file either way - but the fixed folder it is
+  // compared against is the one the app will actually use for the rest of the
+  // run, which is only known now.
+  const settledDataDir = resolveDataDir(home, io);
+  const legacyHistoryDir = captureLegacyHistoryDir(settledDataDir);
+
   return {
     logs,
-    dataDir: resolveDataDir(home, io),
+    dataDir: settledDataDir,
     modelsRoot: resolveModelsRoot(local, io),
     dataMoved,
     modelsMoved,
     managedInstallRemoved,
+    legacyHistoryDir,
   };
+}
+
+/** U2b: the RAW `historyDir` a pre-1.0.0 settings.json may still carry, or
+ * undefined when there is no usable value (no file, unreadable file, malformed
+ * JSON, wrong type, empty value). Never throws: runMigration's invariant is
+ * that no step of it can keep Flow from starting, and this one reads a file a
+ * user can hand-edit. The caller rebases it and decides whether it is worth
+ * telling the user about (U2c: those two questions are ordered, see above). */
+function readLegacyHistoryDir(io: MigrationFs, dataDir: string): string | undefined {
+  try {
+    const raw: unknown = JSON.parse(io.readFileSync(path.join(dataDir, "settings.json")));
+    if (typeof raw !== "object" || raw === null) return undefined;
+    const value = (raw as Record<string, unknown>).historyDir;
+    if (typeof value !== "string") return undefined;
+    const chosen = value.trim();
+    return chosen || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** U2c: a captured path that lives UNDER the old data folder is stale the
+ * moment this migration renames that folder - pointing the user at
+ * ~/.agr-flow/meetings after ~/.agr-flow became ~/.flow would send them to a
+ * path that no longer exists. Rebased onto the folder actually in service.
+ *
+ * Two cases deliberately left alone: a path that is not under the old data
+ * folder (a real second location like D:\Reunions - it never moved), and a
+ * machine still running FROM the old folder (the rename has not happened, or it
+ * failed and will be retried, so the path is perfectly valid as it stands). */
+export function rebaseLegacyHistoryDir(chosen: string, oldDataDir: string, settledDataDir: string): string {
+  if (samePath(oldDataDir, settledDataDir)) return chosen; // the old folder is still the live one
+  const rel = path.relative(oldDataDir, chosen); // win32 path.relative already compares case-insensitively
+  if (rel.startsWith("..") || path.isAbsolute(rel)) return chosen; // outside the old data folder
+  return path.join(settledDataDir, rel); // rel === "" gives settledDataDir itself
+}
+
+/** Path equality as the filesystem sees it: Windows is case-insensitive, and a
+ * trailing slash or a "." segment must not turn "the same folder" into a
+ * spurious notice. */
+function samePath(a: string, b: string): boolean {
+  const [ra, rb] = [path.resolve(a), path.resolve(b)];
+  return process.platform === "win32" ? ra.toLowerCase() === rb.toLowerCase() : ra === rb;
 }
 
 interface StopDeps {

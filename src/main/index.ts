@@ -18,6 +18,8 @@ import { pcmFromWav, encodeWav } from "../shared/wav";
 import { listOllamaModels } from "./llm/ollama";
 import { LocalApi } from "./api";
 import { LongRecorder, historyRoot, listHistory, resolveHistoryEntry } from "./longform";
+import { legacyHistoryInfo, type LegacyHistoryInfo } from "./legacyHistory";
+import { decideLaunchAtLogin } from "../shared/launchAtLogin";
 import { MainWindow } from "./mainWindow";
 import { resourcePath } from "./resources";
 import { UiBridge, LOGIN_ARGS } from "./uiBridge";
@@ -69,6 +71,7 @@ if (!app.requestSingleInstanceLock()) {
     // so it can never end up asking the RUNNING engine to /quit itself. It never
     // throws and never blocks the boot; a failed step is retried next start.
     let migrationLogs: string[] = [];
+    let migratedLegacyHistoryDir: string | null = null;
     // Review A10 (major): `npm run dev` runs from source on a machine that may
     // carry a PRODUCTION Flow - a dev boot must never quit it, move its data or
     // delete its install. The destructive pass is for packaged builds only;
@@ -78,6 +81,7 @@ if (!app.requestSingleInstanceLock()) {
       try {
         const outcome = await runMigration({ selfVersion: app.getVersion(), selfPid: process.pid });
         migrationLogs = outcome.logs;
+        migratedLegacyHistoryDir = outcome.legacyHistoryDir ?? null;
       } catch (err) {
         migrationLogs = [`[migrate] unexpected failure: ${String(err)}`];
       }
@@ -88,6 +92,13 @@ if (!app.requestSingleInstanceLock()) {
     // must be the POST-migration folder. flowLog() writes there too, which is
     // why the migration's own log lines are replayed here rather than live.
     Object.assign(settings, loadSettings());
+    // U2c: FIRST write of the run, before ANY other applySettings() can happen.
+    // The raw historyDir the migration just read exists in exactly one place -
+    // the settings.json we are about to rewrite - and sanitizeSettings drops it
+    // by construction. ensureLaunchAtLogin() thirteen lines below used to fire
+    // the first save and erase the only trace of the user's own folder before
+    // they could ever read the note. Persisting it here settles that by order.
+    captureLegacyHistory(migratedLegacyHistoryDir);
     for (const line of migrationLogs) flowLog(line);
     hotkey.setCombo(settings.combo); // the adapter was built on the defaults above
     applyTheme(settings.theme);
@@ -121,6 +132,7 @@ if (!app.requestSingleInstanceLock()) {
     startPtt();
     void warmAsr();
     probe = new FocusProbe(focusProbeScript(), DEV ? (m) => console.log(m) : undefined);
+    logLegacyHistoryState(); // U2c: say where the older recordings are, before purging anything
     longRec.purgeHistory(); // C10: retention purge at engine startup, best effort
     api = new LocalApi({
       version: app.getVersion(),
@@ -179,11 +191,10 @@ if (!app.requestSingleInstanceLock()) {
       },
       longGap: (seconds) => longRec.gap(seconds),
       longTranscript: (since) => longRec.transcriptSince(since),
-      // Archive 2026-07-14: same historyDir resolution as the recorder itself
-      // (settings.historyDir, read lazily), so the archive always reflects
-      // wherever recordings are actually being filed right now.
-      listHistory: () => listHistory(historyRoot(settings.historyDir), flowLog),
-      resolveHistoryEntry: (id) => resolveHistoryEntry(id, historyRoot(settings.historyDir)),
+      // Archive 2026-07-14: historyRoot() is fixed (U2a), so the archive always
+      // reflects the one place recordings are actually filed.
+      listHistory: () => listHistory(historyRoot(), flowLog),
+      resolveHistoryEntry: (id) => resolveHistoryEntry(id, historyRoot()),
       // Settings surface for the Manager's AGR Flow view (chantier A).
       getSettings: () => ({
         settings: { ...settings, combo: [...settings.combo] },
@@ -233,7 +244,17 @@ if (!app.requestSingleInstanceLock()) {
         recordShortcut: recordShortcutAndApply,
         listMics: () => listMicsValidated(),
         ollamaModels: () => listOllamaModels(),
-        historyRootDir: () => historyRoot(settings.historyDir),
+        historyRootDir: () => historyRoot(),
+        // U2b: resolved in MAIN, never passed in by the renderer - the bridge
+        // opens fixed destinations only (see UI_OPEN_PATH).
+        // U2c: null unless the folder is REALLY there, so the bridge can never
+        // be asked to open a path that vanished (shell.openPath would just
+        // return an error string and the button would look broken).
+        legacyHistoryDirPath: () => {
+          const info = legacyHistoryForUi();
+          return info && info.exists ? info.dir : null;
+        },
+        log: flowLog,
         logPath: () => path.join(dataDir(), "flow.log"),
         dataDirPath: () => dataDir(),
         checkUpdates: () => flowUpdater.checkNow(),
@@ -292,7 +313,6 @@ function getUiState(): UiStatePayload {
       sounds: settings.sounds,
       summaryModel: settings.summaryModel,
       forceCpu: settings.forceCpu,
-      historyDir: settings.historyDir,
       insertMode: settings.insertMode,
       theme: settings.theme,
     },
@@ -304,6 +324,8 @@ function getUiState(): UiStatePayload {
     apiPort: api?.boundPort() ?? 0,
     dataDir: dataDir(),
     logPath: path.join(dataDir(), "flow.log"),
+    legacyHistory: legacyHistoryForUi(),
+    historyPurgeSuspended: settings.historyPurgeSuspended,
     recent: recentForUi(),
   };
 }
@@ -484,6 +506,59 @@ async function listMicsValidated(): Promise<Array<{ id: string; label: string }>
   return mics;
 }
 
+/** U2c: persist, ONCE, what the migration just learned about this machine, and
+ * suspend the retention purge because of it.
+ *
+ * `dir` non-empty means settings.json still named a recordings folder of the
+ * user's own, i.e. the fixed folder we now purge (dataDir()/history) is NOT the
+ * one Flow was filing into: it was frozen the day the user switched, it still
+ * carries the marker from when it was the default, and its dated folders are
+ * all older than the 90-day retention. Purging it would delete an untouched
+ * archive on the first boot after the update, before the window even appears.
+ *
+ * Two FACTS are written, never configuration: where the recordings are, and
+ * that Flow must not clean up a folder it was not managing. Both are cleared
+ * together by the Settings button, which is the user's explicit "yes, that
+ * folder is mine to clean". */
+function captureLegacyHistory(dir: string | null): void {
+  if (!dir) return;
+  if (settings.legacyHistoryDir) return; // already recorded on an earlier boot
+  applySettings({ legacyHistoryDir: dir, historyPurgeSuspended: true });
+}
+
+/** U2c (minor finding): the archive view lists the FIXED folder only, so for
+ * these users it goes from "all my meetings" to "empty" with no explanation on
+ * that screen. Until the Notes page can carry the pointer (wave U5), a startup
+ * log line is the floor - not a substitute. */
+function logLegacyHistoryState(): void {
+  const info = legacyHistoryInfo(settings.legacyHistoryDir);
+  if (!info) return;
+  flowLog(
+    `[history] the recordings archive lists ${historyRoot()} only. Recordings made before this update are in ` +
+      `${info.dir}${info.exists ? "" : " (Flow does not find that folder any more)"}; nothing was moved or deleted.` +
+      (settings.historyPurgeSuspended ? " The 90-day cleanup is suspended until you resume it in Settings > Storage." : ""),
+  );
+}
+
+/** U2c: the legacy-folder note for the UI, existence PROBED, cached like the
+ * recent list and for the same reason (review A10): the window pushes a
+ * snapshot every second, and an existsSync on a disconnected network share is
+ * synchronous I/O sitting right under the keyboard hook's verdict path. The
+ * cache is keyed on the folder too, so the note disappears on the very next
+ * push when the user resumes cleanup. */
+let legacyCache: { at: number; dir: string | null; value: LegacyHistoryInfo | undefined } = {
+  at: 0,
+  dir: null, // never equal to a settings string: the first call always probes
+  value: undefined,
+};
+function legacyHistoryForUi(): LegacyHistoryInfo | undefined {
+  const dir = settings.legacyHistoryDir;
+  if (legacyCache.dir !== dir || Date.now() - legacyCache.at > RECENT_CACHE_MS) {
+    legacyCache = { at: Date.now(), dir, value: legacyHistoryInfo(dir) };
+  }
+  return legacyCache.value;
+}
+
 /** The recent-captures snapshot for the UI, cached briefly (review A10): the
  * window's 1 Hz push otherwise re-reads recent.json and stats every entry
  * ON THE MAIN THREAD each second - synchronous I/O sitting right under the
@@ -513,8 +588,10 @@ const longRec = new LongRecorder({
   getSidecar: () => sidecar,
   summaryModel: () => settings.summaryModel,
   ollamaModels: () => listOllamaModels(),
+  // U2c: read lazily, so the Settings button that resumes cleanup takes effect
+  // on the very next purge instead of needing a restart.
+  historyPurgeSuspended: () => settings.historyPurgeSuspended,
   log: flowLog, // R1: long-recording diagnostics visible in a built app too
-  historyDir: () => settings.historyDir, // C10: read lazily, so a live settings change applies immediately
 });
 
 // NOTE: the "open AGR Pilot" shortcut used to live here (v5 c2, fired from Flow's keyspy),
@@ -661,21 +738,28 @@ async function swapModel(file: string) {
  * Registered exactly ONCE, gated by a persisted flag rather than re-asserted at
  * every boot: re-registering each time would silently undo a user who turned
  * the toggle off, which is the difference between a sane default and a fight.
- * Skipped entirely outside a packaged build (a dev checkout must never write
- * itself into the user's startup entries), and the flag is still recorded so
- * the packaged app owns the decision.
+ *
+ * U2c (review finding): a dev checkout does NOTHING here - it neither registers
+ * nor writes the flag. Dev and prod share the same ~/.flow/settings.json, so
+ * burning the flag from source meant one `npm run dev` permanently cost the
+ * PACKAGED app its only chance to register itself. The decision lives in
+ * shared/launchAtLogin.ts so both branches are unit-testable without Electron.
  *
  * LOGIN_ARGS lives in uiBridge (--hidden: the engine comes up, the window does
  * not); reusing the same constant keeps the registry entry identical to the one
  * the Settings toggle reads, otherwise the toggle would report OFF forever. */
 function ensureLaunchAtLogin(): void {
-  if (settings.loginItemInitialized) return;
+  const decision = decideLaunchAtLogin({
+    alreadyInitialized: settings.loginItemInitialized,
+    packaged: app.isPackaged,
+  });
+  if (!decision.register && !decision.recordFlag) return;
   try {
-    if (app.isPackaged) {
+    if (decision.register) {
       app.setLoginItemSettings({ openAtLogin: true, args: LOGIN_ARGS });
       flowLog("[startup] registered Flow to start with Windows (default on first run; the Settings toggle owns it from now on)");
     }
-    applySettings({ loginItemInitialized: true });
+    if (decision.recordFlag) applySettings({ loginItemInitialized: true });
   } catch (err) {
     // A locked registry hive must never cost the engine its boot.
     flowLog(`[startup] could not register the login item: ${String(err)}`);

@@ -93,16 +93,19 @@ export interface LongDeps {
   /** Installed Ollama models, used to auto-pick a summary model when the user
    * did not configure one. Injectable so tests don't hit a real Ollama. */
   ollamaModels?: () => Promise<string[] | null>;
+  /** settings.historyPurgeSuspended, read LAZILY (this module never imports
+   * settings state - only dataDir()): true means the fixed history folder holds
+   * an archive Flow was not managing, so the retention purge must not run at
+   * all. Absent = not suspended, which is the normal case. */
+  historyPurgeSuspended?(): boolean;
   log?: (msg: string) => void;
   /** Tests only: keep the recent-list file away from the real ~/.agr-flow. */
   recentPathOverride?: string;
   /** Tests only: keep the app-owned staging folder away from the real ~/.agr-flow. */
   stagingRootOverride?: string;
-  /** C10: settings.historyDir ("" = default under dataDir()/history). Read lazily
-   * (like cleanupModel) so a live settings change applies on the next call
-   * without restarting the engine. */
-  historyDir?: () => string;
-  /** Tests only: keep the retention history away from the real ~/.agr-flow. */
+  /** Tests only: keep the retention history away from the real ~/.agr-flow. This is
+   * a TEST seam, not a user setting - U2a fixed the history folder at
+   * dataDir()/history, so production code never sets this. */
   historyRootOverride?: string;
 }
 
@@ -120,11 +123,19 @@ export function stagingRoot(): string {
 
 // C10: a recording nobody explicitly filed at Stop still gets a home instead
 // of sitting invisible in staging forever - it lands here, bucketed by date,
-// and is purged after RETENTION_DAYS. Configurable via settings.historyDir
-// ("" = default).
-export function historyRoot(customDir?: string): string {
-  const c = (customDir || "").trim();
-  return c || path.join(dataDir(), "history");
+// and is purged after RETENTION_DAYS. U2a: FIXED under dataDir()/history, no
+// longer configurable (settings.historyDir is gone - two truths about where
+// recordings live was exactly the confusion a fixed folder ends).
+export function historyRoot(): string {
+  return historyRootFor(dataDir());
+}
+
+/** The history folder for a GIVEN data folder. Same rule as historyRoot(),
+ * without the process-wide dataDir() cache: it is what lets a test assert the
+ * fixed-folder rule against a sandboxed machine (the real dataDir() resolves
+ * against the real home and caches its answer for the whole process). */
+export function historyRootFor(dir: string): string {
+  return path.join(dir, "history");
 }
 
 /** Copy a file INTO destDir without ever clobbering an existing user file: a
@@ -198,14 +209,25 @@ function ymd(d: Date): string {
 const RETENTION_DAYS = 90;
 const DATE_DIR_RE = /^\d{4}-\d{2}-\d{2}$/; // must match ymd() exactly
 
+// U2a: historyRoot() is now FIXED (dataDir()/history) - historyDir the setting
+// is gone. Every guardrail below (marker gate, dangerous-root check, item cap)
+// was written back when the folder was user-configurable; they still hold, so
+// they stay, unchanged in behavior.
+//
+// U2c: they are NOT sufficient, which is why purgeHistory() gained a suspension
+// switch above them. On a machine that had moved its recordings elsewhere, the
+// fixed folder was frozen the day the user switched - and it carries the marker
+// from when it WAS the default, so the marker gate happily authorizes deleting
+// an untouched years-old archive on the first boot after the update. Only
+// knowing that Flow was not the one filing into it can stop that.
+
 /** True when `p` resolves to a filesystem/volume root (e.g. "C:\", "/"), the
  * user's own profile root, or an IMMEDIATE child of the profile (Documents,
  * Desktop, OneDrive-redirected folders...) - the purge must refuse to operate
- * there even if historyDir was ever misconfigured to point at one
- * (non-negotiable guardrail: a wrong setting must never turn into deleting
- * real folders). Review C10 F1: the profile-child rule still allows the
- * default ~/.agr-flow/history (parent is .agr-flow) and any dedicated folder
- * on another drive. */
+ * there even if the history root was ever misdirected at one (non-negotiable
+ * guardrail: a bad root must never turn into deleting real folders). Review
+ * C10 F1: the profile-child rule still allows the default ~/.agr-flow/history
+ * (parent is .agr-flow) and any dedicated folder on another drive. */
 function isDangerousPurgeRoot(p: string): boolean {
   const resolved = path.resolve(p);
   if (path.dirname(resolved) === resolved) return true; // a volume/filesystem root
@@ -218,7 +240,7 @@ function isDangerousPurgeRoot(p: string): boolean {
 /** Review C10 F1 (marker gate): the purge only ever operates on a folder AGR
  * Flow itself established as a history root. fileIntoHistory drops this marker
  * when it creates the root; purgeHistoryDirs bails when it is absent. A
- * historyDir pointed at ANY pre-existing folder (the vault, an export dir)
+ * history root pointed at ANY pre-existing folder (the vault, an export dir)
  * therefore can never be purged, no matter what dated subfolders it holds. */
 const HISTORY_MARKER = ".agr-flow-history";
 function ensureHistoryRoot(root: string): void {
@@ -246,7 +268,7 @@ function purgeHistoryDirs(root: string, log?: (msg: string) => void): void {
       return;
     }
     // Review C10 F1: no marker = not a folder this app established -> never purge.
-    // Covers both "no history yet" and "historyDir points at someone's real folder".
+    // Covers both "no history yet" and "root points at someone's real folder".
     if (!fs.existsSync(path.join(root, HISTORY_MARKER))) return;
     let entries: fs.Dirent[];
     try {
@@ -313,9 +335,9 @@ export interface HistoryItem {
   savedMs: number;
 }
 
-// A runaway history (misconfigured historyDir pointed at a huge folder, or
-// years of unattended recordings) must never make the archive view stall the
-// engine's single-threaded API. Bounded, like the ASR queue.
+// A runaway history (years of unattended recordings piling up on the fixed
+// folder) must never make the archive view stall the engine's single-threaded
+// API. Bounded, like the ASR queue.
 const MAX_HISTORY_ITEMS = 2000;
 
 /** Enumerate `<root>/<YYYY-MM-DD>/<title>/` recordings, newest first. Marker-gated
@@ -571,7 +593,7 @@ export class LongRecorder {
   }
 
   private historyBase(): string {
-    return this.deps.historyRootOverride ?? historyRoot(this.deps.historyDir?.());
+    return this.deps.historyRootOverride ?? historyRoot();
   }
 
   /** C10: a recording being saved may currently sit in EITHER the app-owned
@@ -589,8 +611,21 @@ export class LongRecorder {
   /** Best-effort retention purge (C10 §5): call at engine startup and at the
    * top of every start() so history never grows unbounded. Never throws -
    * purgeHistoryDirs already swallows its own errors - so a failure here can
-   * never stop a recording from starting. */
+   * never stop a recording from starting.
+   *
+   * U2c (blocking review finding): SUSPENDED outright when the settings flag
+   * says so. On a machine that used to file its recordings elsewhere, the fixed
+   * folder is a frozen archive Flow never managed - and it carries the marker
+   * from the days it was the default, so every other guardrail below would wave
+   * the deletion through. Flow never deletes recordings it was not managing. */
   purgeHistory(): void {
+    if (this.deps.historyPurgeSuspended?.()) {
+      this.deps.log?.(
+        `[long] history purge SUSPENDED: ${this.historyBase()} holds recordings Flow was not managing. ` +
+          `Nothing is deleted until "Resume automatic cleanup" in Settings > Storage.`,
+      );
+      return;
+    }
     purgeHistoryDirs(this.historyBase(), this.deps.log);
   }
 

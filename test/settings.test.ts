@@ -93,3 +93,12 @@ test("loginItemInitialized: once recorded, it survives a reload (never re-regist
   // Junk must not silently re-arm the registration on a corrupt file.
   assert.equal(sanitizeSettings({ loginItemInitialized: "yes" }).loginItemInitialized, false);
 });
+
+// U2a: historyDir retired (the recordings folder is fixed under dataDir()/history).
+// A settings.json saved by an older build may still carry the field - it must be
+// dropped silently, like any other unknown key, never thrown on.
+test("U2a: a legacy historyDir field is dropped tolerantly, not thrown on", () => {
+  const s = sanitizeSettings({ combo: ["CTRL", "WIN"], historyDir: "D:\\Recordings\\History" });
+  assert.equal("historyDir" in s, false);
+  assert.deepEqual(s, sanitizeSettings({ combo: ["CTRL", "WIN"] }), "identical to a settings.json without the field");
+});

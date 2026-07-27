@@ -32,8 +32,15 @@ export interface UiBridgeDeps {
   listMics(): Promise<Array<{ id: string; label: string }>>;
   ollamaModels(): Promise<string[] | null>;
   historyRootDir(): string;
+  /** U2b: the pre-1.0.0 recordings folder, or null when there is none. Null is
+   * the normal case and makes "legacy-history" a refused destination. U2c: main
+   * also returns null when the folder no longer exists on disk. */
+  legacyHistoryDirPath(): string | null;
   logPath(): string;
   dataDirPath(): string;
+  /** U2c: shell.openPath RETURNS an error string instead of throwing, so a
+   * failed open is invisible without this. Optional: pure tests need no log. */
+  log?(msg: string): void;
   /** The Updates tab's "Check now" button (A4: FlowUpdater.checkNow). */
   checkUpdates(): Promise<UpdateCheckResult>;
 }
@@ -100,8 +107,25 @@ export class UiBridge {
       if (which === "log") await shell.openPath(this.deps.logPath());
       else if (which === "data") await shell.openPath(this.deps.dataDirPath());
       else if (which === "history") await shell.openPath(this.deps.historyRootDir());
-      else if (which === "repo") await shell.openExternal(REPO_URL);
+      else if (which === "legacy-history") {
+        // U2b: still a FIXED destination - the path comes from main (the
+        // migration captured it), the renderer only names the destination. No
+        // value captured means nothing to open: refuse rather than guess.
+        // U2c: main returns null for a folder that is gone (the UI hides the
+        // button in that case), and a late failure is logged rather than lost.
+        const legacy = this.deps.legacyHistoryDirPath();
+        if (!legacy) this.deps.log?.("[ui] open legacy recordings folder: nothing to open");
+        else {
+          const err = await shell.openPath(legacy);
+          if (err) this.deps.log?.(`[ui] could not open ${legacy}: ${err}`);
+        }
+      } else if (which === "repo") await shell.openExternal(REPO_URL);
     });
+    // U2a: the recordings folder (history) stopped being user-configurable, so
+    // Settings' "Recordings folder" row no longer calls this - but it is NOT
+    // dead IPC: it is the picker /long/save's own "save a copy" flow will use
+    // (a destination folder is still chosen per-save, just never for history
+    // itself). U5 settles pickFolder's final shape/wiring.
     ipcMain.handle(UI_PICK_FOLDER, async (e) => {
       if (!this.fromMain(e)) return null;
       // Without a parent window, the dialog is app-modal and may open behind the frameless main window.

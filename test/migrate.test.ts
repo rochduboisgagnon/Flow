@@ -12,6 +12,7 @@ import {
   MODELS_ROOT_NEW,
   MODELS_ROOT_OLD,
   nodeFs,
+  rebaseLegacyHistoryDir,
   resolveDataDir,
   resolveModelsRoot,
   runMigration,
@@ -422,6 +423,179 @@ test("A5: a partially migrated machine (data done, models stuck) finishes on the
   assert.equal(second.modelsMoved, true);
   assert.equal(second.modelsRoot, path.join(m.local, MODELS_ROOT_NEW));
   assert.ok(fs.existsSync(path.join(m.local, MODELS_ROOT_NEW, "models", "ggml-large-v3-turbo-q5_0.bin")));
+  cleanup(m);
+});
+
+// ---- U2b: the retired historyDir setting ----
+// U2a removed the "recordings folder" setting; sanitizeSettings drops the field
+// and the next save erases it. Someone who had picked D:\Reunions would see
+// their recordings vanish FROM THE APP while the files sit untouched on disk.
+// The migration is the only code that still sees the raw settings.json, so it
+// captures the value - and captures it ONLY, it never moves a single file.
+
+/** Writes settings.json into `dir`, creating the folder. */
+function writeSettings(dir: string, value: Record<string, unknown>): void {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "settings.json"), JSON.stringify(value));
+}
+
+test("U2b: a settings.json still naming its own recordings folder is captured, and nothing is moved", async () => {
+  const m = machine("legacy-history");
+  const { oldData } = seedOldLayout(m);
+  const chosen = path.join(m.root, "Reunions");
+  fs.mkdirSync(chosen, { recursive: true });
+  fs.writeFileSync(path.join(chosen, "2026-07-01.wav"), "a meeting that cannot be re-recorded");
+  writeSettings(oldData, { language: "fr", historyDir: chosen });
+
+  const out = await runMigration(quietOpts(m));
+
+  assert.equal(out.legacyHistoryDir, chosen);
+  // The whole point: informed, not acted upon.
+  assert.ok(fs.existsSync(path.join(chosen, "2026-07-01.wav")), "the old recordings stayed exactly where they were");
+  const note = out.logs.find((l) => l.includes("recordings folder:"));
+  assert.ok(note, "the capture is journalled");
+  assert.ok(note.includes(chosen), "the log names the old path");
+  assert.ok(note.includes(path.join(out.dataDir, "history")), "and the folder that is now fixed");
+  assert.ok(note.includes("LEFT where they are"), "and says nothing was touched");
+  cleanup(m);
+});
+
+test("U2b: an empty historyDir, or one already equal to the fixed folder, is not captured", async () => {
+  // Empty string: the field existed but was never set to anything.
+  const empty = machine("legacy-empty");
+  const emptyData = path.join(empty.home, DATA_DIR_NEW);
+  writeSettings(emptyData, { language: "fr", historyDir: "   " });
+  const emptyOut = await runMigration(quietOpts(empty));
+  assert.equal(emptyOut.legacyHistoryDir, undefined);
+  assert.deepEqual(emptyOut.logs, [], "nothing to explain, nothing to log");
+  cleanup(empty);
+
+  // Already the fixed folder (with a trailing separator, as a hand-edited file
+  // or an older picker could well have stored it): same folder, no notice.
+  const same = machine("legacy-same");
+  const sameData = path.join(same.home, DATA_DIR_NEW);
+  writeSettings(sameData, { historyDir: path.join(sameData, "history") + path.sep });
+  const sameOut = await runMigration(quietOpts(same));
+  assert.equal(sameOut.legacyHistoryDir, undefined);
+  assert.deepEqual(sameOut.logs, []);
+  cleanup(same);
+
+  // And a wrong type is not a string path either.
+  const typed = machine("legacy-typed");
+  writeSettings(path.join(typed.home, DATA_DIR_NEW), { historyDir: 42 });
+  const typedOut = await runMigration(quietOpts(typed));
+  assert.equal(typedOut.legacyHistoryDir, undefined);
+  cleanup(typed);
+});
+
+test("U2b: a missing or corrupt settings.json never fails the migration", async () => {
+  // No settings file at all (fresh install): silence, like every other step.
+  const none = machine("legacy-none");
+  const noneOut = await runMigration(quietOpts(none));
+  assert.equal(noneOut.legacyHistoryDir, undefined);
+  assert.deepEqual(noneOut.logs, []);
+  cleanup(none);
+
+  // Truncated/hand-mangled file on a machine that DOES have work to do: the
+  // migration must still run to completion, it simply has nothing to report.
+  const bad = machine("legacy-corrupt");
+  const { oldData } = seedOldLayout(bad);
+  fs.writeFileSync(path.join(oldData, "settings.json"), '{"historyDir": "D:\\\\Reun');
+  const badOut = await runMigration(quietOpts(bad));
+  assert.equal(badOut.legacyHistoryDir, undefined);
+  assert.equal(badOut.dataMoved, true, "the rest of the migration is unaffected");
+  assert.equal(badOut.dataDir, path.join(bad.home, DATA_DIR_NEW));
+  assert.ok(!badOut.logs.some((l) => l.includes("recordings folder:")));
+  cleanup(bad);
+
+  // A settings.json that parses to something that is not an object.
+  const scalar = machine("legacy-scalar");
+  fs.mkdirSync(path.join(scalar.home, DATA_DIR_NEW), { recursive: true });
+  fs.writeFileSync(path.join(scalar.home, DATA_DIR_NEW, "settings.json"), '"nope"');
+  const scalarOut = await runMigration(quietOpts(scalar));
+  assert.equal(scalarOut.legacyHistoryDir, undefined);
+  cleanup(scalar);
+});
+
+// ---- U2c: the captured path must not be a stale one ----
+
+test("U2c: a legacy folder that lived inside ~/.agr-flow is rebased onto ~/.flow", async () => {
+  // The migration renames the data folder in the same run that captures this
+  // value. Reporting the RAW path would send the user to a folder that stopped
+  // existing seconds earlier.
+  const m = machine("legacy-rebase");
+  const { oldData } = seedOldLayout(m);
+  const chosenBefore = path.join(oldData, "meetings"); // ~/.agr-flow/meetings
+  fs.mkdirSync(chosenBefore, { recursive: true });
+  fs.writeFileSync(path.join(chosenBefore, "2026-07-01.md"), "a meeting");
+  writeSettings(oldData, { language: "fr", historyDir: chosenBefore });
+
+  const out = await runMigration(quietOpts(m));
+
+  assert.equal(out.dataMoved, true);
+  const expected = path.join(m.home, DATA_DIR_NEW, "meetings");
+  assert.equal(out.legacyHistoryDir, expected, "rebased onto the folder actually in service");
+  assert.ok(fs.existsSync(path.join(expected, "2026-07-01.md")), "and that path really is where the files are now");
+  assert.ok(!fs.existsSync(chosenBefore), "the raw captured path no longer exists at all");
+  const note = out.logs.find((l) => l.includes("recordings folder:"));
+  assert.ok(note && note.includes(expected), "the journal names the rebased path, not the stale one");
+  cleanup(m);
+});
+
+test("U2c: the OLD default (~/.agr-flow/history) rebases onto the fixed folder, so nothing is reported", async () => {
+  // A hand-written or older-picker settings.json can carry the default folder
+  // explicitly. Rebased, it IS the fixed folder: there is no second location,
+  // so there must be no note and no purge suspension.
+  const m = machine("legacy-old-default");
+  const { oldData } = seedOldLayout(m);
+  writeSettings(oldData, { historyDir: path.join(oldData, "history") });
+
+  const out = await runMigration(quietOpts(m));
+
+  assert.equal(out.dataMoved, true);
+  assert.equal(out.legacyHistoryDir, undefined, "same folder as the fixed one: nothing to say");
+  assert.ok(!out.logs.some((l) => l.includes("recordings folder:")));
+  cleanup(m);
+});
+
+test("U2c: a folder on another drive is reported verbatim, and a machine still on the old layout is not rebased", async () => {
+  // Rebasing is only ever right for a path INSIDE the folder that just moved.
+  const outside = path.join(path.sep + "elsewhere", "Reunions");
+  assert.equal(
+    rebaseLegacyHistoryDir(outside, path.join(path.sep + "home", ".agr-flow"), path.join(path.sep + "home", ".flow")),
+    outside,
+    "a real second location never moved: leave it exactly as it is",
+  );
+  // The rename failed (EBUSY) or has not happened: the old folder is still the
+  // live one, so the path is valid as written.
+  const old = path.join(path.sep + "home", ".agr-flow");
+  const inside = path.join(old, "meetings");
+  assert.equal(rebaseLegacyHistoryDir(inside, old, old), inside, "still running from the old folder: no rebase");
+  // The data folder itself as the chosen value.
+  const next = path.join(path.sep + "home", ".flow");
+  assert.equal(rebaseLegacyHistoryDir(old, old, next), next, "the old data folder itself rebases to the new one");
+});
+
+test("U2c: an EBUSY rename leaves the captured path pointing at the folder still in service", async () => {
+  const m = machine("legacy-rebase-ebusy");
+  const { oldData } = seedOldLayout(m);
+  const chosen = path.join(oldData, "meetings");
+  fs.mkdirSync(chosen, { recursive: true });
+  writeSettings(oldData, { historyDir: chosen });
+  const busy: MigrationFs = {
+    ...nodeFs,
+    renameSync: () => {
+      const err = new Error("resource busy or locked") as NodeJS.ErrnoException;
+      err.code = "EBUSY";
+      throw err;
+    },
+  };
+
+  const out = await runMigration({ ...quietOpts(m), io: busy });
+
+  assert.equal(out.dataDir, oldData, "the app keeps running on the old folder this boot");
+  assert.equal(out.legacyHistoryDir, chosen, "so the path is reported as it stands, and it really is there");
+  assert.ok(fs.existsSync(out.legacyHistoryDir!));
   cleanup(m);
 });
 

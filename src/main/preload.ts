@@ -92,7 +92,7 @@ const ui = {
   listMics: (): Promise<Array<{ id: string; label: string }>> =>
     ipcRenderer.invoke(UI_LIST_MICS),
   ollamaModels: (): Promise<string[] | null> => ipcRenderer.invoke(UI_OLLAMA_MODELS),
-  openPath: (which: "log" | "data" | "history" | "repo"): Promise<void> =>
+  openPath: (which: "log" | "data" | "history" | "legacy-history" | "repo"): Promise<void> =>
     ipcRenderer.invoke(UI_OPEN_PATH, which),
   pickFolder: (): Promise<string | null> => ipcRenderer.invoke(UI_PICK_FOLDER),
   getLoginItem: (): Promise<boolean> => ipcRenderer.invoke(UI_GET_LOGIN_ITEM),
