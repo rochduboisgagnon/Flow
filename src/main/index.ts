@@ -62,9 +62,6 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on("second-instance", () => mainWindow.show(DEV));
-  // Dark charte (Roch 2026-07-27): the Windows title bar follows this, so the
-  // frame matches main.css instead of flashing a white caption.
-  nativeTheme.themeSource = "dark";
   app.whenReady().then(async () => {
     // A5: FIRST thing on this machine - move ~/.agr-flow -> ~/.flow, move the
     // model store, and retire the AGR Manager install. It runs AFTER the single
@@ -93,6 +90,16 @@ if (!app.requestSingleInstanceLock()) {
     Object.assign(settings, loadSettings());
     for (const line of migrationLogs) flowLog(line);
     hotkey.setCombo(settings.combo); // the adapter was built on the defaults above
+    applyTheme(settings.theme);
+    // U0: a Windows theme flip while theme="system" must repaint in under a
+    // frame instead of waiting on uiBridge's 1 Hz push. This handler only
+    // READS shouldUseDarkColors - applyTheme() is the sole writer of
+    // themeSource, so this can never re-trigger the "updated" event itself.
+    nativeTheme.on("updated", () => {
+      const resolved = nativeTheme.shouldUseDarkColors ? "dark" : "light";
+      mainWindow.applyTheme(resolved);
+      uiBridge?.pushNow();
+    });
 
     // The overlay captures the microphone from a renderer: grant media
     // requests from OUR OWN windows only, without a system-style popup.
@@ -280,7 +287,10 @@ function getUiState(): UiStatePayload {
       forceCpu: settings.forceCpu,
       historyDir: settings.historyDir,
       insertMode: settings.insertMode,
+      theme: settings.theme,
     },
+    // U0: what to actually paint right now, separate from the preference above.
+    resolvedTheme: nativeTheme.shouldUseDarkColors ? "dark" : "light",
     comboLabel: comboLabel(settings.combo),
     models: [...AVAILABLE_MODELS],
     canLoopback: NativeCapture.available(),
@@ -637,6 +647,16 @@ async function swapModel(file: string) {
   }
 }
 
+/** U0: the ONE writer of nativeTheme.themeSource. Setting themeSource TRIGGERS
+ * the "updated" event wired in whenReady - that handler only ever READS
+ * shouldUseDarkColors, never writes themeSource itself, or the two would loop. */
+function applyTheme(pref: FlowSettings["theme"]): void {
+  nativeTheme.themeSource = pref;
+  const resolved = nativeTheme.shouldUseDarkColors ? "dark" : "light";
+  mainWindow.applyTheme(resolved);
+  uiBridge?.pushNow();
+}
+
 /** Applies a settings patch immediately: shortcut re-armed, language applied
  * to the next utterance, model swapped (with download), mic/sounds picked up
  * by the next capture. Persisted atomically. */
@@ -650,11 +670,13 @@ function applySettings(patch: Partial<FlowSettings>): FlowSettings {
   // fresh sidecar = the backend list is re-evaluated (the model is already on
   // disk, so this is a reload, not a download).
   const backendChanged = next.forceCpu !== settings.forceCpu;
+  const themeChanged = next.theme !== settings.theme;
   Object.assign(settings, next);
   saveSettings(settings);
   if (comboChanged) hotkey.setCombo(settings.combo);
   if (langChanged) sidecar?.setLanguage(settings.language);
   if (modelChanged || backendChanged) void swapModel(settings.model);
+  if (themeChanged) applyTheme(settings.theme);
   return { ...settings, combo: [...settings.combo] };
 }
 

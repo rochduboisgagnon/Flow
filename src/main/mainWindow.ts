@@ -1,5 +1,6 @@
 import { BrowserWindow } from "electron";
 import path from "node:path";
+import { THEME_BG, type ResolvedTheme } from "../shared/theme";
 
 // The main window (plan V1, A1): Flow's own face, now that the Manager no
 // longer hosts the settings. Three rules, all engine-protecting:
@@ -12,6 +13,10 @@ import path from "node:path";
 export class MainWindow {
   private win: BrowserWindow | null = null;
   private quitting = false;
+  // U0: the last resolved theme, kept even while the window is hidden/absent
+  // so a create-after-a-theme-flip show() paints the right color from frame 1
+  // instead of the "dark" the class was built with.
+  private resolved: ResolvedTheme = "dark";
 
   /** Create (if needed) and show the window. Safe to call repeatedly. */
   show(dev: boolean): void {
@@ -28,7 +33,9 @@ export class MainWindow {
       minHeight: 600,
       show: false, // shown on ready-to-show: no white flash
       autoHideMenuBar: true,
-      backgroundColor: "#171512", // dark charte: warm near-black (matches main.css --bg)
+      // What Chromium paints during resize/maximize, before the page itself
+      // has painted a pixel - must track the CURRENTLY resolved theme (U0).
+      backgroundColor: THEME_BG[this.resolved],
       webPreferences: {
         preload: path.join(__dirname, "preload.js"),
         contextIsolation: true,
@@ -53,6 +60,15 @@ export class MainWindow {
   /** before-quit flips this so the close handler lets the window die. */
   setQuitting(v: boolean): void {
     this.quitting = v;
+  }
+
+  /** U0: applies (and remembers) the resolved theme's background paint. Called
+   * on EVERY theme flip, window visible or hidden - not just at show() time -
+   * so a maximize right after a hidden-window theme change never flashes the
+   * previous theme's color before the page repaints. */
+  applyTheme(resolved: ResolvedTheme): void {
+    this.resolved = resolved;
+    if (this.win && !this.win.isDestroyed()) this.win.setBackgroundColor(THEME_BG[resolved]);
   }
 
   isVisible(): boolean {

@@ -1,6 +1,8 @@
 // IPC channel names shared by main and the overlay renderer. One place, typed,
 // so a renamed channel cannot silently desynchronize the two sides.
 
+import type { ThemePref, ResolvedTheme } from "./theme";
+
 // main -> overlay
 export const CAPTURE_START = "capture:start";
 export const CAPTURE_STOP = "capture:stop"; // finish and hand the WAV back
@@ -102,7 +104,12 @@ export interface UiStatePayload {
     forceCpu: boolean;
     historyDir: string;
     insertMode: "paste" | "type";
+    theme: ThemePref;
   };
+  // U0: settings.theme is the PREFERENCE (what the Settings tab shows/edits);
+  // resolvedTheme is what to actually PAINT right now. They diverge exactly
+  // when theme="system" - two different questions, so two different fields.
+  resolvedTheme: ResolvedTheme;
   comboLabel: string;
   models: ModelChoice[];
   canLoopback: boolean;

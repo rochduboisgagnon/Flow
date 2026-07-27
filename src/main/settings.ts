@@ -4,6 +4,7 @@ import path from "node:path";
 import { DEFAULT_COMBO } from "../shared/constants";
 import { DEFAULT_MODEL_FILE } from "./asr/modelStore";
 import { resolveDataDir } from "./migrate";
+import { isThemePref, type ThemePref } from "../shared/theme";
 
 // Flow settings live in the user's own data folder (~/.flow), OUTSIDE the
 // install directory (plan §8): an update or reinstall never touches them.
@@ -22,6 +23,7 @@ export interface FlowSettings {
   forceCpu: boolean; // R1: escape hatch for capricious GPUs (skip the Vulkan backend)
   historyDir: string; // C10: recording history root; "" = default (dataDir()/history)
   insertMode: "paste" | "type"; // how dictation lands in an editable field: clipboard paste (default) or typed keystrokes for paste-hostile apps
+  theme: ThemePref; // U0: "system" | "dark" | "light", resolved in index.ts against nativeTheme
 }
 
 export const SETTINGS_DEFAULTS: FlowSettings = {
@@ -34,6 +36,7 @@ export const SETTINGS_DEFAULTS: FlowSettings = {
   forceCpu: false, // R1: Vulkan first by default; on = CPU only
   historyDir: "", // C10: default location (dataDir()/history)
   insertMode: "paste", // clipboard paste + restore; "type" keystrokes the text (paste-hostile apps, never touches the clipboard)
+  theme: "dark", // U0: dark = today's fixed appearance; the wave that ships the light theme will flip this default to "system"
 };
 
 // A5: the folder is ~/.flow since 1.0.0, but a machine coming from an AGR
@@ -95,6 +98,7 @@ export function sanitizeSettings(raw: unknown): FlowSettings {
     out.summaryModel = r.cleanupModel;
   }
   if (r.insertMode === "type" || r.insertMode === "paste") out.insertMode = r.insertMode;
+  if (isThemePref(r.theme)) out.theme = r.theme;
   return out;
 }
 

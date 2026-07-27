@@ -123,6 +123,15 @@ export class UiBridge {
     });
   }
 
+  /** U0: pushes a snapshot immediately instead of waiting for the 1 Hz timer.
+   * A theme flip (OS event or in-app toggle) must repaint the window on the
+   * SAME tick, not up to a second later - the same visibility guard as the
+   * timer, so this stays a no-op while nobody is looking. */
+  pushNow(): void {
+    if (!this.mainWindow.isVisible()) return;
+    this.mainWindow.contents()?.send(UI_STATE_PUSH, this.deps.getUiState());
+  }
+
   stop(): void {
     clearInterval(this.pushTimer);
     this.pushTimer = undefined;

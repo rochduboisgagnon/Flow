@@ -11,3 +11,10 @@ export const MIN_HOLD_MS = 200;
 // Two quick taps of the shortcut within this window toggle hands-free capture
 // (plan 5.8): dictate without holding the keys; double-tap again to stop.
 export const DOUBLE_TAP_MS = 400;
+
+// THE single source of truth for the titlebar's height. U1 feeds this (in DIP)
+// to BrowserWindow's titleBarOverlay so Windows' native caption buttons are
+// drawn at this height, while main.css reads the SAME number as --titlebar-h
+// to size its own custom titlebar row. If the two ever diverge, the native
+// buttons float above or below the custom row instead of sitting flush in it.
+export const TITLEBAR_H = 40;
