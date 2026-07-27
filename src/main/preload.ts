@@ -11,8 +11,21 @@ import {
   NATIVE_ERROR,
   NATIVE_READY,
   NATIVE_DONE,
+  UI_GET_STATE,
+  UI_SET_SETTINGS,
+  UI_RECORD_SHORTCUT,
+  UI_LIST_MICS,
+  UI_OLLAMA_MODELS,
+  UI_OPEN_PATH,
+  UI_PICK_FOLDER,
+  UI_GET_LOGIN_ITEM,
+  UI_SET_LOGIN_ITEM,
+  UI_CHECK_UPDATES,
+  UI_STATE_PUSH,
   type CaptureStartPayload,
   type NativeStartPayload,
+  type UiStatePayload,
+  type UpdateCheckResult,
 } from "../shared/ipcContracts";
 
 export type CaptureCommand = "start" | "stop" | "cancel";
@@ -56,3 +69,33 @@ const api = {
 
 export type AgrflowApi = typeof api;
 contextBridge.exposeInMainWorld("agrflow", api);
+
+// ---- main window bridge (plan V1, A1/A2) ----
+// Shared preload: the overlay and capture windows see this too, but the
+// main-process handlers refuse any sender that is not the main window.
+const ui = {
+  getState: (): Promise<UiStatePayload> => ipcRenderer.invoke(UI_GET_STATE),
+  setSettings: (patch: Record<string, unknown>): Promise<UiStatePayload> =>
+    ipcRenderer.invoke(UI_SET_SETTINGS, patch),
+  /** Long-poll: resolves when the user finishes the gesture (or the 10 s
+   * recorder timeout). While it runs, EVERY key is swallowed system-wide. */
+  recordShortcut: (): Promise<{ combo: string[] | null; comboLabel?: string }> =>
+    ipcRenderer.invoke(UI_RECORD_SHORTCUT),
+  listMics: (): Promise<Array<{ id: string; label: string }>> =>
+    ipcRenderer.invoke(UI_LIST_MICS),
+  ollamaModels: (): Promise<string[] | null> => ipcRenderer.invoke(UI_OLLAMA_MODELS),
+  openPath: (which: "log" | "data" | "history" | "repo"): Promise<void> =>
+    ipcRenderer.invoke(UI_OPEN_PATH, which),
+  pickFolder: (): Promise<string | null> => ipcRenderer.invoke(UI_PICK_FOLDER),
+  getLoginItem: (): Promise<boolean> => ipcRenderer.invoke(UI_GET_LOGIN_ITEM),
+  setLoginItem: (on: boolean): Promise<boolean> => ipcRenderer.invoke(UI_SET_LOGIN_ITEM, on),
+  checkUpdates: (): Promise<UpdateCheckResult> => ipcRenderer.invoke(UI_CHECK_UPDATES),
+  onState(cb: (s: UiStatePayload) => void): () => void {
+    const handler = (_e: Electron.IpcRendererEvent, s: UiStatePayload) => cb(s);
+    ipcRenderer.on(UI_STATE_PUSH, handler);
+    return () => ipcRenderer.removeListener(UI_STATE_PUSH, handler);
+  },
+};
+
+export type FlowUiApi = typeof ui;
+contextBridge.exposeInMainWorld("flowui", ui);

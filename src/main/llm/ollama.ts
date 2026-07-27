@@ -1,15 +1,10 @@
 import http from "node:http";
-import { buildCleanupPrompt, extractCleanedText } from "../../shared/cleanup";
 
-// Optional Ollama post-processing (plan 5.1 step 4, OFF by default): fixes
-// punctuation and applies SPOKEN formatting commands ("nouvelle ligne",
-// "new paragraph"...). Never required - dictation works with the ASR alone -
-// and never blocking: any failure or timeout returns the original text.
-// Ollama keeps everything local: still zero cloud, zero API key.
+// Long-form Ollama support (plan §6): context expansion and meeting summaries.
+// Ollama keeps everything local: zero cloud, zero API key.
 
 const OLLAMA_BASE = "http://127.0.0.1:11434";
 const TAGS_TIMEOUT_MS = 1_000;
-const GENERATE_TIMEOUT_MS = 12_000;
 
 function request(
   path: string,
@@ -60,33 +55,6 @@ export async function listOllamaModels(): Promise<string[] | null> {
   }
 }
 
-/** One cleanup pass; the ORIGINAL text comes back on any failure. */
-export async function cleanTranscript(model: string, text: string): Promise<string> {
-  try {
-    const body = JSON.stringify({
-      model,
-      prompt: buildCleanupPrompt(text),
-      stream: false,
-      keep_alive: "30m", // stay hot across a dictation session
-      options: { temperature: 0 },
-    });
-    const raw = JSON.parse(await request("/api/generate", "POST", body, GENERATE_TIMEOUT_MS)) as {
-      response?: string;
-    };
-    return extractCleanedText(raw.response ?? "", text);
-  } catch {
-    return text; // the LLM is a bonus, never a gate
-  }
-}
-
-/** Loads the model into memory ahead of the first dictation (cold load can
- * exceed the cleanup timeout, which would silently skip the first pass). */
-export function warmCleanupModel(model: string): void {
-  const body = JSON.stringify({ model, prompt: "", stream: false, keep_alive: "30m" });
-  request("/api/generate", "POST", body, 120_000).catch(() => {
-    /* Ollama absent or model missing: cleanTranscript already degrades */
-  });
-}
 
 /** Long-form summaries (plan §6): bigger context window, generous timeout,
  * null on any failure (the caller then ships the transcript alone). */

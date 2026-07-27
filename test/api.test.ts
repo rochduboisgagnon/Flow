@@ -114,6 +114,12 @@ function longDepsStub() {
       calls.push("start-native:" + (o.captureSystem ? "sys" : "mic") + ":" + (o.keepAudio ? "audio" : "noaudio"));
       return { ok: true };
     },
+    longNotesSplice: (docPath: string, _notes: string) => {
+      calls.push("notes-splice:" + docPath);
+      return { ok: true };
+    },
+    listHistory: () => [],
+    resolveHistoryEntry: () => null,
     canLoopback: () => true,
   };
 }
@@ -121,14 +127,14 @@ function longDepsStub() {
 test("local API: status, readiness, transcribe, discovery file", async () => {
   const info = path.join(os.tmpdir(), `agrflow-api-test-${process.pid}.json`);
   let listening = false;
-  const seen: Array<{ bytes: number; cleanup: boolean }> = [];
+  const seen: Array<{ bytes: number }> = [];
   const api = new LocalApi({
     version: "9.9.9-test",
     isListening: () => listening,
     isRecording: () => false,
     isEngineWarm: () => true,
-    transcribe: (wav, cleanup) => {
-      seen.push({ bytes: wav.length, cleanup });
+    transcribe: (wav) => {
+      seen.push({ bytes: wav.length });
       return Promise.resolve({ text: "bonjour le test", ms: 42 });
     },
     ...longDepsStub(),
@@ -155,11 +161,12 @@ test("local API: status, readiness, transcribe, discovery file", async () => {
     listening = false;
 
     const wav = encodeWav(new Int16Array(16_000));
+    // A stale ?cleanup=1 from an old client is simply ignored (the pass was removed).
     const t = await post(port, "/transcribe?cleanup=1", wav);
     assert.equal(t.code, 200);
     assert.equal(t.body.text, "bonjour le test");
     assert.equal(t.body.ms, 42);
-    assert.deepEqual(seen, [{ bytes: wav.length, cleanup: true }]);
+    assert.deepEqual(seen, [{ bytes: wav.length }]);
 
     // Settings surface (headless engine: the Manager drives these).
     assert.equal((await get(port, "/settings")).body.status, "ready");
@@ -285,6 +292,54 @@ test("transcribe errors surface as 500, never crash the server", async () => {
     assert.match(String(r.body.error), /engine down/);
     // The server is still alive after the failure.
     assert.equal((await get(port, "/status")).code, 200);
+  } finally {
+    api.stop();
+  }
+});
+
+test("A10: start() never overwrites a discovery file advertising a LIVE foreign pid", async () => {
+  // The migration reads that file to find the old engine; a boot that clobbers
+  // it erases the only record of a living process (adversarial review, critical).
+  const info = path.join(os.tmpdir(), `agrflow-api-keep-${process.pid}.json`);
+  // process.ppid: alive for the whole test run, and definitely not process.pid.
+  const foreign = { app: "agr-flow", port: 65_001, pid: process.ppid, version: "0.22.0" };
+  fs.writeFileSync(info, JSON.stringify(foreign));
+  const api = new LocalApi({
+    version: "9.9.9-test",
+    isListening: () => false,
+    isRecording: () => false,
+    isEngineWarm: () => true,
+    transcribe: () => Promise.resolve({ text: "", ms: 0 }),
+    ...longDepsStub(),
+    infoPathOverride: info,
+  });
+  await api.start();
+  try {
+    const kept = JSON.parse(fs.readFileSync(info, "utf8"));
+    assert.equal(kept.pid, process.ppid, "the live foreign engine's record survived our boot");
+    assert.equal(kept.port, 65_001);
+  } finally {
+    api.stop();
+    try { fs.unlinkSync(info); } catch { /* kept on purpose: not ours */ }
+  }
+});
+
+test("A10: start() DOES replace a stale discovery file from a dead pid", async () => {
+  const info = path.join(os.tmpdir(), `agrflow-api-stale-${process.pid}.json`);
+  fs.writeFileSync(info, JSON.stringify({ app: "agr-flow", port: 65_002, pid: 999_999_999, version: "0.22.0" }));
+  const api = new LocalApi({
+    version: "9.9.9-test",
+    isListening: () => false,
+    isRecording: () => false,
+    isEngineWarm: () => true,
+    transcribe: () => Promise.resolve({ text: "", ms: 0 }),
+    ...longDepsStub(),
+    infoPathOverride: info,
+  });
+  await api.start();
+  try {
+    const now = JSON.parse(fs.readFileSync(info, "utf8"));
+    assert.equal(now.pid, process.pid, "a dead process's leftover is ours to replace");
   } finally {
     api.stop();
   }

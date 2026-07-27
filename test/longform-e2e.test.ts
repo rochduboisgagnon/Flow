@@ -58,14 +58,13 @@ test(
     const sc = new WhisperSidecar({ binaryPaths: BINS, modelPath: MODEL });
     const rec = new LongRecorder({
       getSidecar: () => sc,
-      cleanupModel: () => "",
       recentPathOverride: path.join(work, "recent.json"),
       // C10: start() now runs a retention purge; keep it off the real ~/.agr-flow.
       historyRootOverride: path.join(work, "history"),
     });
     try {
       const started = rec.start({ dir: work, title: "Sprint Review" });
-      assert.equal(started.ok, true, started.error);
+      assert.equal(started.ok, true, started.error ?? "expected ok");
       const a = tts("The first topic today is the quarterly budget review.");
       const b = tts("The second topic is the hiring plan for the new team.");
       const gap = new Int16Array(16_000 * 2); // 2 s pause between speakers

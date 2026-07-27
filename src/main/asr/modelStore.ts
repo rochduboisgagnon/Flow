@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import https from "node:https";
+import { defaultLocalAppData, resolveModelsRoot } from "../migrate";
 
-// ASR models live in AGR Flow's OWN data folder (%LOCALAPPDATA%\AGR-Flow\models),
+// ASR models live in Flow's OWN data folder (%LOCALAPPDATA%\Flow\models),
 // outside the install directory: an app update must never re-download 190 MB,
 // and an uninstall of the binaries can leave user data alone.
 //
@@ -27,9 +28,15 @@ export const AVAILABLE_MODELS = [
   { file: "ggml-large-v3-q5_0.bin", label: "Large v3 - most accurate, slowest", size: "1.1 GB" },
 ] as const;
 
+// A5: %LOCALAPPDATA%\Flow since 1.0.0, still %LOCALAPPDATA%\AGR-Flow on a
+// machine whose migration has not landed yet. Resolved ONCE per process, like
+// dataDir(): if this answer changed mid-run, ensureModel() would re-download
+// 1.6 GB of models that are already sitting on the disk under the other name.
+let cachedModelsRoot: string | null = null;
+
 export function modelsDir(): string {
-  const base = process.env.LOCALAPPDATA ?? path.join(process.env.USERPROFILE ?? ".", "AppData", "Local");
-  return path.join(base, "AGR-Flow", "models");
+  if (cachedModelsRoot === null) cachedModelsRoot = resolveModelsRoot(defaultLocalAppData());
+  return path.join(cachedModelsRoot, "models");
 }
 
 export function modelPath(file = DEFAULT_MODEL_FILE): string {

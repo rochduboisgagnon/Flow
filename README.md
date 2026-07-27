@@ -1,4 +1,6 @@
-# AGR Flow
+# Flow
+
+by AGR Labs
 
 **Local, on-device voice transcription for your PC - two modes, one engine.**
 
@@ -20,10 +22,8 @@ Two things make it different from the tools it is inspired by:
   design. (Only the long-recording mode writes files, and only into the folder
   you picked.)
 
-Status: **Windows, shipping** - distributed and auto-updated by
-[AGR Manager](https://github.com/rochduboisgagnon/AGR-Manager) (signed catalog,
-SHA-256 verified artifacts). When installed next to AGR Pilot, its mobile PWA
-gains direct mic dictation and a remote-controlled Long recording page.
+Status: **Windows, shipping** - autonomous app distributed via
+[GitHub Releases](https://github.com/rochduboisgagnon/Flow/releases) with built-in automatic updates.
 
 ## How dictation works
 

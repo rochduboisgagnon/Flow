@@ -14,6 +14,7 @@ export default defineConfig({
       input: {
         overlay: "src/renderer/overlay.html",
         capture: "src/renderer/capture.html", // C2: hidden native-capture window
+        main: "src/renderer/main.html", // V1: the standalone main window
       },
     },
   },

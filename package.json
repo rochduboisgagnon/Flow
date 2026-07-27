@@ -1,12 +1,12 @@
 {
-  "name": "agr-flow",
-  "version": "0.22.0",
+  "name": "flow",
+  "version": "1.0.0",
   "description": "Local, on-device voice dictation for any app. Hold a key, speak, release: the text lands at your cursor. Nothing ever leaves your machine, nothing is ever stored.",
   "license": "MIT",
   "author": "AGR Labs",
   "repository": {
     "type": "git",
-    "url": "https://github.com/rochduboisgagnon/agr-flow.git"
+    "url": "https://github.com/rochduboisgagnon/Flow.git"
   },
   "main": "dist/main/index.js",
   "scripts": {
@@ -16,13 +16,13 @@
     "lint": "eslint .",
     "test": "tsx --test --test-concurrency=1 test/*.test.ts",
     "dist": "npm run build && electron-builder --win",
-    "postinstall": "node scripts/ensure-keyspy.cjs"
+    "postinstall": "node scripts/ensure-keyspy.cjs",
+    "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@nut-tree-fork/nut-js": "^4.2.6",
-    "keyspy": "^1.1.1",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "electron-updater": "^6.8.9",
+    "keyspy": "^1.1.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.30.0",
@@ -35,6 +35,9 @@
     "electron": "^43.1.0",
     "electron-builder": "^26.0.12",
     "eslint": "^9.30.0",
+    "globals": "^15.0.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
     "tsx": "^4.20.0",
     "typescript": "^5.8.0",
     "typescript-eslint": "^8.35.0",

@@ -1,0 +1,123 @@
+name: Release
+
+# A tag is the ONLY road to users. Nothing publishes from a branch push, so an
+# ordinary commit can never become a release - `git tag v1.1.0 && git push
+# --tags` is the deliberate gesture that ships. electron-builder uploads the
+# NSIS installer, the portable zip and latest.yml (the manifest electron-updater
+# reads) to the matching GitHub release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # electron-builder creates the release and uploads the assets
+
+jobs:
+  release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      # Review A10: the tag decides NOTHING by itself - electron-builder ships
+      # whatever package.json says. A tag that disagrees with the source would
+      # publish a mislabeled version, and a re-tag of an already-published
+      # version would corrupt the update feed. Refuse both, before any work.
+      - name: Guard tag matches package.json version
+        run: |
+          PKG="v$(node -p "require('./package.json').version")"
+          if [ "$PKG" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json ($PKG)"; exit 1
+          fi
+      - name: Guard version not already released
+        run: |
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/$GITHUB_REF_NAME")
+          if [ "$CODE" = "200" ]; then
+            echo "A release for $GITHUB_REF_NAME already exists"; exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # keyspy's own postinstall downloads WinKeyServer from GitHub releases;
+      # anonymous API calls from shared runner IPs get rate-limited, which is
+      # exactly how a release without push-to-talk could slip out. Retry the
+      # install, then HARD-verify the binary below - and again inside the zip.
+      - name: Install dependencies (with keyspy retry)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npm ci || (sleep 30 && npm ci) || (sleep 60 && npm ci)
+
+      # The same gates as CI, BEFORE anything is published: a build that breaks
+      # must fail here, not on a user's machine halfway through an auto-update.
+      # (The real-engine tests skip themselves without a speech model on CI.)
+      - run: npm test
+      - run: npm run lint
+      - run: npm run typecheck
+
+      # Two binaries the repository does not carry, and without which the
+      # installer would look fine and do nothing:
+      #  - WinKeyServer.exe (keyspy) = the push-to-talk hook. ensure-keyspy
+      #    downgrades its failure to a warning when CI is set; a RELEASE ships,
+      #    so CI is cleared and a missing hook binary fails the job loudly.
+      #  - resources/bin/whisper-server-*.exe = the speech engine itself
+      #    (gitignored, ~120 MB, fetched from the whisper.cpp fork releases).
+      - name: Ensure push-to-talk binary (hard gate)
+        env:
+          CI: ""
+        run: node scripts/ensure-keyspy.cjs
+      - run: node scripts/fetch-whisper.cjs
+
+      - run: npm run build
+      # Build WITHOUT publishing: the artifact gets inspected first. Publishing
+      # a broken installer and then noticing is the wrong order of operations.
+      - name: Build installers
+        run: npx electron-builder --win --publish never
+
+      # The zip is the ground truth of what is about to ship. An installer with
+      # no hook binary or no speech engine passes every gate above EXCEPT this.
+      - name: Inspect the artifact BEFORE publishing
+        run: |
+          ZIP=$(ls dist-build/Flow-*-win.zip)
+          unzip -l "$ZIP" > ziplist.txt
+          grep -q "WinKeyServer.exe" ziplist.txt || { echo "MISSING WinKeyServer.exe (no push-to-talk)"; exit 1; }
+          grep -q "whisper-server-win32-x64-vulkan.exe" ziplist.txt || { echo "MISSING vulkan whisper-server"; exit 1; }
+          grep -q "whisper-server-win32-x64-cpu.exe" ziplist.txt || { echo "MISSING cpu whisper-server"; exit 1; }
+          test -f dist-build/latest.yml || { echo "MISSING latest.yml (updater feed manifest)"; exit 1; }
+          echo "artifact carries the hook, both speech backends, and the feed manifest"
+
+      # gh release create publishes a NON-DRAFT release in one step (a draft
+      # would be invisible to electron-updater - review A10). Exactly the four
+      # asset kinds electron-builder would have uploaded itself.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Flow $GITHUB_REF_NAME" \
+            --generate-notes \
+            dist-build/Flow*Setup*.exe \
+            dist-build/*.blockmap \
+            dist-build/Flow-*-win.zip \
+            dist-build/latest.yml
+
+      # Review A10: the release existing is not the same as the UPDATER seeing
+      # it. This asserts what a user's machine will actually fetch: the feed
+      # manifest, over the same anonymous "latest" URL electron-updater uses.
+      - name: Verify the update feed is live
+        run: |
+          for i in 1 2 3 4 5; do
+            CODE=$(curl -sL -o /dev/null -w "%{http_code}" \
+              "https://github.com/${{ github.repository }}/releases/latest/download/latest.yml")
+            if [ "$CODE" = "200" ]; then echo "latest.yml is live"; exit 0; fi
+            echo "attempt $i: latest.yml not reachable yet ($CODE)"; sleep 30
+          done
+          echo "latest.yml never became reachable: the release is not visible to the updater"
+          exit 1

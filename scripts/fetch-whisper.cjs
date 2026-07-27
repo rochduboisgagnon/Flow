@@ -25,7 +25,7 @@ if (process.platform !== "win32") {
 function getJson(url) {
   return new Promise((resolve, reject) => {
     https
-      .get(url, { headers: { "User-Agent": "agr-flow", Accept: "application/vnd.github+json" } }, (res) => {
+      .get(url, { headers: { "User-Agent": "flow", Accept: "application/vnd.github+json" } }, (res) => {
         let d = "";
         res.on("data", (c) => (d += c));
         res.on("end", () => {
@@ -41,7 +41,7 @@ function downloadTo(url, dest, redirects = 0) {
   return new Promise((resolve, reject) => {
     if (redirects > 5) return reject(new Error("too many redirects"));
     https
-      .get(url, { headers: { "User-Agent": "agr-flow" } }, (res) => {
+      .get(url, { headers: { "User-Agent": "flow" } }, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           res.resume();
           return resolve(downloadTo(res.headers.location, dest, redirects + 1));

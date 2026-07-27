@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { LongRecorder, historyRoot, listHistory, resolveHistoryEntry } from "../src/main/longform";
+import { dataDir } from "../src/main/settings";
 import type { WhisperSidecar } from "../src/main/asr/sidecar";
 
 // C10: recording history (3-month retention). A staged recording (no
@@ -62,14 +63,13 @@ test("C10 (a): a staged recording without a destination is filed into history at
   } as unknown as WhisperSidecar;
   const rec = new LongRecorder({
     getSidecar: () => mockSidecar,
-    cleanupModel: () => "",
     recentPathOverride: recent,
     stagingRootOverride: staging,
     historyRootOverride: history,
   });
 
   const started = rec.start({ title: "Client Kickoff", keepAudio: true });
-  assert.equal(started.ok, true, started.error);
+  assert.equal(started.ok, true, started.error ?? "expected ok");
   const stagingDoc = started.docPath!;
   assert.ok(stagingDoc.startsWith(staging), "recording starts in staging");
 
@@ -118,13 +118,12 @@ test("C10 (b): save() files a history entry into the chosen folder and cleans th
   );
   const rec = new LongRecorder({
     getSidecar: () => null,
-    cleanupModel: () => "",
     recentPathOverride: recent,
     historyRootOverride: history,
   });
 
   const res = (await rec.save(dest)) as { ok: boolean; error?: string; docPath?: string };
-  assert.equal(res.ok, true, res.error);
+  assert.equal(res.ok, true, res.error ?? "expected ok");
   // 2026-07-21: the capture gets its own subfolder in the chosen dir.
   assert.equal(fs.existsSync(path.join(dest, "meeting-note", "meeting-note.md")), true, "the document is filed into the chosen folder");
   assert.equal(fs.existsSync(recDir), false, "the emptied per-recording folder is gone");
@@ -148,7 +147,6 @@ test("C10 (d): a staged recording keeps its .wav in history even with keepAudio 
   } as unknown as WhisperSidecar;
   const rec = new LongRecorder({
     getSidecar: () => mockSidecar,
-    cleanupModel: () => "",
     recentPathOverride: recent,
     stagingRootOverride: staging,
     historyRootOverride: history,
@@ -158,7 +156,7 @@ test("C10 (d): a staged recording keeps its .wav in history even with keepAudio 
   // still hand out an audio path so the wav gets captured by the caller
   // (device mode: AGR Pilot's server writes the bytes to the path we return).
   const started = rec.start({ title: "No Audio Please", keepAudio: false });
-  assert.equal(started.ok, true, started.error);
+  assert.equal(started.ok, true, started.error ?? "expected ok");
   assert.ok(started.audioPath && started.audioPath.length > 0, "staged recordings get an audio path even with keepAudio off");
 
   // Stand in for the Pilot server writing chunks as they stream (device mode),
@@ -213,7 +211,7 @@ test("C10 (c): purgeHistory removes only date-named folders older than 90 days, 
     symlinked = false; // not every environment allows creating a link; the rest of the test still holds
   }
 
-  const rec = new LongRecorder({ getSidecar: () => null, cleanupModel: () => "", historyRootOverride: history });
+  const rec = new LongRecorder({ getSidecar: () => null, historyRootOverride: history });
   rec.purgeHistory();
 
   assert.equal(fs.existsSync(oldDir), false, "older than 90 days is removed");
@@ -232,7 +230,7 @@ test("C10 F1: a folder WITHOUT the app marker is never purged, whatever dated su
   const oldDir = path.join(work, ymd(new Date(Date.now() - 200 * dayMs)));
   fs.mkdirSync(oldDir);
   fs.writeFileSync(path.join(oldDir, "real-user-file.md"), "someone's real export");
-  const rec = new LongRecorder({ getSidecar: () => null, cleanupModel: () => "", historyRootOverride: work });
+  const rec = new LongRecorder({ getSidecar: () => null, historyRootOverride: work });
   rec.purgeHistory();
   assert.equal(fs.existsSync(path.join(oldDir, "real-user-file.md")), true, "no marker = not our folder = untouched");
   fs.rmSync(work, { recursive: true, force: true });
@@ -242,7 +240,6 @@ test("C10 F1: purgeHistory refuses an immediate child of the user profile (Docum
   const logs: string[] = [];
   const rec = new LongRecorder({
     getSidecar: () => null,
-    cleanupModel: () => "",
     historyRootOverride: path.join(os.homedir(), "Documents"),
     log: (m) => logs.push(m),
   });
@@ -254,7 +251,6 @@ test("C10: purgeHistory refuses to operate on the user's profile root", () => {
   const logs: string[] = [];
   const rec = new LongRecorder({
     getSidecar: () => null,
-    cleanupModel: () => "",
     historyRootOverride: os.homedir(),
     log: (m) => logs.push(m),
   });
@@ -267,7 +263,6 @@ test("C10: purgeHistory refuses to operate on a filesystem/volume root", () => {
   const root = path.parse(process.cwd()).root; // e.g. "C:\\" on Windows, "/" elsewhere
   const rec = new LongRecorder({
     getSidecar: () => null,
-    cleanupModel: () => "",
     historyRootOverride: root,
     log: (m) => logs.push(m),
   });
@@ -281,7 +276,6 @@ test("C10: purgeHistory is a silent no-op when the history folder does not exist
   const logs: string[] = [];
   const rec = new LongRecorder({
     getSidecar: () => null,
-    cleanupModel: () => "",
     historyRootOverride: history,
     log: (m) => logs.push(m),
   });
@@ -291,7 +285,9 @@ test("C10: purgeHistory is a silent no-op when the history folder does not exist
 });
 
 test("C10: historyRoot() defaults under dataDir(), and settings.historyDir overrides it", () => {
-  assert.ok(historyRoot("").endsWith(path.join(".agr-flow", "history")), "default lives under ~/.agr-flow/history");
+  // A5: the folder name is resolved (~/.flow, or ~/.agr-flow until the machine
+  // is migrated), so assert the RELATION to dataDir() rather than a literal name.
+  assert.equal(historyRoot(""), path.join(dataDir(), "history"), "default lives under Flow's data folder");
   assert.equal(historyRoot("D:\\Recordings\\History"), "D:\\Recordings\\History", "a configured historyDir wins");
   assert.equal(historyRoot("  "), historyRoot(""), "a blank/whitespace-only override falls back to the default");
 });

@@ -134,14 +134,13 @@ test("LongRecorder end to end with a mock engine (one document, audio kept)", as
   } as unknown as WhisperSidecar;
   const rec = new LongRecorder({
     getSidecar: () => mockSidecar,
-    cleanupModel: () => "",
     recentPathOverride: recent,
     // C10: start() now runs a retention purge; keep it off the real ~/.agr-flow.
     historyRootOverride: path.join(work, "history"),
   });
 
   const started = rec.start({ dir: work, title: "Test Meeting", keepAudio: true });
-  assert.equal(started.ok, true, started.error);
+  assert.equal(started.ok, true, started.error ?? "expected ok");
   assert.ok(started.audioPath && started.audioPath.endsWith(".wav"), "start must hand out the audio path");
   assert.equal(rec.isBusy, true);
 
@@ -181,7 +180,6 @@ test("LongRecorder end to end with a mock engine (one document, audio kept)", as
 test("LongRecorder refuses a missing folder and double starts", () => {
   const rec = new LongRecorder({
     getSidecar: () => null,
-    cleanupModel: () => "",
     recentPathOverride: path.join(os.tmpdir(), "agrflow-long-none.json"),
     // C10: start() now runs a retention purge; keep it off the real ~/.agr-flow.
     historyRootOverride: path.join(os.tmpdir(), "agrflow-long-none-history"),
@@ -217,14 +215,13 @@ test("v6 c7 + C10: no dir -> stage, finalize files it into history, then save() 
   } as unknown as WhisperSidecar;
   const rec = new LongRecorder({
     getSidecar: () => mockSidecar,
-    cleanupModel: () => "",
     recentPathOverride: recent,
     stagingRootOverride: staging,
     historyRootOverride: history,
   });
   // No dir given: the engine records into staging (v6 c7).
   const started = rec.start({ title: "Client kickoff", keepAudio: true });
-  assert.equal(started.ok, true, started.error);
+  assert.equal(started.ok, true, started.error ?? "expected ok");
   assert.ok(started.docPath!.startsWith(staging), "the document must live under the staging root while recording");
   rec.onChunk(speechy(5000));
   rec.onChunk(speechy(5000));
@@ -247,7 +244,7 @@ test("v6 c7 + C10: no dir -> stage, finalize files it into history, then save() 
   assert.equal(fs.existsSync(list[0].audioPath), true, "the audio moved into history too");
   // File it into the user's folder from history.
   const res = (await rec.save(dest)) as { ok: boolean; error?: string; docPath?: string; audioPath?: string };
-  assert.equal(res.ok, true, res.error);
+  assert.equal(res.ok, true, res.error ?? "expected ok");
   assert.equal(fs.existsSync(list[0].docPath), false, "the document moved out of history");
   // 2026-07-21: each capture gets its own subfolder <name>-<date> in the chosen dir.
   const sub = path.dirname(res.docPath!);
@@ -280,12 +277,11 @@ test("v6 c7: save() never reuses an existing folder in the destination (uniqueDi
   );
   const rec = new LongRecorder({
     getSidecar: () => null,
-    cleanupModel: () => "",
     recentPathOverride: recent,
     stagingRootOverride: staging,
   });
   const res = (await rec.save(dest)) as { ok: boolean; error?: string; docPath?: string };
-  assert.equal(res.ok, true, res.error);
+  assert.equal(res.ok, true, res.error ?? "expected ok");
   assert.equal(fs.readFileSync(path.join(dest, "note", "keep.md"), "utf8"), "KEEP", "the existing folder is untouched");
   assert.equal(fs.readFileSync(path.join(dest, "note-1", "note.md"), "utf8"), "NEW", "the capture got its own suffixed folder");
   fs.rmSync(work, { recursive: true, force: true });
@@ -294,7 +290,7 @@ test("v6 c7: save() never reuses an existing folder in the destination (uniqueDi
 test("v6 c7: save() refuses a missing destination and an empty recent list", async () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-save2-"));
   const recent = path.join(work, "recent.json");
-  const rec = new LongRecorder({ getSidecar: () => null, cleanupModel: () => "", recentPathOverride: recent });
+  const rec = new LongRecorder({ getSidecar: () => null, recentPathOverride: recent });
   assert.equal(((await rec.save(path.join(work, "nope"))) as { ok: boolean }).ok, false, "a missing dir is refused");
   fs.writeFileSync(recent, "[]");
   assert.equal(((await rec.save(work)) as { ok: boolean }).ok, false, "no finished recording is refused");
@@ -315,9 +311,9 @@ test("v6 c7: save() tolerates a phantom .wav (keepAudio on but the file was neve
     recent,
     JSON.stringify([{ title: "T", startedIso: "", dir: staging, docPath: doc, audioPath: phantomWav, durationMs: 0, staged: true }]),
   );
-  const rec = new LongRecorder({ getSidecar: () => null, cleanupModel: () => "", recentPathOverride: recent, stagingRootOverride: staging });
+  const rec = new LongRecorder({ getSidecar: () => null, recentPathOverride: recent, stagingRootOverride: staging });
   const res = (await rec.save(dest)) as { ok: boolean; error?: string; docPath?: string; audioPath?: string };
-  assert.equal(res.ok, true, res.error); // the missing .wav must not fail the save
+  assert.equal(res.ok, true, res.error ?? "expected ok"); // the missing .wav must not fail the save
   assert.equal(res.audioPath, "", "a phantom .wav is dropped, not treated as saved");
   assert.equal(fs.existsSync(path.join(dest, "note", "note.md")), true, "the document is filed in its capture folder");
   assert.equal(fs.existsSync(path.join(dest, "note", "note.wav")), false, "no bogus .wav is created in the destination");
@@ -334,7 +330,7 @@ test("v6 c7: save() with a vanished document refuses and leaves recent.json unto
   const doc = path.join(staging, "gone.md"); // referenced but not on disk
   const entry = { title: "T", startedIso: "", dir: staging, docPath: doc, audioPath: "", durationMs: 0, staged: true };
   fs.writeFileSync(recent, JSON.stringify([entry]));
-  const rec = new LongRecorder({ getSidecar: () => null, cleanupModel: () => "", recentPathOverride: recent, stagingRootOverride: staging });
+  const rec = new LongRecorder({ getSidecar: () => null, recentPathOverride: recent, stagingRootOverride: staging });
   const res = (await rec.save(dest)) as { ok: boolean };
   assert.equal(res.ok, false, "a vanished source is refused, not half-committed");
   assert.deepEqual(JSON.parse(fs.readFileSync(recent, "utf8")), [entry], "recent.json is left exactly as it was");
@@ -356,7 +352,7 @@ test("2026-07-21: a failed save() rolls the capture folder back out of the desti
   fs.mkdirSync(badWav);
   const entry = { title: "T", startedIso: "", dir: staging, docPath: doc, audioPath: badWav, durationMs: 0, staged: true };
   fs.writeFileSync(recent, JSON.stringify([entry]));
-  const rec = new LongRecorder({ getSidecar: () => null, cleanupModel: () => "", recentPathOverride: recent, stagingRootOverride: staging });
+  const rec = new LongRecorder({ getSidecar: () => null, recentPathOverride: recent, stagingRootOverride: staging });
   const res = (await rec.save(dest)) as { ok: boolean };
   assert.equal(res.ok, false, "the failed copy is reported");
   assert.deepEqual(fs.readdirSync(dest), [], "no capture folder (or partial copy) is left in the destination");
@@ -410,9 +406,9 @@ test("notesSplice: writes the notes, resolves the target from recent.json", asyn
     recent,
     JSON.stringify([{ title: "Kickoff", startedIso: "2026-07-21T09:00:00.000Z", dir: work, docPath: doc, audioPath: "", durationMs: 0 }]),
   );
-  const rec = new LongRecorder({ getSidecar: () => null, cleanupModel: () => "", recentPathOverride: recent });
+  const rec = new LongRecorder({ getSidecar: () => null, recentPathOverride: recent });
   const res = rec.notesSplice(doc, "## Resume\n\nCourt.");
-  assert.equal(res.ok, true, res.error);
+  assert.equal(res.ok, true, res.error ?? "expected ok");
   const out = fs.readFileSync(doc, "utf8");
   assert.ok(out.includes("## Notes\n\n## Resume\n\nCourt.\n\n## Transcript\n\n[00:00:00] Bonjour."));
   // Empty notes and empty docPath are refused without touching the file.
@@ -430,7 +426,7 @@ test("notesSplice: a stale docPath (save moved the capture) answers movedTo inst
     recent,
     JSON.stringify([{ title: "Kickoff", startedIso: "2026-07-21T09:00:00.000Z", dir: work, docPath: newDoc, audioPath: "", durationMs: 0 }]),
   );
-  const rec = new LongRecorder({ getSidecar: () => null, cleanupModel: () => "", recentPathOverride: recent });
+  const rec = new LongRecorder({ getSidecar: () => null, recentPathOverride: recent });
   const res = rec.notesSplice(path.join(work, "old-location.md"), "notes");
   assert.equal(res.ok, false);
   assert.equal(res.movedTo, newDoc, "the caller is pointed at the new location");

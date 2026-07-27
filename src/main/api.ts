@@ -21,13 +21,18 @@ const MAX_AUDIO_BYTES = 64 * 1024 * 1024; // ~35 min of 16 kHz WAV, ample for di
 
 export interface ApiDeps {
   version: string;
+  /** Engine log (flowLog); optional so pure tests need not provide one. */
+  log?(msg: string): void;
+  /** Update-readiness beyond listening/recording (model download in flight...).
+   * Optional: absent means the two flags above are the whole story. */
+  isUpdateBusy?(): boolean;
   isListening(): boolean;
   isRecording(): boolean; // long-form capture (phase 4)
   isEngineWarm(): boolean;
   canLoopback(): boolean; // C2: engine can capture the PC's own sound natively (Windows)
-  /** Runs the production pipeline: VAD gate -> ASR -> hallucination gate ->
-   * optional cleanup. Empty text = gated silence. */
-  transcribe(wav: Uint8Array, cleanup: boolean): Promise<{ text: string; ms: number }>;
+  /** Runs the production pipeline: VAD gate -> ASR -> hallucination gate.
+   * Empty text = gated silence. */
+  transcribe(wav: Uint8Array): Promise<{ text: string; ms: number }>;
   // Long-form mode (plan §6/§7.2b), driven remotely by AGR Pilot's PWA page.
   // The AUDIO comes from the recording DEVICE (phone or PC browser) through
   // /long/chunk (plan v2 chantier C) - AGR Flow never opens a mic for it.
@@ -69,6 +74,16 @@ export function apiInfoPath(): string {
   return path.join(dataDir(), "api.json");
 }
 
+/** process.kill(pid, 0) probe; EPERM = exists but not ours = alive. */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 /** Small JSON body reader (loopback control endpoints only). */
 function readJson(req: http.IncomingMessage): Promise<Record<string, unknown> | null> {
   return new Promise((resolve, reject) => {
@@ -100,6 +115,11 @@ export class LocalApi {
     this.deps = deps;
   }
 
+  /** The bound loopback port (0 until start() succeeds). Shown in Diagnostics. */
+  boundPort(): number {
+    return this.port;
+  }
+
   async start(): Promise<void> {
     for (const port of PORTS) {
       try {
@@ -113,6 +133,23 @@ export class LocalApi {
     if (!this.port) throw new Error("no free port for the AGR Flow API");
     const info = this.deps.infoPathOverride ?? apiInfoPath();
     fs.mkdirSync(path.dirname(info), { recursive: true });
+    // Review A10 (critical): while the 1.0.0 migration is deferred, dataDir()
+    // still points at the OLD engine's folder - and its api.json is the ONLY
+    // record the migration has of that live process. Overwriting it here would
+    // erase the very evidence the next boot needs (and then trust its own file
+    // as proof that "nothing runs"). A discovery file advertising a LIVE pid
+    // that is not us is therefore left alone: sibling apps keep discovering the
+    // old engine, and we run this session without a discovery file - a lesser
+    // harm than a folder rename under a running app.
+    try {
+      const raw = JSON.parse(fs.readFileSync(info, "utf8")) as { pid?: number };
+      if (typeof raw.pid === "number" && raw.pid !== process.pid && pidAlive(raw.pid)) {
+        this.deps.log?.(`[api] not overwriting ${info}: it advertises live pid ${raw.pid} (the previous engine)`);
+        return;
+      }
+    } catch {
+      /* absent or unreadable: ours to write */
+    }
     fs.writeFileSync(
       info,
       JSON.stringify({ app: "agr-flow", port: this.port, pid: process.pid, version: this.deps.version }),
@@ -160,9 +197,11 @@ export class LocalApi {
         });
       }
       if (req.method === "GET" && url.pathname === "/update-readiness") {
-        // The Manager's quiet window (plan 8): never swap binaries while a
-        // dictation or a long recording is in flight.
-        const ready = !this.deps.isListening() && !this.deps.isRecording();
+        // The quiet window: never swap binaries while a dictation, a long
+        // recording OR a model download is in flight (review A10: killing a
+        // 1 GB ensureModel mid-transfer wastes the whole download).
+        const ready =
+          !this.deps.isListening() && !this.deps.isRecording() && !(this.deps.isUpdateBusy?.() ?? false);
         return json(200, { ready });
       }
       // ---- settings surface for the Manager (headless engine, chantier A) ----
@@ -314,8 +353,7 @@ export class LocalApi {
           req.on("error", reject);
         });
         const wav = new Uint8Array(Buffer.concat(chunks));
-        const cleanup = url.searchParams.get("cleanup") === "1";
-        const out = await this.deps.transcribe(wav, cleanup);
+        const out = await this.deps.transcribe(wav);
         return json(200, out);
       }
       json(404, { error: "not found" });

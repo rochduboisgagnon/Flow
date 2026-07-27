@@ -87,10 +87,8 @@ export interface LongStateSnapshot {
 
 export interface LongDeps {
   getSidecar(): WhisperSidecar | null;
-  cleanupModel(): string; // settings.cleanupModel ("" = none configured)
-  /** settings.summaryModel: the Ollama model used for meeting summaries. "" (or
-   * absent) reuses cleanupModel, then the first installed model - so a distinct,
-   * bigger summary model can be set without disturbing the dictation cleanup. */
+  /** settings.summaryModel: the Ollama model used for meeting summaries.
+   * "" (or absent) falls back to the first installed model. */
   summaryModel?(): string;
   /** Installed Ollama models, used to auto-pick a summary model when the user
    * did not configure one. Injectable so tests don't hit a real Ollama. */
@@ -1157,7 +1155,6 @@ export class LongRecorder {
       let summary = "";
       const model =
         (this.deps.summaryModel?.() || "") ||
-        this.deps.cleanupModel() ||
         (this.deps.ollamaModels ? (await this.deps.ollamaModels())?.[0] : undefined) ||
         "";
       if (model) {

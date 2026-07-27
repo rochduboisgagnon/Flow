@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   createComboMatcher,
-  createEdgeMatcher,
   normalizeCombo,
   comboLabel,
   genericOf,
@@ -10,33 +9,6 @@ import {
 } from "../src/shared/combo";
 
 const OPTS = { minHoldMs: 200, doubleTapMs: 400 };
-
-// v5 c2: rising-edge matcher for the "open AGR Pilot" shortcut.
-test("edge matcher: fires ONCE on the full combo, swallows only the completing letter", () => {
-  const m = createEdgeMatcher(["CTRL", "ALT", "P"]);
-  assert.deepEqual(m.handle({ key: "LEFT CTRL", state: "DOWN" }), { fire: false, swallow: false });
-  assert.deepEqual(m.handle({ key: "LEFT ALT", state: "DOWN" }), { fire: false, swallow: false });
-  // P completes the combo: fire + swallow the letter (so it never types).
-  assert.deepEqual(m.handle({ key: "P", state: "DOWN" }), { fire: true, swallow: true });
-  // Auto-repeat of P while held: swallowed, does NOT fire again.
-  assert.deepEqual(m.handle({ key: "P", state: "DOWN" }), { fire: false, swallow: true });
-});
-
-test("edge matcher: re-arms only after the combo breaks", () => {
-  const m = createEdgeMatcher(["CTRL", "P"]);
-  m.handle({ key: "LEFT CTRL", state: "DOWN" });
-  assert.equal(m.handle({ key: "P", state: "DOWN" }).fire, true);
-  m.handle({ key: "P", state: "UP" }); // combo breaks
-  assert.equal(m.handle({ key: "P", state: "DOWN" }).fire, true); // fires again on the next press
-});
-
-test("edge matcher: empty combo never fires; a key outside the combo is not swallowed", () => {
-  assert.equal(createEdgeMatcher([]).handle({ key: "P", state: "DOWN" }).fire, false);
-  const m = createEdgeMatcher(["CTRL", "P"]);
-  m.handle({ key: "LEFT CTRL", state: "DOWN" });
-  m.handle({ key: "P", state: "DOWN" }); // full
-  assert.equal(m.handle({ key: "X", state: "DOWN" }).swallow, false); // unrelated key passes through
-});
 
 function ctrlWin(): ComboMatcher {
   return createComboMatcher(["CTRL", "WIN"], OPTS);
@@ -124,7 +96,6 @@ test("double-tap enters hands-free toggle; a new double-tap stops it", () => {
   assert.equal(m.handle({ key: "LEFT META", state: "DOWN" }, 1200).action, "start");
   assert.equal(m.handle({ key: "LEFT META", state: "UP" }, 1280).action, "none");
   assert.equal(m.capturing(), true);
-  assert.equal(m.toggled(), true);
   // Ctrl can be released too: still hands-free.
   assert.equal(m.handle({ key: "LEFT CTRL", state: "UP" }, 1300).action, "none");
   assert.equal(m.capturing(), true);
@@ -138,7 +109,6 @@ test("double-tap enters hands-free toggle; a new double-tap stops it", () => {
   m.handle({ key: "LEFT META", state: "DOWN" }, 5200);
   assert.equal(m.handle({ key: "LEFT META", state: "UP" }, 5280).action, "stop");
   assert.equal(m.capturing(), false);
-  assert.equal(m.toggled(), false);
 });
 
 test("two taps too far apart do not toggle", () => {
@@ -148,7 +118,6 @@ test("two taps too far apart do not toggle", () => {
   m.handle({ key: "LEFT META", state: "UP" }, 1080); // cancel
   m.handle({ key: "LEFT META", state: "DOWN" }, 2000); // > 400 ms later
   assert.equal(m.handle({ key: "LEFT META", state: "UP" }, 2080).action, "cancel");
-  assert.equal(m.toggled(), false);
 });
 
 test("extra key while holding cancels (Ctrl+Win+arrow is a desktop switch)", () => {

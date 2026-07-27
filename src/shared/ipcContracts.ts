@@ -40,8 +40,8 @@ export interface CaptureDonePayload {
 }
 
 
-// Model download/swap progress, surfaced through the local API (the Manager
-// polls GET /settings; AGR Flow has no settings window of its own since v2).
+// Model download/swap progress, surfaced through the local API and the main
+// window (Flow owns its settings UI since the standalone turn, plan V1).
 export interface ModelStatePayload {
   status: "idle" | "downloading" | "ready" | "error";
   pct?: number;
@@ -52,4 +52,67 @@ export interface ModelChoice {
   file: string;
   label: string;
   size: string;
+}
+
+// ---- main window bridge (plan V1, A1/A2) ----
+// The main window drives the engine over invoke/handle channels. The handlers
+// call the SAME functions the local HTTP API uses (applySettings & friends):
+// one source of truth, never a second writer of settings.json (A2).
+
+export const UI_GET_STATE = "ui:get-state";
+export const UI_SET_SETTINGS = "ui:set-settings";
+export const UI_RECORD_SHORTCUT = "ui:record-shortcut";
+export const UI_LIST_MICS = "ui:list-mics";
+export const UI_OLLAMA_MODELS = "ui:ollama-models";
+export const UI_OPEN_PATH = "ui:open-path"; // "log" | "data" | "history" | "repo"
+export const UI_PICK_FOLDER = "ui:pick-folder";
+export const UI_GET_LOGIN_ITEM = "ui:get-login-item";
+export const UI_SET_LOGIN_ITEM = "ui:set-login-item";
+export const UI_CHECK_UPDATES = "ui:check-updates";
+export const UI_STATE_PUSH = "ui:state"; // main -> window, periodic while visible
+
+/** One recent long-form capture, as the window shows it (a subset of the
+ * engine's RecentEntry: the window never needs the staging internals). */
+export interface UiRecentCapture {
+  title: string;
+  startedIso: string;
+  durationMs: number;
+}
+
+/** Everything the main window renders, pushed as one coherent snapshot.
+ * Anything that can be slow (model download, engine warm-up) carries its own
+ * progress/error state rather than pretending to be instant (plan A1). */
+export interface UiStatePayload {
+  version: string;
+  status: string; // the engine status line (same text the HTTP API exposes)
+  engineWarm: boolean;
+  listening: boolean;
+  recording: boolean;
+  backend: string; // active whisper-server binary basename, "" while selecting
+  modelState: ModelStatePayload;
+  /** Typed overlay states (audit: the cards must not sniff the status STRING). */
+  paused: boolean; // tray pause in effect
+  hookOk: boolean; // the low-level keyboard hook is armed
+  settings: {
+    language: string;
+    model: string;
+    micDeviceId: string;
+    sounds: boolean;
+    summaryModel: string;
+    forceCpu: boolean;
+    historyDir: string;
+    insertMode: "paste" | "type";
+  };
+  comboLabel: string;
+  models: ModelChoice[];
+  canLoopback: boolean;
+  apiPort: number;
+  dataDir: string;
+  logPath: string;
+  recent: UiRecentCapture[];
+}
+
+export interface UpdateCheckResult {
+  ok: boolean;
+  message: string; // human-readable outcome ("up to date", "1.1.0 available", error text)
 }

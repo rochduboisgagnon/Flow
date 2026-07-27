@@ -52,11 +52,16 @@ export class HotkeyAdapter {
     await this.listener.addListener((e: IGlobalKeyEvent) => {
       // The low-level hook gives the OS ~1 s per event before it silently
       // removes us: this handler must stay trivial (pure state machine, no IO).
-      if (this.suspended || !e.name) return false;
+      if (!e.name) return false;
       // keyspy also reports mouse buttons: clicking while dictating must not
       // cancel the capture, and a click is never part of a shortcut.
       if (e.name.startsWith("MOUSE")) return false;
+      // The recorder OUTRANKS the pause (audit): recording a new shortcut from
+      // Settings must work - and keep swallowing every key - even while the
+      // tray pause has the PTT suspended. The old order made the recorder go
+      // deaf during a pause AND let the keys leak to the OS (Start menu).
       if (this.recorder) return this.handleRecording(e);
+      if (this.suspended) return false;
       const { action, swallow } = this.matcher.handle(
         { key: e.name, state: e.state },
         Date.now(),
@@ -126,7 +131,8 @@ export class HotkeyAdapter {
     if (wasCapturing) this.cbs.onCancel();
   }
 
-  /** While suspended (shortcut recorder open), keys pass through untouched. */
+  /** User-facing pause (the tray's "Pause dictation"): PTT keys pass through
+   * untouched. The shortcut RECORDER keeps working while suspended. */
   suspend(v: boolean) {
     if (v && this.matcher.capturing()) this.cbs.onCancel();
     this.suspended = v;
