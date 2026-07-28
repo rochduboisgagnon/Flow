@@ -170,13 +170,21 @@ test("U4-1: a recovered recording is never filed into a date the very next purge
   );
   assert.equal(fs.existsSync(orphan.dir), false, "and it really did leave staging");
 
-  // A recording of the day keeps its own date, which is the normal case.
-  orphanStagingFolder(staging, { title: "Today", startedMs: Date.now() - 60 * 60_000, base: "today-meeting" });
+  // A rescued recording is filed under ITS OWN date, not today's.
+  //
+  // U5 review (blocking): this used to build the expected date from
+  // Date.now() at assertion time while the fixture started an hour EARLIER.
+  // Between 00:00 and 01:00 those are two different days, so the test failed
+  // for one hour out of every twenty-four - and CI runs in UTC, which is
+  // exactly where it caught us: the v1.5.0 release was refused by a clock,
+  // not by a defect. Both sides now derive from the SAME instant.
+  const startedMs = Date.now() - 60 * 60_000;
+  orphanStagingFolder(staging, { title: "Today", startedMs, base: "today-meeting" });
   rec.rescueOrphanedStaging();
   const today = listHistory(history).find((i) => i.title.startsWith("today-meeting"));
   const pad = (n: number) => String(n).padStart(2, "0");
-  const now = new Date();
-  assert.equal(today!.date, `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`);
+  const started = new Date(startedMs);
+  assert.equal(today!.date, `${started.getFullYear()}-${pad(started.getMonth() + 1)}-${pad(started.getDate())}`);
 
   fs.rmSync(work, { recursive: true, force: true });
 });
