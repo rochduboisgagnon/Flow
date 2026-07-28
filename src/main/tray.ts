@@ -60,6 +60,16 @@ export class FlowTray {
     return this.pausedUntil;
   }
 
+  /** B4: repaint the tooltip NOW, because something the derived status line
+   * depends on just changed. The 30 s timer below is calibrated for a countdown
+   * that moves once a minute; a keyboard-hook outage that is detected, restarted
+   * and healed inside two seconds would never appear on it at all. And the
+   * tooltip is the only surface left once every window is closed - exactly the
+   * state in which the user assumes dictation still works. */
+  refreshNow(): void {
+    this.rebuild();
+  }
+
   private get paused(): boolean {
     return this.pausedUntil !== null;
   }

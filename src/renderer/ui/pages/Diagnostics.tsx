@@ -4,6 +4,7 @@ import {
   computeIntervals,
   evaluateBudgets,
   summarize,
+  type HotpathEventKind,
   type HotpathSnapshot,
   type HotpathSummary,
   type HotpathTrace,
@@ -20,6 +21,23 @@ import {
 // this page. A snapshot is a self-consistent still frame (see hotpath.ts): all
 // its timestamps share ONE performance.now() clock, so "time ago" below is
 // computed against the snapshot's own `generatedAt`, never against Date.now().
+// B4: the five hook states in the words a bug report needs. "abandoned" says
+// what to DO about it, because it is the only one that will not fix itself.
+function hookStateLabel(s: UiStatePayload): string {
+  switch (s.hook.state) {
+    case "armed":
+      return "armed";
+    case "restarting":
+      return "restarting after a failure";
+    case "abandoned":
+      return "unavailable - Flow stopped restarting it; restart Flow";
+    case "starting":
+      return "starting";
+    default:
+      return "stopped";
+  }
+}
+
 export function Diagnostics({ s }: { s: UiStatePayload }) {
   return (
     <>
@@ -30,6 +48,28 @@ export function Diagnostics({ s }: { s: UiStatePayload }) {
           <tbody>
             <tr><td>App version</td><td className="num">{s.version}</td></tr>
             <tr><td>Engine status</td><td>{s.status}</td></tr>
+            {/* B4: the keyboard hook's own health, counters included. Until
+                this row existed, a key server that died left NOTHING behind in
+                the app - the shortcut simply stopped working and every screen
+                went on saying "ready". */}
+            <tr><td>Keyboard hook</td><td>{hookStateLabel(s)}</td></tr>
+            <tr>
+              <td>Hook interruptions</td>
+              <td className="mono">
+                {s.hook.deaths === 0
+                  ? "none this session"
+                  : `${s.hook.deaths} death(s), ${s.hook.restarts} recovered`}
+              </td>
+            </tr>
+            {s.hook.lastIncidentAt !== null ? (
+              <tr>
+                <td>Last hook incident</td>
+                <td>
+                  {new Date(s.hook.lastIncidentAt).toLocaleString()}
+                  {s.hook.lastIncidentDetail ? ` - ${s.hook.lastIncidentDetail}` : ""}
+                </td>
+              </tr>
+            ) : null}
             <tr><td>Speech backend</td><td>{s.backend || "(selecting)"}</td></tr>
             <tr><td>Model file</td><td className="mono">{s.settings.model}</td></tr>
             <tr>
@@ -78,6 +118,17 @@ function agoLabel(t: number | null, nowT: number): string {
 
 function traceLastT(tr: HotpathTrace): number | null {
   return tr.marks.length ? tr.marks[tr.marks.length - 1].t : null;
+}
+
+function hookEventLabel(kind: HotpathEventKind): string {
+  switch (kind) {
+    case "hook-died":
+      return "the key server died - dictation was off from here";
+    case "hook-restarted":
+      return "the keyboard hook came back";
+    default:
+      return "Flow stopped restarting the keyboard hook";
+  }
 }
 
 function outcomeLabel(tr: HotpathTrace): string {
@@ -204,6 +255,25 @@ function HotpathPanel() {
           </tbody>
         </table>
       </div>
+
+      {/* B4: press-less hot-path events. They belong beside the presses and not
+          inside them: a hook death is precisely the reason a press is MISSING,
+          so a table of presses alone would show an unexplained quiet stretch. */}
+      {snap.events.length > 0 ? (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <span className="lbl">Keyboard hook incidents</span>
+          <table className="diag" style={{ maxWidth: 420, marginTop: 8 }}>
+            <tbody>
+              {[...snap.events].reverse().map((e, i) => (
+                <tr key={`${e.kind}-${e.t}-${i}`}>
+                  <td className="mono">{agoLabel(e.t, snap.generatedAt)}</td>
+                  <td>{hookEventLabel(e.kind)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
 
       <div className="card">
         <span className="lbl">Recent presses</span>

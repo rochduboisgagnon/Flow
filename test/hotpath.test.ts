@@ -12,6 +12,7 @@ import {
   HOTPATH_BUDGETS_MS,
   type HotpathTrace,
 } from "../src/shared/hotpath";
+import { SILENT_FAILURE, silentFailures } from "../src/shared/silentFailures";
 
 // ---- Ring ----
 
@@ -204,6 +205,27 @@ test("mutating a snapshot never corrupts the log's internal state", () => {
   const snap2 = log.snapshot();
   assert.equal(snap2.completed[0].marks.length, 1);
   assert.equal(snap2.completed[0].reason, "short-tap");
+});
+
+// ---- B6: silent-failure counters ride the SAME snapshot/channel ----
+
+test("snapshot() carries silentFailureCounts with every closed-vocabulary name present", () => {
+  silentFailures.clear();
+  const log = new HotpathLog();
+  const snap = log.snapshot();
+  for (const name of Object.values(SILENT_FAILURE)) {
+    assert.equal(snap.silentFailureCounts[name], 0, `${name} must be present, even at 0`);
+  }
+});
+
+test("snapshot() reflects increments made through the shared silentFailures singleton", () => {
+  silentFailures.clear();
+  silentFailures.increment(SILENT_FAILURE.overlaySendFailed);
+  silentFailures.increment(SILENT_FAILURE.overlaySendFailed);
+  const log = new HotpathLog();
+  const snap = log.snapshot();
+  assert.equal(snap.silentFailureCounts[SILENT_FAILURE.overlaySendFailed], 2);
+  silentFailures.clear();
 });
 
 // ---- zero-retention shape check ----

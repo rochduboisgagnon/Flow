@@ -5,7 +5,10 @@ import { HotkeyAdapter } from "./hotkey";
 import { OverlayWindow } from "./overlay";
 import { NativeCapture } from "./capture";
 import { WhisperSidecar } from "./asr/sidecar";
-import { ensureModel, DEFAULT_MODEL_FILE, AVAILABLE_MODELS } from "./asr/modelStore";
+// B5: `modelFilePath` is modelStore's modelPath() under another name - index.ts
+// already has a local `modelPath` (newSidecar's parameter), and a self-check
+// that silently read the wrong one would report on a file nobody uses.
+import { ensureModel, DEFAULT_MODEL_FILE, AVAILABLE_MODELS, modelPath as modelFilePath } from "./asr/modelStore";
 import { FocusProbe } from "./focus/probe";
 import { insertViaPaste, insertTyped, leaveOnClipboard, flushPendingRestore } from "./insert";
 import { decideRoute } from "../shared/route";
@@ -29,6 +32,16 @@ import { UiBridge, LOGIN_ARGS } from "./uiBridge";
 import { FlowTray } from "./tray";
 import { FlowUpdater } from "./updater";
 import { hotpath, HOTPATH_ABANDON_REASON } from "../shared/hotpath";
+import { hookIsArmed, hookStatusLine } from "../shared/hookWatchdog";
+import { silentFailures, SILENT_FAILURE } from "../shared/silentFailures";
+import { LogQueue, LOG_QUEUE_FAILURE } from "../shared/logQueue";
+import { createFileLogSink } from "./logSink";
+import {
+  evaluateSelfCheck,
+  formatSelfCheckForLog,
+  type SelfCheckFacts,
+  type SelfCheckReport,
+} from "../shared/selfCheck";
 import {
   CAPTURE_DONE,
   CAPTURE_ERROR,
@@ -401,8 +414,17 @@ if (!app.requestSingleInstanceLock()) {
  * a speech-engine failure or a model download outranks both and can never be
  * masked (review A10: the first tray design WROTE its pause into statusText
  * and erased errors raised mid-pause; deriving instead makes that impossible).
- * Priority: engine error/progress > tray pause > update-ready notice. */
+ * Priority: keyboard hook outage > engine error/progress > tray pause >
+ * update-ready notice.
+ *
+ * B4: the hook comes FIRST, and it is DERIVED (hookStatusLine, pure) rather
+ * than written into statusText the way startPtt used to - the same lesson as
+ * the tray's pause. A dead keyboard hook is the most total failure this app
+ * has: nothing the user can press reaches Flow at all, so a warm speech engine
+ * reporting "ready" underneath it would be true and completely useless. */
 function engineStatus(): string {
+  const hookLine = hookStatusLine(hotkey.health());
+  if (hookLine) return hookLine;
   if (statusText !== "ready") return statusText;
   const pausedUntil = tray?.pausedUntilMs() ?? null;
   if (pausedUntil !== null) {
@@ -417,6 +439,10 @@ function engineStatus(): string {
 
 /** One coherent snapshot of everything the main window renders. */
 function getUiState(): UiStatePayload {
+  // B4: read ONCE. hookOk and the incident record must describe the same
+  // instant - a card saying "armed" next to "restarting" would be the kind of
+  // self-contradiction that makes a diagnostic panel worthless.
+  const hook = hotkey.health();
   return {
     version: app.getVersion(),
     status: engineStatus(),
@@ -426,7 +452,8 @@ function getUiState(): UiStatePayload {
     backend: sidecar ? path.basename(sidecar.activeBackend() || "") : "",
     modelState: lastModelState,
     paused: tray !== null && tray.pausedUntilMs() !== null,
-    hookOk,
+    hookOk: hookIsArmed(hook),
+    hook,
     settings: {
       language: settings.language,
       model: settings.model,
@@ -502,7 +529,12 @@ function loadProbeWav(): Uint8Array | undefined {
   try {
     const p = resourcePath("probe.wav");
     return fs.existsSync(p) ? new Uint8Array(fs.readFileSync(p)) : undefined;
-  } catch {
+  } catch (err) {
+    // B6: was silent - the sidecar just picked a backend without the real-decode
+    // check (R1). Not on the keyboard hook's call stack (only runs at sidecar
+    // construction: boot / model swap), so a synchronous log line costs nothing here.
+    silentFailures.increment(SILENT_FAILURE.probeWavLoadFailed);
+    flowLog(`[asr] probe.wav could not be read: ${String(err)}`);
     return undefined;
   }
 }
@@ -510,19 +542,36 @@ function loadProbeWav(): Uint8Array | undefined {
 // R1: engine diagnostics must be visible in a BUILT app (no dev console). Append to
 // a small rotating log in AGR Flow's data folder; whisper-server stderr, backend
 // choices and fallbacks all land here. Never throws (logging must not break the app).
+// B4b: the buffered writer behind flowLog. Every line this app logs used to
+// cost an fs.statSync plus an fs.appendFileSync ON THE MAIN THREAD - the same
+// thread that owes Windows a swallow verdict for every keystroke on the machine
+// (menace §3.2.2). whisper-server's stderr alone is chatty enough during a long
+// transcription to put a write under most keypresses. Now a line is an array
+// push, and the write happens asynchronously on a later tick. The policy (order,
+// rotation, overflow) is pure and unit-tested in shared/logQueue.ts; the two
+// lines of real I/O are in ./logSink.
+//
+// The path is resolved INSIDE the sink, at write time, never here: dataDir()
+// caches its answer on the first call and that answer must be the
+// post-migration folder (see settings.ts). Deferring the write only makes that
+// safer than the synchronous version was.
+const logQueue = new LogQueue(createFileLogSink(() => path.join(dataDir(), "flow.log")), {
+  onFailure: (kind) => {
+    // The SAME two counters the synchronous version incremented (B6), so a
+    // machine that could not write its log still says so in Diagnostics.
+    // Deliberately not logged: a logger cannot log its own failure to write.
+    if (kind === LOG_QUEUE_FAILURE.rotate) silentFailures.increment(SILENT_FAILURE.flowLogRotateFailed);
+    else silentFailures.increment(SILENT_FAILURE.flowLogWriteFailed);
+  },
+});
+
 function flowLog(msg: string): void {
   if (DEV) console.log(msg);
-  try {
-    const p = path.join(dataDir(), "flow.log");
-    try {
-      if (fs.statSync(p).size > 1_000_000) fs.renameSync(p, p + ".1");
-    } catch {
-      /* no file yet, or rename raced: append anyway */
-    }
-    fs.appendFileSync(p, new Date().toISOString() + " " + msg + "\n");
-  } catch {
-    /* diagnostics are best-effort */
-  }
+  // The timestamp is taken HERE, not at write time: the queue may hold this
+  // line for a tick, and a log whose timestamps were the moment of the WRITE
+  // would silently reorder cause and effect under exactly the load that makes
+  // a log worth reading.
+  logQueue.push(new Date().toISOString() + " " + msg + "\n");
 }
 
 // v5 c1: a SHORT, clean French seed (no word list, which whisper injected into short clips),
@@ -583,7 +632,11 @@ async function warmAsr() {
   }
 }
 
-const overlay = new OverlayWindow();
+// B6: flowLog injected (matches FocusProbe/NativeCapture's own constructor
+// convention below) so the overlay's own best-effort catches stop being
+// invisible too - see overlay.ts's startCapture for how the log write is
+// deferred off the keyboard hook's synchronous call stack.
+const overlay = new OverlayWindow(flowLog);
 // C2: the hidden native-capture window (Windows-only). Created at startup so
 // getDisplayMedia is instant on the first native recording; idle until asked.
 // U4: flowLog goes in, because a capture window that crashes or fails to load
@@ -615,8 +668,11 @@ function engineBusy(): boolean {
   return listening || longRec.isBusy || modelTransfers > 0;
 }
 // Audit: the keyboard hook's health as a typed flag, not a status-string
-// sniff. Set by startPtt, read by the window's cards.
-let hookOk = true;
+// sniff. B4: it is no longer a module-level boolean written once by startPtt -
+// that version could only ever say "the hook failed to START", and the failure
+// that actually happens in the field is the hook DYING later. The adapter owns
+// the record now (HotkeyAdapter.health), so a death and a recovery both move
+// the same flag the cards already read.
 
 /** Microphone list + self-healing (review A10): the productName rename moved
  * Electron's userData folder, which can invalidate persisted deviceIds. A
@@ -743,10 +799,19 @@ const hotkey = new HotkeyAdapter(settings.combo, {
     if (longRec.isBusy) {
       // The transcript belongs to the long recording; a dictation mid-meeting
       // would fight it for the warm engine.
+      // B3: this used to return here with NOTHING sent to the overlay at all -
+      // the user presses, and gets no sound, no animation, no explanation: the
+      // exact "three things always happen together" contract broken. Fire the
+      // same start signal a real capture would (sound + pill + an armed mic
+      // session the overlay tears down a beat later, never reaching a WAV) so
+      // the press is always felt, even as a refusal - see overlay.ts's
+      // startAndRefuse doc comment for the full reasoning.
+      overlay.startAndRefuse({ sounds: settings.sounds, micDeviceId: settings.micDeviceId });
       // B1: the trace hotkey.ts just opened (keyEventReceived/verdictRendered)
       // would otherwise sit open forever - no capture ever starts, so nothing
       // would ever mark it done. Close it honestly instead of relying on the
-      // 30 s staleness sweep.
+      // 30 s staleness sweep. Called AFTER startAndRefuse so the overlayStartSent
+      // mark it just made lands on this SAME trace before it closes.
       hotpath.abandon(HOTPATH_ABANDON_REASON.busyLongRecording);
       return;
     }
@@ -764,6 +829,17 @@ const hotkey = new HotkeyAdapter(settings.combo, {
     listening = false;
     overlay.cancelCapture(); // marks "overlayCancelSent" on the still-open trace
     hotpath.abandon(reason);
+  },
+}, {
+  log: flowLog, // B4: hook incidents must be readable in a packaged build
+  // B4: the tray tooltip rebuilds every 30 s and the window is pushed every
+  // second - both far too slow for an outage that heals in about one. This
+  // repaints them on the transition itself. The tray matters most: with every
+  // window closed it is the ONLY surface the user has, and that is precisely
+  // the situation where they believe dictation is working.
+  onHealthChange: () => {
+    tray?.refreshNow();
+    uiBridge?.pushNow();
   },
 });
 
@@ -983,13 +1059,16 @@ function applySettings(patch: Partial<FlowSettings>): FlowSettings {
 async function startPtt() {
   try {
     await hotkey.start();
-    hookOk = true;
     if (DEV) console.log(`[ptt] armed on ${comboLabel(settings.combo)}`);
   } catch (err) {
     // Dictation without a hotkey is dead: surface it instead of dying silently.
+    // B4: no longer writes statusText. The adapter has already counted this as
+    // an incident and (unless the crash-loop guard tripped) scheduled a retry,
+    // so engineStatus() derives the line from hook health - which means the
+    // line also DISAPPEARS by itself the moment the retry succeeds, instead of
+    // freezing "keyboard hook unavailable" over a hook that came back.
     console.error("[ptt] key listener failed to start:", err);
-    hookOk = false;
-    statusText = "keyboard hook unavailable";
+    flowLog(`[ptt] key listener failed to start: ${String(err)}`);
   }
 }
 

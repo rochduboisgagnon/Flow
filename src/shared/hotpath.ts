@@ -37,6 +37,8 @@
 // memory write, never a log" requires, and is the same order of cost as the
 // Set operations the combo matcher already does per event.
 
+import { silentFailures, type SilentFailureName } from "./silentFailures";
+
 export type HotpathStep =
   | "keyEventReceived" // the physical DOWN event that completed the combo (a press)
   | "verdictRendered" // the matcher's decision for that same event, about to be returned to keyspy
@@ -71,6 +73,7 @@ export const HOTPATH_ABANDON_REASON = {
   tooShortClip: "too-short-clip", // < 300 ms of audio, treated as release noise
   noSpeech: "gated-no-speech", // the energy VAD found nothing to send to the model
   hallucinationGate: "gated-hallucination", // the model answered, textGate rejected it
+  hookDied: "hook-died", // B4: the keyboard hook died mid-hold; the press can never be released
   captureError: "capture-error", // the overlay reported a capture failure (e.g. no microphone)
   pipelineError: "pipeline-error", // an exception past the WAV (transcribe/probe/insert)
   staleTimeout: "stale-timeout", // never resolved within STALE_OPEN_MS: swept, not lost forever
@@ -79,6 +82,24 @@ export const HOTPATH_ABANDON_REASON = {
 export type HotpathAbandonReason = (typeof HOTPATH_ABANDON_REASON)[keyof typeof HOTPATH_ABANDON_REASON];
 
 export type HotpathResult = "inserted" | "clipboarded";
+
+// B4: hot-path events that belong to NO single press. A trace is opened by a
+// keypress and closed by its outcome; the death of the keyboard hook is the
+// opposite - it is the reason no trace will open at all. Recording it as a
+// trace would be a lie (there was no press), and dropping it would leave the
+// Diagnostics panel showing a suspiciously quiet minute with no explanation.
+// So it gets its own small lane in the same snapshot, on the same clock.
+export const HOTPATH_EVENT = {
+  hookDied: "hook-died", // the key server process closed unexpectedly
+  hookRestarted: "hook-restarted", // a replacement listener is live again
+  hookAbandoned: "hook-abandoned", // the crash-loop guard gave up; terminal
+} as const;
+export type HotpathEventKind = (typeof HOTPATH_EVENT)[keyof typeof HOTPATH_EVENT];
+
+export interface HotpathEvent {
+  kind: HotpathEventKind;
+  t: number; // performance.now(), same clock/origin as every mark above
+}
 
 export interface HotpathTrace {
   id: number;
@@ -125,6 +146,10 @@ export class Ring<T> {
 
 const DEFAULT_TRACE_CAPACITY = 200;
 const DEFAULT_LATENCY_CAPACITY = 2000;
+// B4: hook incidents are rare by nature (the crash-loop guard caps automatic
+// restarts at 3 in five minutes), so a small ring holds a whole session's worth
+// and still cannot grow.
+const DEFAULT_EVENT_CAPACITY = 50;
 // Defensive cap on traces awaiting resolution at once. In normal operation
 // there is at most one (occasionally two, if a press overlaps the previous
 // utterance's still-finalizing pipeline - see overlayVisibility.ts). This
@@ -146,10 +171,24 @@ export class HotpathLog {
   private open: HotpathTrace[] = [];
   private readonly completed: Ring<HotpathTrace>;
   private readonly handlerLatencies: Ring<number>;
+  private readonly events: Ring<HotpathEvent>;
 
-  constructor(traceCapacity = DEFAULT_TRACE_CAPACITY, latencyCapacity = DEFAULT_LATENCY_CAPACITY) {
+  constructor(
+    traceCapacity = DEFAULT_TRACE_CAPACITY,
+    latencyCapacity = DEFAULT_LATENCY_CAPACITY,
+    eventCapacity = DEFAULT_EVENT_CAPACITY,
+  ) {
     this.completed = new Ring(traceCapacity);
     this.handlerLatencies = new Ring(latencyCapacity);
+    this.events = new Ring(eventCapacity);
+  }
+
+  /** B4: one press-less hot-path event (see HOTPATH_EVENT). Deliberately does
+   * NOT touch the open queue: a hook death does not resolve a press, and the
+   * press it interrupted is abandoned explicitly by the adapter with the
+   * `hook-died` reason - two different facts, recorded separately. */
+  event(kind: HotpathEventKind, t: number = nowMs()): void {
+    this.events.push({ kind, t });
   }
 
   /** menace §3.2.2: the keyboard hook's OWN synchronous execution time for
@@ -237,6 +276,12 @@ export class HotpathLog {
       completed: this.completed.toArray().map(cloneTrace),
       open: this.open.map(cloneTrace),
       handlerLatenciesMs: this.handlerLatencies.toArray(),
+      events: this.events.toArray().map((e) => ({ ...e })),
+      // B6: rides this EXISTING snapshot/channel rather than opening a new
+      // one - Diagnostics already polls UI_HOTPATH_SNAPSHOT. See
+      // silentFailures.ts for what each name counts; this file only carries
+      // the tally through, it never increments anything itself.
+      silentFailureCounts: silentFailures.snapshot(),
     };
   }
 
@@ -272,6 +317,12 @@ export interface HotpathSnapshot {
   completed: HotpathTrace[];
   open: HotpathTrace[];
   handlerLatenciesMs: number[];
+  /** B4: press-less incidents (hook died / restarted / abandoned), oldest first. */
+  events: HotpathEvent[];
+  /** B6: named best-effort catches on the dictation hot path, tallied since
+   * launch - see silentFailures.ts for the closed vocabulary of names and
+   * exactly what each one counts (never dictated content, never a path). */
+  silentFailureCounts: Record<SilentFailureName, number>;
 }
 
 // The process-wide instance every main-process module instruments against.

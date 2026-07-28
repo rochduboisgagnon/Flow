@@ -8,6 +8,7 @@ import {
 } from "../shared/ipcContracts";
 import { OverlayVisibility } from "./overlayVisibility";
 import { hotpath } from "../shared/hotpath";
+import { silentFailures, SILENT_FAILURE } from "../shared/silentFailures";
 
 // The overlay window: a small transparent strip near the bottom of the screen,
 // shown while dictating. HARD CONSTRAINT: it must NEVER take focus - the whole
@@ -22,11 +23,24 @@ export class OverlayWindow {
   private ready = false;
   private pendingStart: CaptureStartPayload | null = null;
   private hideTimer: NodeJS.Timeout | undefined;
+  // B3: armed only by startAndRefuse() below - cleared by the NEXT startCapture()
+  // (real or another refusal), same discipline as hideTimer just above.
+  private refusalTimer: NodeJS.Timeout | undefined;
+  // How long a refused press (see startAndRefuse) stays up before it self-cancels.
+  // A same-tick showInactive()+hide() can paint NOTHING at all (the compositor never
+  // gets a turn between the two native calls) - this yields to the event loop long
+  // enough for a real frame, while staying comfortably under a deliberate hold so it
+  // never reads as a real, if short, dictation (MIN_HOLD_MS is 200 ms).
+  private static readonly REFUSAL_FLASH_MS = 260;
   // Overlap guard (bug Roch: sometimes the animation does not show on press). The window is SHARED
   // and persistent; re-pressing PTT while the previous utterance was still finalizing let the OLD
   // flowDone()/safety-timer hide the NEW capture. The hide policy lives in a pure, unit-tested state
   // machine (overlayVisibility.ts); here we just show/hide when it says so.
   private vis = new OverlayVisibility();
+  // B6: optional, matching FocusProbe/NativeCapture's own constructor convention -
+  // injected once from index.ts (flowLog) so a failure IN HERE stops being invisible
+  // too. Never called synchronously from startCapture()'s hot path - see there.
+  constructor(private readonly log?: (msg: string) => void) {}
 
   create(dev: boolean) {
     const { width, height } = screen.getPrimaryDisplay().workAreaSize;
@@ -91,20 +105,67 @@ export class OverlayWindow {
     // utterance is now stale and must not fire.
     clearTimeout(this.hideTimer);
     this.hideTimer = undefined;
+    // B3: likewise for a still-pending refusal auto-cancel (startAndRefuse) - without
+    // this, a refusal immediately followed by a REAL press would let that stale timer
+    // cancel the real capture out from under the user a quarter-second later.
+    clearTimeout(this.refusalTimer);
+    this.refusalTimer = undefined;
     this.vis.onStart();
     if (!this.ready) {
       this.pendingStart = cfg;
       return;
     }
-    this.win.setAlwaysOnTop(true, "screen-saver"); // re-assert above any fullscreen app
-    this.reposition(); // anchor on the display under the cursor (multi-monitor)
-    this.win.showInactive(); // show WITHOUT focusing
+    // B3: cosmetic positioning must never cost the user the cue itself - the send()
+    // below is what actually plays the sound and starts the mic, and is attempted
+    // regardless of whether this block throws. (This call stack is reached directly
+    // from HotkeyAdapter's un-guarded key-event handler in hotkey.ts, which has no
+    // try/catch of its own around cbs.onStart() - an uncaught throw here would not
+    // just cost this ONE cue, it risks the keyboard hook itself.)
+    try {
+      this.win.setAlwaysOnTop(true, "screen-saver"); // re-assert above any fullscreen app
+      this.reposition(); // anchor on the display under the cursor (multi-monitor)
+      this.win.showInactive(); // show WITHOUT focusing
+    } catch (err) {
+      // B6: named, counted, logged - but the log write is DEFERRED past this tick
+      // (setImmediate). flowLog does a synchronous fs.appendFileSync; running it here
+      // would put real disk I/O on the exact call stack B1's budget exists to protect.
+      silentFailures.increment(SILENT_FAILURE.overlayShowFailed);
+      const msg = String(err);
+      setImmediate(() => this.log?.(`[overlay] show failed: ${msg}`));
+    }
     // B1: marked HERE, right before the dispatch - not in HotkeyAdapter's
     // onStart - because setAlwaysOnTop/reposition/showInactive (above) are
     // real, sometimes non-trivial main-thread work that this order actually
     // waits on.
     hotpath.mark("overlayStartSent");
-    this.win.webContents.send(CAPTURE_START, cfg);
+    try {
+      this.win.webContents.send(CAPTURE_START, cfg);
+    } catch (err) {
+      // B3/B6: THE guarantee - see the module note above. Still best-effort: a
+      // renderer that is genuinely gone cannot be made to play a cue no matter what
+      // main does: this is the one path where the cue could not be dispatched at all.
+      silentFailures.increment(SILENT_FAILURE.overlaySendFailed);
+      const msg = String(err);
+      setImmediate(() => this.log?.(`[overlay] CAPTURE_START send failed: ${msg}`));
+    }
+  }
+
+  /** B3: a press main refuses for a reason that has nothing to do with the overlay
+   * itself (today: index.ts's onStart bails when a long recording owns the engine)
+   * must still be FELT - the plan's contract is "the sound, the animation remain
+   * always there" on EVERY rising edge, refusal included. This fires the identical
+   * start signal a real capture would (cue + pill + an armed mic session in the
+   * renderer - see overlay.tsx's start()), then cancels it after a short,
+   * deliberately visible beat instead of dropping the press in total silence.
+   * cancelCapture() tears down whatever the renderer had started (its `gen` token)
+   * before any WAV - and therefore any engine call - can ever happen: the long
+   * recording keeps the ASR sidecar to itself, exactly as before. */
+  startAndRefuse(cfg: CaptureStartPayload) {
+    this.startCapture(cfg);
+    this.refusalTimer = setTimeout(() => {
+      this.refusalTimer = undefined;
+      this.cancelCapture();
+    }, OverlayWindow.REFUSAL_FLASH_MS);
   }
 
   stopCapture() {
@@ -168,7 +229,11 @@ export class OverlayWindow {
         true,
       )) as Array<{ id: string; label: string }>;
       return Array.isArray(out) ? out : [];
-    } catch {
+    } catch (err) {
+      // B6: was silent. On-demand from Settings, never inside the keyboard hook's
+      // call stack, so a synchronous log line here costs nothing that matters.
+      silentFailures.increment(SILENT_FAILURE.overlayListMicsFailed);
+      this.log?.(`[overlay] listMics failed: ${String(err)}`);
       return [];
     }
   }

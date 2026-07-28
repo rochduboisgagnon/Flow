@@ -2,6 +2,7 @@
 // so a renamed channel cannot silently desynchronize the two sides.
 
 import type { ThemePref, ResolvedTheme } from "./theme";
+import type { HookHealth } from "./hookWatchdog";
 
 // main -> overlay
 export const CAPTURE_START = "capture:start";
@@ -81,7 +82,17 @@ export const UI_STATE_PUSH = "ui:state"; // main -> window, periodic while visib
 // re-serialized every second regardless of whether Diagnostics is even open -
 // putting this there would turn a status heartbeat into a data bus.
 export const UI_HOTPATH_SNAPSHOT = "ui:hotpath-snapshot";
-export type { HotpathSnapshot, HotpathTrace, HotpathStep, HotpathAbandonReason } from "./hotpath";
+export type {
+  HotpathSnapshot,
+  HotpathTrace,
+  HotpathStep,
+  HotpathAbandonReason,
+  HotpathEvent,
+  HotpathEventKind,
+} from "./hotpath";
+// B4: re-exported here for the same reason as the hot-path types above - a page
+// needs one import line to render everything one payload carries.
+export type { HookHealth, HookState } from "./hookWatchdog";
 
 // ---- snippets (U3) ----
 // PULL-only, deliberately: the snippet library is user content of unbounded
@@ -149,7 +160,13 @@ export interface UiStatePayload {
   modelState: ModelStatePayload;
   /** Typed overlay states (audit: the cards must not sniff the status STRING). */
   paused: boolean; // tray pause in effect
-  hookOk: boolean; // the low-level keyboard hook is armed
+  hookOk: boolean; // the low-level keyboard hook is armed RIGHT NOW
+  /** B4: the keyboard hook's incident record - how many times its key server
+   * died, how many of those it recovered from, and when the last one was. It
+   * rides the 1 Hz push (unlike the hot-path ring, which is pulled) because it
+   * is five scalars of fixed size, and because the Home card has to be able to
+   * say "recovered from an interruption" without the user opening a panel. */
+  hook: HookHealth;
   settings: {
     language: string;
     model: string;
