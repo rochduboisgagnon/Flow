@@ -19,9 +19,17 @@
 //     PER PROCESS, which is fine and in fact the reason this module stays
 //     entirely inside the main process: comparing a main-process reading
 //     against a renderer-process reading would be comparing two different
-//     origins, silently wrong. If the overlay renderer is ever instrumented
-//     (see the B1 report for what that would take), its marks would need
-//     their own trace lane, never mixed into these ones.
+//     origins, silently wrong.
+//
+// B2 CLOSES B1's TWO BLIND SPOTS WITHOUT BREAKING THAT RULE. The overlay
+// renderer now reports the two budgets only it can see (first frame painted,
+// first sample captured), and it reports them as DURATIONS measured on its own
+// clock - never as instants. markOverlayTimings() turns each one into a mark by
+// ADDING it to overlayStartSent, an instant this process timestamped itself.
+// No renderer reading is ever compared to a main reading, so every mark on a
+// trace still shares one origin. The cost of that discipline is stated where
+// it is paid: the one-way IPC hop is not counted, so both derived marks are a
+// LOWER bound (see markOverlayTimings).
 //
 // SECURITY (non-negotiable, plan §5.4 - zero retention): a trace NEVER
 // carries dictated content. Not the text, not a hash, not a fragment. Only
@@ -44,6 +52,12 @@ export type HotpathStep =
   | "verdictRendered" // the matcher's decision for that same event, about to be returned to keyspy
   | "captureStartDecided" // main decided to start capture (HotkeyAdapter's onStart callback, entry)
   | "overlayStartSent" // CAPTURE_START actually dispatched to the overlay window (overlay.ts)
+  // B2: the two steps that happen INSIDE the overlay renderer. They are not
+  // timestamped by that process - they are DERIVED here, by adding a duration
+  // the renderer measured on its own clock to overlayStartSent, an instant
+  // this process already owns. See markOverlayTimings.
+  | "overlayFirstPaint" // the first animation frame drawn for this press
+  | "overlayFirstSample" // this capture's buffer holds audio covering the press
   | "releaseObserved" // the physical event that ended the press: UP (stop) or an extra key (cancel)
   | "overlayStopSent" // CAPTURE_STOP dispatched (trace continues toward a completion)
   | "overlayCancelSent" // CAPTURE_CANCEL dispatched (trace is about to be abandoned)
@@ -166,6 +180,14 @@ function nowMs(): number {
   return performance.now();
 }
 
+// B2: a duration that crossed a process boundary is input, not data. The
+// ceiling is deliberately loose (a minute) - its job is to reject a corrupt or
+// hostile value, not to second-guess a genuinely slow machine.
+const MAX_REPORTED_DURATION_MS = 60_000;
+function isSaneDuration(ms: number): boolean {
+  return Number.isFinite(ms) && ms >= 0 && ms <= MAX_REPORTED_DURATION_MS;
+}
+
 export class HotpathLog {
   private nextId = 1;
   private open: HotpathTrace[] = [];
@@ -242,6 +264,36 @@ export class HotpathLog {
     if (!trace) return;
     trace.marks.push({ step: "wavReceived", t });
     trace.utteranceMs = utteranceMs;
+  }
+
+  /**
+   * B2: fold the overlay renderer's two self-measured durations into the trace
+   * they belong to.
+   *
+   * The arithmetic is the whole design: `overlayStartSent` is an instant THIS
+   * process recorded, on THIS clock; the two arguments are durations the
+   * renderer measured on ITS clock, both starting from the arrival of that same
+   * message. Adding one to the other gives a mark on the main clock without
+   * ever comparing two origins. What the sum leaves out is the one-way IPC hop
+   * between the send and the receive - unmeasurable without exactly the
+   * cross-clock comparison this avoids - so both marks land slightly EARLY and
+   * the budgets read from them are lower bounds. Stated here rather than
+   * discovered later: a number that is honest about which way it is wrong is
+   * worth more than one that pretends not to be.
+   *
+   * Refuses anything that is not a plain, sane duration. The values cross a
+   * process boundary, and a NaN or a negative would not fail loudly - it would
+   * produce a mark BEFORE the keypress and a cheerfully within-budget verdict.
+   */
+  markOverlayTimings(firstPaintMs: number, firstSampleMs: number, t: number = nowMs()): void {
+    this.sweepStale(t);
+    if (!isSaneDuration(firstPaintMs) || !isSaneDuration(firstSampleMs)) return;
+    const trace = this.findOpenMissing("overlayFirstPaint");
+    if (!trace) return;
+    const sentAt = trace.marks.find((m) => m.step === "overlayStartSent");
+    if (!sentAt) return; // nothing to add to: this press never reached the overlay
+    trace.marks.push({ step: "overlayFirstPaint", t: sentAt.t + firstPaintMs });
+    trace.marks.push({ step: "overlayFirstSample", t: sentAt.t + firstSampleMs });
   }
 
   /** Close the oldest open trace as a success: appends `textInserted` itself
@@ -347,6 +399,14 @@ export interface HotpathIntervals {
    * FIRST synchronous statement of its start() handler, so this is a close
    * upper bound, not an exact measurement - see the B1 report. */
   keyToOverlayOrderMs: number | null;
+  /** §3.3: press -> the first animation frame drawn. B2 derived, lower bound
+   * (the IPC hop is not counted) - see markOverlayTimings. */
+  pressToFirstPaintMs: number | null;
+  /** §3.3: press -> the microphone is genuinely capturing, i.e. this press's
+   * buffer holds audio covering the keypress. B2 derived, same lower bound.
+   * A warm microphone answers 0 through the pre-roll: the audio from before
+   * the key went down was already in hand. */
+  pressToFirstSampleMs: number | null;
   /** The model's own inference time - what "excluding model time" (§3.3) subtracts out. */
   transcriptionMs: number | null;
   /** release -> text landed, model time INCLUDED. */
@@ -365,9 +425,13 @@ export function computeIntervals(trace: HotpathTrace): HotpathIntervals {
   const transStartAt = findMark(trace, "transcriptionStarted");
   const transEndAt = findMark(trace, "transcriptionFinished");
   const textAt = findMark(trace, "textInserted");
+  const paintAt = findMark(trace, "overlayFirstPaint");
+  const sampleAt = findMark(trace, "overlayFirstSample");
 
   const verdictLatencyMs = keyAt !== null && verdictAt !== null ? verdictAt - keyAt : null;
   const keyToOverlayOrderMs = keyAt !== null && overlayStartAt !== null ? overlayStartAt - keyAt : null;
+  const pressToFirstPaintMs = keyAt !== null && paintAt !== null ? paintAt - keyAt : null;
+  const pressToFirstSampleMs = keyAt !== null && sampleAt !== null ? sampleAt - keyAt : null;
   const transcriptionMs = transStartAt !== null && transEndAt !== null ? transEndAt - transStartAt : null;
   const releaseToTextMs = releaseAt !== null && textAt !== null ? textAt - releaseAt : null;
   const releaseToTextExclModelMs =
@@ -377,6 +441,8 @@ export function computeIntervals(trace: HotpathTrace): HotpathIntervals {
   return {
     verdictLatencyMs,
     keyToOverlayOrderMs,
+    pressToFirstPaintMs,
+    pressToFirstSampleMs,
     transcriptionMs,
     releaseToTextMs,
     releaseToTextExclModelMs,
@@ -396,13 +462,18 @@ export interface HotpathBudgetVerdict {
   budgetMs: number;
   valueMs: number | null;
   withinBudget: boolean | null; // null when there is nothing to compare (no value)
-  measurable: boolean; // false = cannot be produced from main-process instrumentation alone
+  measurable: boolean; // false = this app cannot produce this number at all
 }
 
-/** One row per §3.3 budget. The two rows the overlay renderer alone can
- * answer (first painted frame, first captured sample) are always returned
- * with measurable:false rather than omitted, so a consumer never has to
- * special-case "missing" vs "known unmeasurable". */
+/** One row per §3.3 budget.
+ *
+ * All four rows are measurable since B2: the two the main process cannot see
+ * on its own (first painted frame, first captured sample) are answered by the
+ * overlay renderer and folded in by markOverlayTimings. `measurable` stays in
+ * the shape rather than being deleted, because it is the field that lets a
+ * consumer tell "Flow cannot answer this" apart from "no press has produced
+ * this number yet" (valueMs === null) - two different sentences to show a
+ * user, and the panel shows both. */
 export function evaluateBudgets(trace: HotpathTrace): HotpathBudgetVerdict[] {
   const iv = computeIntervals(trace);
   return [
@@ -416,16 +487,18 @@ export function evaluateBudgets(trace: HotpathTrace): HotpathBudgetVerdict[] {
     {
       metric: "press -> first animation frame painted",
       budgetMs: HOTPATH_BUDGETS_MS.animationFirstFrame,
-      valueMs: null,
-      withinBudget: null,
-      measurable: false,
+      valueMs: iv.pressToFirstPaintMs,
+      withinBudget:
+        iv.pressToFirstPaintMs === null ? null : iv.pressToFirstPaintMs < HOTPATH_BUDGETS_MS.animationFirstFrame,
+      measurable: true,
     },
     {
       metric: "press -> microphone actually capturing",
       budgetMs: HOTPATH_BUDGETS_MS.micCapturing,
-      valueMs: null,
-      withinBudget: null,
-      measurable: false,
+      valueMs: iv.pressToFirstSampleMs,
+      withinBudget:
+        iv.pressToFirstSampleMs === null ? null : iv.pressToFirstSampleMs < HOTPATH_BUDGETS_MS.micCapturing,
+      measurable: true,
     },
     {
       metric: "release -> text at cursor, excluding model time",

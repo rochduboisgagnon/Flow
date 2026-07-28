@@ -36,6 +36,9 @@ import { hookIsArmed, hookStatusLine } from "../shared/hookWatchdog";
 import { silentFailures, SILENT_FAILURE } from "../shared/silentFailures";
 import { LogQueue, LOG_QUEUE_FAILURE } from "../shared/logQueue";
 import { createFileLogSink } from "./logSink";
+import { SystemWatch } from "./systemWatch";
+import { judgeCaptureShortfall, shortfallLogLine } from "../shared/captureContinuity";
+import { warmPolicy } from "../shared/micWarmth";
 import {
   evaluateSelfCheck,
   formatSelfCheckForLog,
@@ -45,7 +48,9 @@ import {
 import {
   CAPTURE_DONE,
   CAPTURE_ERROR,
+  CAPTURE_TIMING,
   type CaptureDonePayload,
+  type CaptureTimingPayload,
   type ModelStatePayload,
   type UiStatePayload,
 } from "../shared/ipcContracts";
@@ -190,8 +195,50 @@ if (!app.requestSingleInstanceLock()) {
     if (NativeCapture.available()) nativeCapture.create(DEV); // C2: Windows loopback window
     wireCapture();
     startPtt();
+    // B9: the machine itself - sleep, wake, lock, unlock. Built right after the
+    // hook, because the hook is what it exists to protect: Windows removes a
+    // low-level hook that overran its budget WITHOUT telling the application
+    // (documented, see shared/systemResilience.ts), so B4's watchdog - which
+    // watches the key server PROCESS - cannot see it. Every decision is in the
+    // pure policy; this only supplies the four facts it reads and performs what
+    // it returns.
+    systemWatch = new SystemWatch({
+      holdInFlight: () => listening,
+      hookState: () => hotkey.health().state,
+      interruptHold: () => {
+        // Order is the policy's (tear down, then rebuild): the adapter only
+        // acts when there really was a hold, so this is safe to call blind.
+        if (!hotkey.interruptHold()) return;
+        listening = false;
+        overlay.cancelCapture();
+      },
+      rearmHook: () => {
+        void hotkey.rearm().catch((err) => {
+          // arm() already routed the failure through the B4 watchdog (counted,
+          // logged, retry scheduled); this catch only stops a rejected promise
+          // from escaping a powerMonitor callback.
+          flowLog(`[system] rebuilding the keyboard hook failed: ${String(err)}`);
+        });
+      },
+      log: flowLog,
+    });
+    systemWatch.start();
     void warmAsr();
     probe = new FocusProbe(focusProbeScript(), DEV ? (m) => console.log(m) : undefined);
+    // B2: the same treatment warmAsr() already gives the speech engine, applied
+    // to the other lazily-started child process on the hot path. B1 measured the
+    // first dictation of a session paying ~457 ms (and 535 ms on a second start)
+    // for nothing but spawning powershell.exe inside probe() - the single worst
+    // number on the bench, and one that only ever hit the FIRST press, which is
+    // exactly the press a user judges the product on. Fire-and-forget: a probe
+    // that fails to warm is retried by probe() and falls back to the clipboard,
+    // unchanged.
+    void probe.warm();
+    // B2: push the microphone pre-warm policy now that the overlay window
+    // exists. The renderer replays it on load (see OverlayWindow), so this
+    // arriving before the page is not a race - and this is what makes the FIRST
+    // press after a start a warm one instead of the coldest of the session.
+    applyMicWarmth();
     logLegacyHistoryState(); // U2c: say where the older recordings are, before purging anything
     // U4 (blocking review): the app can die without ever running before-quit -
     // a power cut, a bugcheck, a taskkill. Whatever is still in the staging
@@ -271,6 +318,10 @@ if (!app.requestSingleInstanceLock()) {
     // a `bench:hotpath` run against a live app (HTTP) must read the exact same
     // in-memory ring, never two independently-serialized copies.
     const hotpathSnapshotDep = () => hotpath.snapshot();
+    // B5: same discipline again - the Diagnostics panel's "Run the checks" button
+    // (IPC) and a support request read over the loopback API must produce the
+    // SAME six verdicts, off one implementation, at one instant.
+    const selfCheckDep = () => gatherSelfCheck();
 
     api = new LocalApi({
       version: app.getVersion(),
@@ -281,6 +332,7 @@ if (!app.requestSingleInstanceLock()) {
       isEngineWarm: () => sidecar !== null,
       canLoopback: canLoopbackDep,
       hotpathSnapshot: hotpathSnapshotDep,
+      selfCheck: selfCheckDep,
       // B1: the HTTP /transcribe endpoint (AGR Pilot's phone mic) is
       // deliberately UNTRACED - see processUtterance's module note.
       transcribe: (wav) => processUtterance(wav),
@@ -392,6 +444,10 @@ if (!app.requestSingleInstanceLock()) {
         // defined once, just above) - the Diagnostics panel and a
         // `bench:hotpath` run must never disagree on what is currently open/completed.
         hotpathSnapshot: hotpathSnapshotDep,
+        // B5: identical closure to LocalApi's above (selfCheckDep, defined once,
+        // just above) - the panel's button and the loopback route can never
+        // answer two different diagnoses of the same machine.
+        selfCheck: selfCheckDep,
       },
       mainWindow,
     );
@@ -401,6 +457,11 @@ if (!app.requestSingleInstanceLock()) {
     // up to a second after a tray "Open Flow" - a dark page under native
     // caption buttons already recolored light.
     mainWindow.setOnShow(() => uiBridge?.pushNow());
+
+    // B5: the startup self-diagnostic, into flow.log. It runs LAST and on a
+    // delay (see runStartupSelfCheck) so it describes a settled engine, and it
+    // is deliberately fire-and-forget: a boot must never wait on a diagnostic.
+    runStartupSelfCheck();
 
     // A login-item launch passes --hidden: engine up, window quiet. Any other
     // launch (installer, Start menu, double-click) shows the window.
@@ -463,6 +524,7 @@ function getUiState(): UiStatePayload {
       forceCpu: settings.forceCpu,
       insertMode: settings.insertMode,
       theme: settings.theme,
+      micPrewarm: settings.micPrewarm,
     },
     // U0: what to actually paint right now, separate from the preference above.
     resolvedTheme: nativeTheme.shouldUseDarkColors ? "dark" : "light",
@@ -495,6 +557,9 @@ let tray: FlowTray | null = null;
 // The auto-updater (V1, A4): same lifecycle. Null until the boot below builds
 // it, which is why engineStatus() reads it optionally.
 let updater: FlowUpdater | null = null;
+// B9: sleep / wake / lock / unlock. Same lifecycle again - powerMonitor only
+// answers once the app is ready, and its subscriptions are released on quit.
+let systemWatch: SystemWatch | null = null;
 
 // Focus probe: decides insert-at-cursor vs leave-on-clipboard per dictation.
 let probe: FocusProbe | null = null;
@@ -689,6 +754,86 @@ async function listMicsValidated(): Promise<Array<{ id: string; label: string }>
   return mics;
 }
 
+// ---- B5: the self-diagnostic ----
+//
+// The JUDGMENT (green / amber / red, and what to do about a red) is pure and
+// unit-tested in shared/selfCheck.ts. Everything below only OBSERVES: it is the
+// one place in the app allowed to answer "can Flow actually write where it keeps
+// everything", and the only place that reads six unrelated pieces of state at
+// one instant so they can be compared honestly.
+
+/** The real test, not a permission bit: write a byte and delete it. `fs.access`
+ * lies on Windows often enough to be useless (it reports the ACL, not what a
+ * disconnected network drive or a read-only container will actually do), and
+ * this check exists precisely for the machines where the obvious answer is
+ * wrong. Synchronous on purpose: it runs at startup and on demand, never on the
+ * keyboard hook's path. */
+function probeDataDirWritable(): { writable: boolean; error?: string } {
+  const dir = dataDir();
+  const probeFile = path.join(dir, ".write-probe");
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(probeFile, "flow self-check");
+    fs.unlinkSync(probeFile);
+    return { writable: true };
+  } catch (err) {
+    return { writable: false, error: String(err instanceof Error ? err.message : err) };
+  }
+}
+
+/** One coherent set of observations, then the pure verdict. Async only because
+ * enumerating audio devices needs a round trip to a renderer. */
+async function gatherSelfCheck(): Promise<SelfCheckReport> {
+  const mics = await overlay.listMics();
+  // An empty list means two different things (see OverlayWindow.canListMics):
+  // report "not established" rather than inventing "this machine has no
+  // microphone" out of a page that simply has not loaded yet.
+  const ready = overlay.canListMics();
+  let modelPresent: boolean | null = null;
+  try {
+    modelPresent = fs.existsSync(modelFilePath(settings.model));
+  } catch {
+    // The models folder can live on another volume (%LOCALAPPDATA%): a stat that
+    // cannot even run is "unknown", never a claim that the model is missing.
+    modelPresent = null;
+  }
+  const disk = probeDataDirWritable();
+  const facts: SelfCheckFacts = {
+    hook: hotkey.health(),
+    micCount: ready ? mics.length : null,
+    micError: ready ? undefined : "the window that enumerates audio devices has not finished loading",
+    engineWarm: sidecar !== null,
+    backend: sidecar ? path.basename(sidecar.activeBackend() || "") : "",
+    modelFile: settings.model,
+    modelPresent,
+    modelState: lastModelState,
+    apiPort: api?.boundPort() ?? 0,
+    dataDir: dataDir(),
+    dataDirWritable: disk.writable,
+    dataDirError: disk.error,
+    nowIso: new Date().toISOString(),
+  };
+  return evaluateSelfCheck(facts);
+}
+
+/** Long enough for the ASR warm-up to have chosen a backend, the API to have
+ * bound a port and the overlay renderer to have loaded, so the startup report
+ * describes a settled machine instead of a booting one - and short enough that
+ * it is in the log before the user's first dictation. A first run downloading
+ * a 550 MB model will still be at "downloading (n%)", which the report states
+ * as amber rather than as a failure. */
+const SELF_CHECK_STARTUP_DELAY_MS = 5_000;
+
+function runStartupSelfCheck(): void {
+  setTimeout(() => {
+    void gatherSelfCheck()
+      .then((report) => {
+        for (const line of formatSelfCheckForLog(report)) flowLog(line);
+      })
+      .catch((err) => flowLog(`[selfcheck] could not run the startup self-check: ${String(err)}`));
+  }, SELF_CHECK_STARTUP_DELAY_MS);
+}
+
 /** U2c: persist, ONCE, what the migration just learned about this machine, and
  * suspend the retention purge because of it.
  *
@@ -816,12 +961,14 @@ const hotkey = new HotkeyAdapter(settings.combo, {
       return;
     }
     listening = true;
+    pressStartedAt = Date.now(); // B9: see noteCaptureContinuity
     hotpath.mark("captureStartDecided");
     overlay.startCapture({ sounds: settings.sounds, micDeviceId: settings.micDeviceId });
   },
   onStop() {
     markActivity();
     listening = false;
+    pressEndedAt = Date.now(); // B9: see noteCaptureContinuity
     overlay.stopCapture(); // marks "overlayStopSent"
   },
   onCancel(reason) {
@@ -829,6 +976,15 @@ const hotkey = new HotkeyAdapter(settings.combo, {
     listening = false;
     overlay.cancelCapture(); // marks "overlayCancelSent" on the still-open trace
     hotpath.abandon(reason);
+  },
+  // B2: the shortcut is one key away from complete (only ever true for a
+  // three-key-or-longer shortcut - see ComboMatcher.preArmed for why the
+  // default two-key one deliberately never reaches here). Re-sending the SAME
+  // policy is what "warm now" means: it opens the microphone if it is closed
+  // and restarts the hold window if it is already open, with no second code
+  // path to keep in step with the first.
+  onPreArm() {
+    applyMicWarmth();
   },
 }, {
   log: flowLog, // B4: hook incidents must be readable in a packaged build
@@ -842,6 +998,18 @@ const hotkey = new HotkeyAdapter(settings.combo, {
     uiBridge?.pushNow();
   },
 });
+
+/** B2: the ONE place the microphone pre-warm policy is derived and pushed.
+ *
+ * Deliberately a single function called from four places (boot, a settings
+ * change, the pre-arm edge, and the renderer's own replay on load) rather than
+ * a policy computed at each of them: "how long may Flow hold the microphone"
+ * is a privacy decision, and a privacy decision computed in four places is a
+ * privacy decision that will eventually disagree with itself. The mapping
+ * itself is pure and unit-tested in shared/micWarmth.ts. */
+function applyMicWarmth(): void {
+  overlay.setWarmPolicy(warmPolicy(settings.micPrewarm, settings.micDeviceId));
+}
 
 /** The shared utterance pipeline (PTT loop AND local API): anti-hallucination
  * gate #1 (energy VAD - an accidental press must not insert invented text,
@@ -885,12 +1053,41 @@ async function processUtterance(
   }
 }
 
+// B9: when the current press began and ended, main-process clock. Two numbers,
+// nothing else - they exist so noteCaptureContinuity below can tell a clip that
+// is simply SHORT from a microphone that STOPPED partway through the press, a
+// failure nothing in this app could see before (see shared/captureContinuity.ts).
+let pressStartedAt = 0;
+let pressEndedAt = 0;
+
+/** Judge the press that just ended, then forget it. Reads the pair above ONCE
+ * and clears it, so a WAV that arrives without a press behind it - the HTTP
+ * /transcribe endpoint, or a press refused because a long recording owns the
+ * engine - can never be judged against a stale press window. */
+function noteCaptureContinuity(capturedMs: number): void {
+  const startedAt = pressStartedAt;
+  const endedAt = pressEndedAt;
+  pressStartedAt = 0;
+  pressEndedAt = 0;
+  if (startedAt === 0 || endedAt <= startedAt) return;
+  const verdict = judgeCaptureShortfall(endedAt - startedAt, capturedMs);
+  if (!verdict.dropped) return;
+  silentFailures.increment(SILENT_FAILURE.micDroppedMidDictation);
+  flowLog(shortfallLogLine(verdict));
+}
+
 function wireCapture() {
   ipcMain.on(CAPTURE_DONE, (_ev, payload: CaptureDonePayload) => {
     // B1: the WAV genuinely arrived - mark it before any early return, so a
     // too-short clip still closes as an honest (abandoned) trace instead of
     // leaving its open trace to be swept 30 s later as "stale".
     hotpath.markWavReceived(payload.durationMs);
+    // B9: BEFORE the 300 ms early return below, on purpose. A microphone that
+    // died two seconds into a five-second press is exactly the case that comes
+    // back as a near-empty clip and gets dropped as "release noise" - the
+    // loudest version of this failure is the one that would otherwise leave the
+    // quietest trace.
+    noteCaptureContinuity(payload.durationMs);
     // NOTHING is retained: the WAV lives in this handler, feeds one inference,
     // and every reference dies with it. Sub-300 ms of audio is release noise.
     // Every exit path calls overlay.flowDone() so the "Transcribing..." pill
@@ -935,6 +1132,15 @@ function wireCapture() {
         markActivity(); // insertion/clipboard included: the utterance JUST ended
         overlay.flowDone();
       });
+  });
+  // B2/B1: the two §3.3 budgets that live in the renderer. Both arrive as
+  // DURATIONS on the overlay's own clock; hotpath.markOverlayTimings turns them
+  // into marks by adding them to overlayStartSent, an instant THIS process
+  // recorded. Correlation is the same FIFO-by-age rule wavReceived already uses,
+  // and a message that finds no matching open trace (a refused press, closed
+  // synchronously by onStart) is dropped rather than mis-attributed.
+  ipcMain.on(CAPTURE_TIMING, (_ev, payload: CaptureTimingPayload) => {
+    hotpath.markOverlayTimings(payload.firstPaintMs, payload.firstSampleMs);
   });
   ipcMain.on(CAPTURE_ERROR, (_ev, message: string) => {
     hotpath.abandon(HOTPATH_ABANDON_REASON.captureError);
@@ -1047,12 +1253,22 @@ function applySettings(patch: Partial<FlowSettings>): FlowSettings {
   // disk, so this is a reload, not a download).
   const backendChanged = next.forceCpu !== settings.forceCpu;
   const themeChanged = next.theme !== settings.theme;
+  // B2: both inputs of the pre-warm policy. The microphone matters as much as
+  // the mode: a warm graph is bound to ONE device, so picking another one has
+  // to close it - otherwise the next dictation would be captured, warm and
+  // fast, from the microphone the user just stopped choosing.
+  const warmthChanged =
+    next.micPrewarm !== settings.micPrewarm || next.micDeviceId !== settings.micDeviceId;
   Object.assign(settings, next);
   saveSettings(settings);
   if (comboChanged) hotkey.setCombo(settings.combo);
   if (langChanged) sidecar?.setLanguage(settings.language);
   if (modelChanged || backendChanged) void swapModel(settings.model);
   if (themeChanged) applyTheme(settings.theme);
+  // Applied IMMEDIATELY, never at the next restart: turning this off is the
+  // user asking for the microphone to be closed, and "it will be, later" is not
+  // an answer to that request.
+  if (warmthChanged) applyMicWarmth();
   return { ...settings, combo: [...settings.combo] };
 }
 
@@ -1093,6 +1309,11 @@ app.on("before-quit", () => {
   // Only our polling timers: electron-updater's own autoInstallOnAppQuit hook
   // stays armed, so a downloaded update still lands on this manual quit.
   updater?.stop();
+  // B9: BEFORE hotkey.stop(). A resume or a lock delivered while the app is
+  // tearing itself down would otherwise ask a stopping adapter to rebuild its
+  // hook - harmless (rearm() checks `stopped`) but exactly the kind of race
+  // that is cheaper to make impossible than to reason about at 2 a.m.
+  systemWatch?.stop();
   tray?.destroy();
   hotkey.stop();
   overlay.destroy();
@@ -1113,6 +1334,14 @@ app.on("before-quit", () => {
   sidecar?.stop();
   probe?.stop();
   api?.stop();
+  // B4b: LAST, on purpose. Every line the shutdown above just wrote (the
+  // recorder's rescue, the API's cleanup) is still sitting in the queue: the
+  // writes are asynchronous now, and this handler is synchronous with the
+  // process dying right after it, so no scheduled drain would ever run. Same
+  // reasoning and the same place in the sequence as flushPendingRestore() and
+  // rescueOnQuit() above - the last diagnostics of a session are very often the
+  // ones that explain why it ended.
+  logQueue.flushSync();
 });
 
 // A headless engine must not die when its only (hidden) window closes.

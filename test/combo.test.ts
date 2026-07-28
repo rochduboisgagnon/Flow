@@ -197,3 +197,74 @@ test("comboLabel and genericOf", () => {
   assert.equal(genericOf("LEFT META"), "WIN");
   assert.equal(genericOf("F9"), "F9");
 });
+
+// ---- B2: pre-arm, the narrowed version of "open the mic on the first key" ----
+//
+// The whole point of these tests is the FIRST one: the plan proposed treating a
+// lone Ctrl as intent to dictate, and the default shortcut is Ctrl+Win. If that
+// ever starts returning true, Flow opens the microphone on every Ctrl+C on the
+// machine - which is a privacy regression disguised as an optimisation.
+
+test("pre-arm: the DEFAULT two-key shortcut never pre-arms, whatever is held", () => {
+  const m = ctrlWin();
+  assert.equal(m.preArmed(), false, "nothing held");
+  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1000);
+  assert.equal(m.preArmed(), false, "Ctrl alone is not an intention to dictate");
+  m.handle({ key: "LEFT META", state: "DOWN" }, 1010);
+  assert.equal(m.preArmed(), false, "and a COMPLETE combo is a capture, not a pre-arm");
+});
+
+test("pre-arm: a single-key shortcut never pre-arms either (there is no partial state)", () => {
+  const m = createComboMatcher(["F9"], OPTS);
+  assert.equal(m.preArmed(), false);
+  m.handle({ key: "F9", state: "DOWN" }, 1000);
+  assert.equal(m.preArmed(), false);
+});
+
+test("pre-arm: a three-key shortcut arms once two of its three keys are held", () => {
+  const m = createComboMatcher(["CTRL", "SHIFT", "F9"], OPTS);
+  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1000);
+  assert.equal(m.preArmed(), false, "one key of three is not evidence");
+  m.handle({ key: "LEFT SHIFT", state: "DOWN" }, 1010);
+  assert.equal(m.preArmed(), true, "two of three: one key away, and a rare hand position");
+  m.handle({ key: "F9", state: "DOWN" }, 1020);
+  assert.equal(m.preArmed(), false, "complete: this is a capture now");
+});
+
+test("pre-arm: it falls back to false as soon as the hand comes off a key", () => {
+  const m = createComboMatcher(["CTRL", "SHIFT", "F9"], OPTS);
+  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1000);
+  m.handle({ key: "LEFT SHIFT", state: "DOWN" }, 1010);
+  assert.equal(m.preArmed(), true);
+  m.handle({ key: "LEFT SHIFT", state: "UP" }, 1100);
+  assert.equal(m.preArmed(), false);
+});
+
+test("pre-arm: keys outside the shortcut do not count toward it", () => {
+  const m = createComboMatcher(["CTRL", "SHIFT", "F9"], OPTS);
+  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1000);
+  m.handle({ key: "A", state: "DOWN" }, 1010);
+  m.handle({ key: "B", state: "DOWN" }, 1020);
+  assert.equal(m.preArmed(), false, "three keys held, but only one of them is the shortcut's");
+});
+
+test("pre-arm: side-agnostic, like every other match in this matcher", () => {
+  const m = createComboMatcher(["CTRL", "SHIFT", "F9"], OPTS);
+  m.handle({ key: "RIGHT CTRL", state: "DOWN" }, 1000);
+  m.handle({ key: "RIGHT SHIFT", state: "DOWN" }, 1010);
+  assert.equal(m.preArmed(), true);
+});
+
+test("pre-arm: reset() and setCombo() clear it, so no stale hand position survives", () => {
+  const m = createComboMatcher(["CTRL", "SHIFT", "F9"], OPTS);
+  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1000);
+  m.handle({ key: "LEFT SHIFT", state: "DOWN" }, 1010);
+  assert.equal(m.preArmed(), true);
+  m.reset();
+  assert.equal(m.preArmed(), false);
+  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 2000);
+  m.handle({ key: "LEFT SHIFT", state: "DOWN" }, 2010);
+  assert.equal(m.preArmed(), true);
+  m.setCombo(["CTRL", "WIN"]);
+  assert.equal(m.preArmed(), false, "the new shortcut is two keys: it can never pre-arm");
+});

@@ -1,5 +1,9 @@
 import React, { useEffect, useState } from "react";
-import type { UiStatePayload } from "../../../shared/ipcContracts";
+import type {
+  UiStatePayload,
+  SelfCheckReport,
+  SelfCheckStatus,
+} from "../../../shared/ipcContracts";
 import {
   computeIntervals,
   evaluateBudgets,
@@ -99,7 +103,85 @@ export function Diagnostics({ s }: { s: UiStatePayload }) {
           </tbody>
         </table>
       </div>
+      <SelfCheckPanel />
       <HotpathPanel />
+    </>
+  );
+}
+
+// ---- B5: the self-diagnostic ----
+// On demand ONLY (button), never polled: producing the report enumerates audio
+// devices through a renderer round trip and writes a probe file to disk. Every
+// verdict below is decided in shared/selfCheck.ts, pure and unit-tested - this
+// component chooses colours and nothing else, which is what keeps the panel and
+// the startup lines in flow.log telling the same story.
+
+const SELF_CHECK_TONE: Record<SelfCheckStatus, { dot: string; word: string }> = {
+  ok: { dot: "on", word: "OK" },
+  warn: { dot: "off", word: "Attention" },
+  fail: { dot: "err", word: "Problem" },
+  unknown: { dot: "off", word: "Not established" },
+};
+
+function SelfCheckPanel() {
+  const [report, setReport] = useState<SelfCheckReport | null>(null);
+  const [running, setRunning] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const run = async () => {
+    setRunning(true);
+    setErr(null);
+    try {
+      const r = await window.flowui.selfCheck();
+      setReport(r);
+      if (!r) setErr("Flow could not run the checks.");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return (
+    <>
+      <h3 style={{ marginTop: 28 }}>Self-check</h3>
+      <p className="sub">
+        Six things that have to be true for a dictation to work, each with what to do when it is not. Flow also runs
+        this a few seconds after every start and writes the result to the engine log.
+      </p>
+      <div className="card">
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: report ? 12 : 0 }}>
+          <button className="btn amber" onClick={() => void run()} disabled={running}>
+            {running ? "Checking..." : "Run the checks"}
+          </button>
+          {report ? (
+            <span className="sub" style={{ margin: 0 }}>
+              <span className={"dot " + SELF_CHECK_TONE[report.worst].dot} />
+              {SELF_CHECK_TONE[report.worst].word} - checked {new Date(report.generatedAtIso).toLocaleTimeString()}
+            </span>
+          ) : null}
+        </div>
+        {err ? <p className="note-err" style={{ margin: 0 }}>{err}</p> : null}
+        {report ? (
+          <table className="diag" style={{ maxWidth: "none" }}>
+            <tbody>
+              {report.lines.map((l) => (
+                <tr key={l.id}>
+                  <td>
+                    <span className={"dot " + SELF_CHECK_TONE[l.status].dot} />
+                    {l.label}
+                  </td>
+                  <td>
+                    {l.detail}
+                    {/* The fix is the whole point of a red line: never a colour without a next step. */}
+                    {l.fix ? <div className="sub" style={{ margin: "4px 0 0" }}>{l.fix}</div> : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : null}
+      </div>
     </>
   );
 }
@@ -150,8 +232,14 @@ interface BudgetRow {
 function aggregateBudgets(traces: HotpathTrace[]): BudgetRow[] {
   // evaluateBudgets always returns the same 4 rows in the same order (see
   // hotpath.ts) - even for a placeholder trace with no marks at all, which is
-  // exactly what lets this function show the two "not measurable" rows even
-  // when zero traces have been captured yet.
+  // exactly what lets this table show all four budgets, with "no data yet",
+  // before a single press has been captured.
+  // B2: all four are measurable now. The two that happen inside the overlay
+  // renderer are reported by it and folded into the trace by main
+  // (hotpath.markOverlayTimings), so the `measurable: false` branch below has
+  // no producer left - it is kept because the distinction it draws ("Flow
+  // cannot answer this" vs "nothing has produced it yet") is the right one to
+  // have ready the next time a number lives somewhere this process cannot see.
   const placeholder = evaluateBudgets({ id: 0, outcome: "abandoned", marks: [] });
   const values: number[][] = placeholder.map(() => []);
   for (const tr of traces) {
@@ -252,6 +340,32 @@ function HotpathPanel() {
             <tr><td>p95</td><td className="mono">{fmtMs(handlerLatency.p95Ms)}</td></tr>
             <tr><td>Worst case</td><td className="mono">{fmtMs(handlerLatency.maxMs)}</td></tr>
             <tr><td>Samples</td><td className="mono">{handlerLatency.count}</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      {/* B6: the named counters for every best-effort catch on the hot path.
+          They ride this same snapshot (see hotpath.ts's silentFailureCounts) so
+          they sit beside the measurements they explain: a press whose numbers
+          look fine but whose cue never played has its reason in this table.
+          Every known name is shown, including at zero - a row that appears only
+          once something has broken is a row nobody knows to look for. */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <span className="lbl">Tolerated failures (counted since launch)</span>
+        <p className="sub" style={{ margin: "6px 0 10px" }}>
+          Things Flow recovers from without stopping. All zeros is the normal state; a number here is
+          the difference between &quot;it feels capricious&quot; and a named cause.
+        </p>
+        <table className="diag" style={{ maxWidth: 520 }}>
+          <tbody>
+            {Object.entries(snap.silentFailureCounts).map(([name, count]) => (
+              <tr key={name}>
+                <td className="mono">{name}</td>
+                <td className="mono" style={count > 0 ? { color: "var(--err)", fontWeight: 600 } : undefined}>
+                  {count}
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>

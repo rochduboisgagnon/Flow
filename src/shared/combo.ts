@@ -95,6 +95,10 @@ export function normalizeCombo(physicalKeys: string[]): string[] {
 export interface ComboMatcher {
   handle(e: ComboEvent, now: number): ComboDecision;
   capturing(): boolean;
+  /** B2: is the shortcut ALMOST pressed - every key but one already held?
+   * See preArmed() below for why that question deliberately has no answer for
+   * a two-key shortcut. */
+  preArmed(): boolean;
   setCombo(combo: string[]): void;
   reset(): void;
 }
@@ -116,6 +120,40 @@ export function createComboMatcher(
 
   function comboFullyDown(): boolean {
     return combo.every((entry) => [...down].some((k) => satisfies(entry, k)));
+  }
+
+  /**
+   * B2: "open the microphone on the FIRST key of the combo" - the plan's idea,
+   * narrowed until it stops being a false-positive machine.
+   *
+   * The plan proposes treating a lone Ctrl as probable intent to dictate. It is
+   * not. Ctrl is the most-pressed key on the keyboard: copy, paste, save, undo,
+   * every browser tab shortcut. On the DEFAULT shortcut (Ctrl+Win) that rule
+   * would open the microphone dozens to hundreds of times a day, for keystrokes
+   * that have nothing to do with speaking - and each one lights Windows'
+   * microphone indicator. Trading the user's trust for a few milliseconds is a
+   * bad trade in a product whose one differentiator is that it does not listen.
+   *
+   * So the trigger is evidence-based instead of key-based: pre-arm only when
+   * every key of the shortcut but ONE is already held, AND that is at least two
+   * keys of evidence. Consequences, both intended:
+   *   - a two-key shortcut (the default) NEVER pre-arms. One key held is one
+   *     key of evidence, which is exactly the case argued against above. The
+   *     warm window after a dictation and the startup warm-up cover it instead.
+   *   - a three-key shortcut pre-arms once two of its three keys are down,
+   *     which is a genuinely rare hand position and therefore genuine evidence.
+   *
+   * The rule needs no per-key blacklist and no tuning: the longer the shortcut,
+   * the more a partial press means. That is the property that makes it safe to
+   * leave on for everyone.
+   */
+  function preArmed(): boolean {
+    if (combo.length < 3) return false; // see above: one key of evidence is not evidence
+    let held = 0;
+    for (const entry of combo) {
+      if ([...down].some((k) => satisfies(entry, k))) held++;
+    }
+    return held === combo.length - 1;
   }
 
   function isComboKey(key: string): boolean {
@@ -217,6 +255,7 @@ export function createComboMatcher(
       return e.state === "DOWN" ? handleDown(e.key, now) : handleUp(e.key, now);
     },
     capturing: () => capturing,
+    preArmed,
     setCombo(next) {
       combo = [...next];
       reset();

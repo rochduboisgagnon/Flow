@@ -11,6 +11,7 @@ import {
   UI_CHECK_UPDATES,
   UI_STATE_PUSH,
   UI_HOTPATH_SNAPSHOT,
+  UI_SELF_CHECK,
   UI_SNIPPET_LIST,
   UI_SNIPPET_SAVE,
   UI_SNIPPET_DELETE,
@@ -35,6 +36,7 @@ import {
   type HistoryDocPayload,
   type DownloadResult,
   type HotpathSnapshot,
+  type SelfCheckReport,
 } from "../shared/ipcContracts";
 import type { MainWindow } from "./mainWindow";
 import { listSnippets, saveSnippet, deleteSnippet, getSnippet } from "./snippets";
@@ -107,6 +109,12 @@ export interface UiBridgeDeps {
   // The SAME closure the HTTP /diagnostics/hotpath route calls (main/api.ts) -
   // see index.ts's hotpathSnapshotDep, never a second implementation.
   hotpathSnapshot(): HotpathSnapshot;
+
+  // ---- self-diagnostic (V2, B5) ----
+  // The SAME closure the HTTP /diagnostics/selfcheck route calls - see
+  // index.ts's selfCheckDep. Async because enumerating audio devices needs a
+  // round trip to a renderer.
+  selfCheck(): Promise<SelfCheckReport>;
 }
 
 const REPO_URL = "https://github.com/rochduboisgagnon/Flow";
@@ -311,6 +319,9 @@ export class UiBridge {
 
     // ---- activation hot-path diagnostics (V2, B1) ----
     this.guarded<[], HotpathSnapshot | null>(UI_HOTPATH_SNAPSHOT, null, () => this.deps.hotpathSnapshot());
+
+    // ---- self-diagnostic (V2, B5): on demand only, never on a timer ----
+    this.guarded<[], SelfCheckReport | null>(UI_SELF_CHECK, null, () => this.deps.selfCheck());
   }
 
   /** U3c: copy is not paste. No Ctrl+V, no clipboard snapshot/restore dance -

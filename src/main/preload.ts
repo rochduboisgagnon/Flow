@@ -4,8 +4,11 @@ import {
   CAPTURE_START,
   CAPTURE_STOP,
   CAPTURE_CANCEL,
+  CAPTURE_WARM,
+  CAPTURE_COOL,
   CAPTURE_DONE,
   CAPTURE_ERROR,
+  CAPTURE_TIMING,
   NATIVE_START,
   NATIVE_STOP,
   NATIVE_CHUNK,
@@ -23,6 +26,7 @@ import {
   UI_CHECK_UPDATES,
   UI_STATE_PUSH,
   UI_HOTPATH_SNAPSHOT,
+  UI_SELF_CHECK,
   UI_SNIPPET_LIST,
   UI_SNIPPET_SAVE,
   UI_SNIPPET_DELETE,
@@ -37,6 +41,8 @@ import {
   UI_DOWNLOAD_DOC,
   UI_DOWNLOAD_AUDIO,
   type CaptureStartPayload,
+  type CaptureWarmPayload,
+  type CaptureTimingPayload,
   type NativeStartPayload,
   type UiStatePayload,
   type UpdateCheckResult,
@@ -51,6 +57,7 @@ import {
   type HistoryDocPayload,
   type DownloadResult,
   type HotpathSnapshot,
+  type SelfCheckReport,
 } from "../shared/ipcContracts";
 
 export type CaptureCommand = "start" | "stop" | "cancel";
@@ -67,8 +74,22 @@ const api = {
     ipcRenderer.on(CAPTURE_STOP, () => cb("stop"));
     ipcRenderer.on(CAPTURE_CANCEL, () => cb("cancel"));
   },
+  /** B2: the microphone pre-warm policy. ONE callback for both channels, with
+   * `null` meaning "cool down now" - the renderer has a single place that
+   * decides what to do with the microphone, so the two commands can never be
+   * handled by two subtly different pieces of code. */
+  onCaptureWarm(cb: (cfg: CaptureWarmPayload | null) => void) {
+    ipcRenderer.on(CAPTURE_WARM, (_e, cfg: CaptureWarmPayload) => cb(cfg));
+    ipcRenderer.on(CAPTURE_COOL, () => cb(null));
+  },
   sendCaptureDone(wav: ArrayBuffer, durationMs: number) {
     ipcRenderer.send(CAPTURE_DONE, { wav, durationMs });
+  },
+  /** B2/B1: two DURATIONS measured on this renderer's own clock (see
+   * CaptureTimingPayload). Never timestamps: main turns them into marks by
+   * adding them to an instant it recorded itself. */
+  sendCaptureTiming(t: CaptureTimingPayload) {
+    ipcRenderer.send(CAPTURE_TIMING, t);
   },
   sendCaptureError(message: string) {
     ipcRenderer.send(CAPTURE_ERROR, message);
@@ -155,6 +176,10 @@ const ui = {
   // the Diagnostics page polls this on its own schedule rather than riding
   // the 1 Hz UiStatePayload push (see ipcContracts.ts's module note).
   hotpathSnapshot: (): Promise<HotpathSnapshot | null> => ipcRenderer.invoke(UI_HOTPATH_SNAPSHOT),
+  // ---- self-diagnostic (V2, B5): on demand ONLY. Producing it enumerates
+  // audio devices and writes a probe file; that belongs to a button press, not
+  // to a poll (see ipcContracts.ts's note on UI_SELF_CHECK).
+  selfCheck: (): Promise<SelfCheckReport | null> => ipcRenderer.invoke(UI_SELF_CHECK),
 };
 
 export type FlowUiApi = typeof ui;

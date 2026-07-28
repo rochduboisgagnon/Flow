@@ -48,6 +48,11 @@ export interface PttCallbacks {
    * driven by a keyboard event at all but still cut a live hold short. Always
    * provided: every call site below names one. */
   onCancel(reason: HotpathAbandonReason): void;
+  /** B2: the shortcut is ALMOST pressed (see ComboMatcher.preArmed) - a good
+   * moment to have the microphone ready before the last key lands. Optional
+   * because it is an optimisation, not a step of the dictation loop: an
+   * adapter built without it dictates exactly the same, just colder. */
+  onPreArm?(): void;
 }
 
 /** The slice of keyspy's GlobalKeyboardListener this adapter uses, declared as
@@ -132,6 +137,11 @@ export class HotkeyAdapter {
   /** stop() was called: every later close event belongs to that decision. */
   private stopped = false;
   private infoLines = 0;
+  /** B2: edge detector for onPreArm. Needs no explicit reset anywhere - it is
+   * recomputed from the matcher on every event, so any path that clears the
+   * matcher's key state (rearm, setCombo, suspend, a hook death) makes it fall
+   * back to false on the very next keystroke. */
+  private wasPreArmed = false;
 
   // The "open AGR Pilot" shortcut used to live here too (v5 c2), which coupled it to AGR Flow:
   // disabling Flow killed the shortcut. It now belongs entirely to AGR Manager (its own always-on
@@ -350,6 +360,15 @@ export class HotkeyAdapter {
     else if (action === "cancel") {
       this.cbs.onCancel(e.state === "UP" ? HOTPATH_ABANDON_REASON.shortTap : HOTPATH_ABANDON_REASON.extraKey);
     }
+    // B2: fire the pre-warm on the RISING edge only - the callback sends an IPC
+    // message, and this runs inside the hook callback Windows is timing, so it
+    // must happen once per hand position and not once per keystroke while a
+    // partial shortcut is held. preArmed() answers false on a single boolean
+    // read for any shortcut shorter than three keys (the default one included),
+    // so the overwhelmingly common case costs nothing measurable.
+    const armed = this.matcher.preArmed();
+    if (armed && !this.wasPreArmed) this.cbs.onPreArm?.();
+    this.wasPreArmed = armed;
     // menace §3.2.2: the FULL synchronous cost of this hook callback - the
     // matcher AND every onStart/onStop/onCancel side effect the two lines
     // above just ran (window show, IPC send) - because all of it happens
@@ -429,6 +448,41 @@ export class HotkeyAdapter {
     if (v && this.matcher.capturing()) this.cbs.onCancel(HOTPATH_ABANDON_REASON.paused);
     this.suspended = v;
     this.matcher.reset();
+  }
+
+  /** B9: forget a hold that the keyboard can no longer end - the machine slept,
+   * or the session locked, and the UP event either arrived in a frozen process
+   * or went to the secure desktop. Returns whether a hold was actually in
+   * flight, so the caller only tears the capture down when there is one.
+   *
+   * Deliberately does NOT call onCancel: every abandon reason in the closed
+   * vocabulary names a KEYBOARD or engine cause, and none of them is true here.
+   * Claiming one would put a wrong word in the Diagnostics panel forever;
+   * leaving the trace to the 30 s staleness sweep records exactly what happened
+   * (it never resolved) and the reason is written in flow.log, in words, by
+   * shared/systemResilience.ts. The capture teardown itself belongs to the
+   * caller, which owns the overlay - this class owns only the key state. */
+  interruptHold(): boolean {
+    const wasCapturing = this.matcher.capturing();
+    this.matcher.reset();
+    return wasCapturing;
+  }
+
+  /** B9: rebuild the low-level keyboard hook on purpose, with no death to
+   * react to.
+   *
+   * Windows silently removes a low-level hook that overran its budget and,
+   * in Microsoft's own words, "there is no way for the application to know
+   * whether the hook is removed" - so the key server process stays alive and
+   * healthy while the hook behind it is gone, and B4's watchdog, which watches
+   * that process, sees nothing. Rebuilding is the only instrument available.
+   * WHEN to do it is a policy decision and lives in
+   * shared/systemResilience.ts; this only performs it, through the same arm()
+   * every other path uses, so the "never two live listeners" invariant holds
+   * here exactly as it does for a restart. */
+  async rearm(): Promise<void> {
+    if (this.stopped) return;
+    await this.arm();
   }
 
   stop() {

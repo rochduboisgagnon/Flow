@@ -7,6 +7,7 @@ import {
   snapshotIsRestorable,
   type ClipSnapshot,
 } from "../shared/clipboardSnapshot";
+import { silentFailures, SILENT_FAILURE } from "../shared/silentFailures";
 
 // TextInjector: puts the dictated text where it belongs.
 //   route "insert"    -> clipboard paste + restore (default), or typed keys
@@ -38,6 +39,14 @@ function snapshotClipboard(): PriorClip {
     const img = clipboard.readImage();
     image = img.isEmpty() ? null : img;
   } catch {
+    // B6: counted, and deliberately still SILENT and still tolerant. This runs
+    // once per pasted dictation, on the hot path, and the cost of the failure is
+    // narrow (the restored clipboard loses its image flavour, keeping text and
+    // HTML) - so a log line here would put a disk write under every insertion to
+    // report something the user may never notice. The counter is what turns "the
+    // screenshot I had copied disappeared, sometimes" into a number in
+    // Diagnostics, without making the hot path any louder.
+    silentFailures.increment(SILENT_FAILURE.clipboardImageReadFailed);
     image = null;
   }
   return { text: text || null, html: html || null, image };

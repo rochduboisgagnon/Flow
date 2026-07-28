@@ -4,7 +4,10 @@ import {
   CAPTURE_START,
   CAPTURE_STOP,
   CAPTURE_CANCEL,
+  CAPTURE_WARM,
+  CAPTURE_COOL,
   type CaptureStartPayload,
+  type CaptureWarmPayload,
 } from "../shared/ipcContracts";
 import { OverlayVisibility } from "./overlayVisibility";
 import { hotpath } from "../shared/hotpath";
@@ -26,6 +29,11 @@ export class OverlayWindow {
   // B3: armed only by startAndRefuse() below - cleared by the NEXT startCapture()
   // (real or another refusal), same discipline as hideTimer just above.
   private refusalTimer: NodeJS.Timeout | undefined;
+  // B2: the last microphone pre-warm policy pushed to the renderer (null = the
+  // user turned it off). `undefined` means "never set", which is why the type
+  // is three-valued: replaying an unset policy on load would be sending a
+  // decision nobody has made yet.
+  private warmPolicy: CaptureWarmPayload | null | undefined = undefined;
   // How long a refused press (see startAndRefuse) stays up before it self-cancels.
   // A same-tick showInactive()+hide() can paint NOTHING at all (the compositor never
   // gets a turn between the two native calls) - this yields to the event loop long
@@ -89,6 +97,13 @@ export class OverlayWindow {
     this.win.setIgnoreMouseEvents(true); // clicks pass through to whatever is under it
     this.win.webContents.on("did-finish-load", () => {
       this.ready = true;
+      // B2: replay the pre-warm policy FIRST. It is normally pushed at boot,
+      // well before this page exists, and a reload (dev HMR, a renderer crash)
+      // would otherwise leave the new page with no policy at all - a
+      // microphone that quietly stops pre-warming and a first word that
+      // quietly goes back to being clipped. Before the pending start, so a
+      // press that beat the load finds the policy already applied.
+      if (this.warmPolicy !== undefined) this.setWarmPolicy(this.warmPolicy);
       if (this.pendingStart) {
         const cfg = this.pendingStart;
         this.pendingStart = null;
@@ -97,6 +112,39 @@ export class OverlayWindow {
     });
     if (dev) this.win.loadURL("http://localhost:5183/overlay.html");
     else this.win.loadFile(path.join(__dirname, "..", "renderer", "overlay.html"));
+  }
+
+  /**
+   * B2: tell the renderer how to keep the microphone warm - or, with null, to
+   * close it and erase its pre-roll now.
+   *
+   * Deliberately placed BEFORE startCapture rather than beside the other send:
+   * two existing tests (overlay-cue-guarantee, silent-failures-wiring) read the
+   * text between startCapture and startAndRefuse and count the try/catch blocks
+   * and deferred logs inside it, because that stretch is the code the keyboard
+   * hook's own callback runs. Adding a third pair in the middle of it would
+   * have made those counts pass for the wrong reason.
+   *
+   * Remembered as well as sent, for two reasons that both bite in practice: it
+   * is pushed at boot, before the page has loaded (replayed in
+   * did-finish-load), and it is re-sent on the pre-arm path from inside that
+   * same hook callback, where a throw would endanger the hook itself (see
+   * startCapture's note). Hence the guarded send and the DEFERRED log: flowLog
+   * does a synchronous disk write, which has no business on that stack.
+   */
+  setWarmPolicy(cfg: CaptureWarmPayload | null) {
+    this.warmPolicy = cfg;
+    if (!this.win || this.win.isDestroyed() || !this.ready) return;
+    try {
+      if (cfg) this.win.webContents.send(CAPTURE_WARM, cfg);
+      else this.win.webContents.send(CAPTURE_COOL);
+    } catch (err) {
+      // Same counter as any other failed dispatch to this window: the pre-warm
+      // is an optimisation, so a lost message costs latency, never a dictation.
+      silentFailures.increment(SILENT_FAILURE.overlaySendFailed);
+      const msg = String(err);
+      setImmediate(() => this.log?.(`[overlay] warm policy send failed: ${msg}`));
+    }
   }
 
   startCapture(cfg: CaptureStartPayload) {
@@ -216,6 +264,17 @@ export class OverlayWindow {
       Math.round(wa.x + (wa.width - w) / 2),
       Math.round(wa.y + wa.height - h - 24),
     );
+  }
+
+  /** B5: is the page that enumerates audio devices actually loaded?
+   *
+   * listMics() answers [] for two completely different facts - "this machine
+   * has no microphone" and "the renderer has not loaded yet" - and the
+   * self-diagnostic must not report the second as the first. Everything it
+   * needs to tell them apart is private in here, so it is answered here rather
+   * than guessed there. */
+  canListMics(): boolean {
+    return this.win !== null && !this.win.isDestroyed() && this.ready;
   }
 
   /** Microphone list for the Manager's settings view. Device enumeration

@@ -158,19 +158,34 @@ function report(snapshot: HotpathSnapshot): void {
         tr.outcome === "completed" ? (tr.result ?? "completed") : `abandoned:${tr.reason ?? "?"}`,
         fmtMs(iv.verdictLatencyMs),
         fmtMs(iv.keyToOverlayOrderMs),
+        // B2: the two the overlay renderer reports. `mic` is the number to
+        // watch across a session - the FIRST press pays the microphone
+        // acquisition, every press inside the pre-warm window answers 0.00
+        // because the pre-roll already held the audio from before the key.
+        fmtMs(iv.pressToFirstPaintMs),
+        fmtMs(iv.pressToFirstSampleMs),
         fmtMs(iv.transcriptionMs),
         fmtMs(iv.releaseToTextExclModelMs),
         String(tr.textChars ?? "-"),
       ];
     });
-    printTable(["#", "outcome", "verdict(ms)", "press>overlay(ms)", "model(ms)", "release>text excl.model(ms)", "chars"], rows);
+    printTable(
+      [
+        "#", "outcome", "verdict(ms)", "press>overlay(ms)", "press>paint(ms)", "press>mic(ms)",
+        "model(ms)", "release>text excl.model(ms)", "chars",
+      ],
+      rows,
+    );
   }
 
   console.log(
-    "\nNot measurable from this process: press -> first animation frame painted, and\n" +
-      "press -> microphone actually capturing. Both require instrumenting the overlay\n" +
-      "renderer (src/renderer/overlay.tsx), which was out of scope for this task - see\n" +
-      "the B1 report.\n",
+    "\nAll four §3.3 budgets are measurable since B2. The two that happen inside the\n" +
+      "overlay renderer (press -> first frame painted, press -> microphone capturing)\n" +
+      "are reported by that process as durations on its own clock and folded into the\n" +
+      "trace by adding them to an instant the main process recorded itself, so no two\n" +
+      "clocks are ever compared. The one-way IPC hop is therefore not counted: both\n" +
+      "are LOWER bounds. A dash means the press never produced them (a refusal, or a\n" +
+      "capture that failed before the microphone was live).\n",
   );
 }
 

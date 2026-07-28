@@ -36,25 +36,29 @@ test("index.ts: loadProbeWav() names its catch instead of swallowing silently", 
   assert.match(body, /silentFailures\.increment\(/);
 });
 
-test("index.ts: flowLog() names BOTH of its own catches (rotate, and the write itself)", () => {
-  const at = INDEX_SRC.indexOf("function flowLog(msg: string)");
-  assert.ok(at > 0);
-  const end = INDEX_SRC.indexOf("\n}\n", at);
-  const body = INDEX_SRC.slice(at, end);
-  assert.match(body, /SILENT_FAILURE\.flowLogRotateFailed/);
-  assert.match(body, /SILENT_FAILURE\.flowLogWriteFailed/);
+// B4b moved the two log counters ONE CONSTRUCT UP. flowLog() no longer writes
+// anything itself - it pushes into the buffered queue (src/shared/logQueue.ts),
+// whose write is asynchronous - so a failure of that write can no longer be
+// reported from inside flowLog(). It is reported by the queue's onFailure hook,
+// declared where the queue is built. Same two names, same rule; the two tests
+// below therefore anchor on the queue's construction rather than on flowLog's
+// (now empty of I/O) body.
+const LOG_FAILURE_HOOK = INDEX_SRC.slice(
+  INDEX_SRC.indexOf("const logQueue = new LogQueue("),
+  INDEX_SRC.indexOf("function flowLog(msg: string)"),
+);
+
+test("index.ts: the engine log names BOTH of its failures (rotate, and the write itself)", () => {
+  assert.ok(LOG_FAILURE_HOOK.length > 0, "flowLog must go through the buffered queue (B4b)");
+  assert.match(LOG_FAILURE_HOOK, /SILENT_FAILURE\.flowLogRotateFailed/);
+  assert.match(LOG_FAILURE_HOOK, /SILENT_FAILURE\.flowLogWriteFailed/);
 });
 
-test("index.ts: flowLog's outer catch (the write itself failing) never calls flowLog to report it", () => {
+test("index.ts: the log's own write failure never calls flowLog to report it", () => {
   // By construction flowLog cannot log its own failure to write - the counter
-  // is the ONLY signal. Assert the outer catch block has no flowLog(...) call.
-  const at = INDEX_SRC.indexOf("function flowLog(msg: string)");
-  const end = INDEX_SRC.indexOf("\n}\n", at);
-  const body = INDEX_SRC.slice(at, end);
-  const outerCatchAt = body.indexOf("flowLogWriteFailed");
-  assert.ok(outerCatchAt > 0);
-  const afterOuterCatch = body.slice(outerCatchAt);
-  assert.doesNotMatch(afterOuterCatch, /flowLog\(/, "must not attempt to log its own logging failure");
+  // is the ONLY signal. Assert the failure hook contains no flowLog(...) call.
+  assert.match(LOG_FAILURE_HOOK, /flowLogWriteFailed/);
+  assert.doesNotMatch(LOG_FAILURE_HOOK, /flowLog\(/, "must not attempt to log its own logging failure");
 });
 
 test("overlay.ts's two new startCapture() catches defer their log write off the synchronous call stack", () => {
@@ -73,10 +77,35 @@ test("shared/hotpath.ts: HotpathSnapshot exposes silentFailureCounts, riding the
   assert.match(HOTPATH_SRC, /silentFailureCounts:\s*silentFailures\.snapshot\(\)/);
 });
 
-test("the closed vocabulary documents the two catches this task could NOT wire (outside its touchable files)", () => {
-  // insert.ts and focus/probe.ts are outside this task's file whitelist -
-  // named here so a follow-up only has to import and call increment(), never
-  // invent a new name.
+test("the closed vocabulary keeps its two names for insert.ts and focus/probe.ts", () => {
+  // Named once, wired by the follow-up (see the two tests below) - never a
+  // second, differently-spelled name for the same fact.
   assert.equal(SILENT_FAILURE.clipboardImageReadFailed, "clipboard-image-read-failed");
   assert.equal(SILENT_FAILURE.focusProbeUnavailable, "focus-probe-unavailable");
+});
+
+// B6 completion: the two names above were declared but left unwired. These are
+// the catches they belong to.
+
+test("insert.ts: the readImage catch is counted, and deliberately STAYS silent", () => {
+  const src = readSrc("src", "main", "insert.ts");
+  const at = src.indexOf("function snapshotClipboard()");
+  assert.ok(at > 0);
+  const body = src.slice(at, src.indexOf("\n}\n", at));
+  assert.match(body, /SILENT_FAILURE\.clipboardImageReadFailed/);
+  // It runs once per pasted dictation, ON the hot path: a log line here would
+  // put a write under every insertion. The counter is the whole signal.
+  assert.doesNotMatch(body, /\blog\?\.\(|flowLog\(/, "this one must not gain a per-dictation log line");
+});
+
+test("focus/probe.ts: a probe that cannot start is counted, and logged ONCE", () => {
+  const src = readSrc("src", "main", "focus", "probe.ts");
+  assert.match(src, /SILENT_FAILURE\.focusProbeUnavailable/);
+  // Counting every time but logging once: the cause is a single failed spawn,
+  // and one line per dictation would bury the log without adding a fact.
+  const at = src.indexOf("private noteUnavailable(");
+  assert.ok(at > 0, "the count/log-once decision must live in one named place");
+  const body = src.slice(at, src.indexOf("\n  }\n", at));
+  assert.match(body, /reportedUnavailable/);
+  assert.match(body, /silentFailures\.increment\(/);
 });

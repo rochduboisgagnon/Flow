@@ -282,15 +282,107 @@ test("computeIntervals returns null for any interval whose marks are missing", (
   assert.equal(iv.totalPressToTextMs, null);
 });
 
-test("evaluateBudgets: the two overlay-only rows are always measurable:false, never omitted", () => {
+// B2 replaced B1's "these two can never be answered" with "the overlay answers
+// them". The row shape is unchanged on purpose - a consumer must still be able
+// to tell "no press has produced this yet" (valueMs === null) apart from "Flow
+// cannot produce this at all" (measurable === false).
+test("evaluateBudgets: the two overlay rows are measurable but valueless until a press reports them", () => {
   const trace = traceWithMarks([["keyEventReceived", 0]]);
   const rows = evaluateBudgets(trace);
-  const byMetric = Object.fromEntries(rows.map((r) => [r.metric, r]));
   const paintRow = rows.find((r) => r.metric.includes("animation frame"));
   const micRow = rows.find((r) => r.metric.includes("microphone actually"));
-  assert.ok(paintRow && !paintRow.measurable && paintRow.valueMs === null && paintRow.withinBudget === null);
-  assert.ok(micRow && !micRow.measurable && micRow.valueMs === null && micRow.withinBudget === null);
-  void byMetric;
+  assert.ok(paintRow && paintRow.measurable && paintRow.valueMs === null && paintRow.withinBudget === null);
+  assert.ok(micRow && micRow.measurable && micRow.valueMs === null && micRow.withinBudget === null);
+});
+
+test("evaluateBudgets judges the two overlay rows against their §3.3 budgets once reported", () => {
+  const rows = evaluateBudgets(
+    traceWithMarks([
+      ["keyEventReceived", 0],
+      ["overlayFirstPaint", 20], // under 50 ms
+      ["overlayFirstSample", 300], // way over 80 ms: a cold microphone
+    ]),
+  );
+  assert.equal(rows.find((r) => r.metric.includes("animation frame"))?.withinBudget, true);
+  assert.equal(rows.find((r) => r.metric.includes("microphone actually"))?.withinBudget, false);
+});
+
+// ---- B2: folding the overlay renderer's two durations into a trace ----
+
+function openTraceWithOverlaySend(log: HotpathLog, sentAt = 5): void {
+  log.mark("keyEventReceived", 0);
+  log.mark("verdictRendered", 0.2);
+  log.mark("captureStartDecided", 0.3);
+  log.mark("overlayStartSent", sentAt);
+}
+
+test("markOverlayTimings derives both marks by ADDING durations to overlayStartSent", () => {
+  const log = new HotpathLog();
+  openTraceWithOverlaySend(log, 5);
+  // The renderer's own clock said: 12 ms to the first painted frame, 0 ms to
+  // having audio that covers the keypress (a warm microphone with a pre-roll).
+  log.markOverlayTimings(12, 0);
+  const iv = computeIntervals(log.snapshot().open[0]);
+  assert.equal(iv.pressToFirstPaintMs, 17, "5 (main's own instant) + 12 (the renderer's duration)");
+  assert.equal(iv.pressToFirstSampleMs, 5, "a warm mic: nothing was lost, the press instant is covered");
+});
+
+test("markOverlayTimings shows a COLD press for what it is", () => {
+  const log = new HotpathLog();
+  openTraceWithOverlaySend(log, 4);
+  log.markOverlayTimings(18, 260); // getUserMedia + AudioContext + worklet compile
+  const iv = computeIntervals(log.snapshot().open[0]);
+  assert.equal(iv.pressToFirstSampleMs, 264);
+  const micRow = evaluateBudgets(log.snapshot().open[0]).find((r) => r.metric.includes("microphone actually"));
+  assert.equal(micRow?.withinBudget, false, "264 ms is where the lost first words live");
+});
+
+test("markOverlayTimings refuses values that are not plain, sane durations", () => {
+  for (const [paint, sample] of [
+    [NaN, 5],
+    [5, NaN],
+    [-1, 5],
+    [5, -1],
+    [Infinity, 5],
+    [5, 10 * 60_000], // ten minutes: not a slow machine, a corrupt number
+  ]) {
+    const log = new HotpathLog();
+    openTraceWithOverlaySend(log);
+    log.markOverlayTimings(paint, sample);
+    const iv = computeIntervals(log.snapshot().open[0]);
+    assert.equal(iv.pressToFirstPaintMs, null, `accepted paint=${paint} sample=${sample}`);
+    assert.equal(iv.pressToFirstSampleMs, null, `accepted paint=${paint} sample=${sample}`);
+  }
+});
+
+test("markOverlayTimings is a no-op when the press never reached the overlay", () => {
+  const log = new HotpathLog();
+  log.mark("keyEventReceived", 0);
+  log.mark("verdictRendered", 0.2); // no overlayStartSent: nothing to add the durations to
+  assert.doesNotThrow(() => log.markOverlayTimings(10, 10));
+  const iv = computeIntervals(log.snapshot().open[0]);
+  assert.equal(iv.pressToFirstPaintMs, null);
+});
+
+test("markOverlayTimings on a closed/absent trace is dropped, never mis-attributed", () => {
+  const log = new HotpathLog();
+  openTraceWithOverlaySend(log);
+  log.abandon(HOTPATH_ABANDON_REASON.busyLongRecording, 6); // a refused press, closed at once
+  assert.doesNotThrow(() => log.markOverlayTimings(10, 10));
+  const trace = log.snapshot().completed[0];
+  assert.ok(!trace.marks.some((m) => m.step === "overlayFirstPaint"));
+});
+
+test("markOverlayTimings lands on the OLDEST trace still missing it, like every other mark", () => {
+  const log = new HotpathLog();
+  openTraceWithOverlaySend(log, 5); // press A
+  log.mark("keyEventReceived", 100);
+  log.mark("overlayStartSent", 105); // press B
+  log.markOverlayTimings(10, 0); // A's
+  log.markOverlayTimings(20, 0); // B's
+  const [a, b] = log.snapshot().open;
+  assert.equal(computeIntervals(a).pressToFirstPaintMs, 15, "5 + 10, measured from A's own press");
+  assert.equal(computeIntervals(b).pressToFirstPaintMs, 25, "(105 + 20) - 100");
 });
 
 test("evaluateBudgets flags a within-budget and an over-budget trace correctly", () => {

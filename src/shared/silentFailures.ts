@@ -71,6 +71,20 @@ export const SILENT_FAILURE = {
   // NAMED HERE for the closed vocabulary; NOT WIRED - focus/probe.ts is
   // outside this task's touchable files (see the B6 report).
   focusProbeUnavailable: "focus-probe-unavailable",
+  // src/main/index.ts - wireCapture()'s CAPTURE_DONE handler, via the pure
+  // judge in shared/captureContinuity.ts (plan V2, B9).
+  //
+  // THE ONE ENTRY THAT IS NOT A CATCH. Every name above counts a `catch` that
+  // was already there and already tolerant; this one counts a silent
+  // DEGRADATION with no exception behind it at all - the microphone stopped
+  // producing audio partway through a press (a USB or Bluetooth headset
+  // unplugged mid-sentence, the audio service restarting, another app taking
+  // the device exclusively). Nothing throws: the capture succeeds, the WAV is
+  // well formed, and it simply stops where the device did. It belongs in this
+  // vocabulary despite not being a catch because it fails the same test the
+  // others do - the dictation was lost and no surface said so - and because
+  // this is the tally the user is already reading in Diagnostics.
+  micDroppedMidDictation: "mic-dropped-mid-dictation",
 } as const;
 
 export type SilentFailureName = (typeof SILENT_FAILURE)[keyof typeof SILENT_FAILURE];

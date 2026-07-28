@@ -67,6 +67,15 @@ function TabGeneral({ s, patch }: { s: UiStatePayload; patch: Patch }) {
   );
 }
 
+// B2: one sentence per option, and each one says what it COSTS before what it
+// buys. A privacy trade the user cannot read is a privacy trade they did not
+// make.
+const PREWARM_HELP: Record<UiStatePayload["settings"]["micPrewarm"], string> = {
+  off: "The microphone opens only while you hold the shortcut, and closes the moment you let go. Nothing is buffered. The first word of a dictation can be clipped while the microphone starts up - Diagnostics shows by how much, under \"press -> microphone actually capturing\".",
+  after: "Flow opens the microphone briefly when it starts, and keeps it open for a few seconds after each dictation, holding a rolling half-second of sound in memory. That half-second is added to the front of your next dictation, so the first word is never clipped. Windows shows the microphone indicator during those seconds. Nothing is ever written to disk, and the buffer is erased as soon as it is used or the microphone closes.",
+  always: "The microphone stays open for as long as Flow is running, with the same rolling half-second in memory. Every dictation starts instantly and nothing can be clipped - and Windows' microphone indicator stays lit the whole time. Still nothing on disk, still nothing leaving your machine. Choose this only if you want that trade.",
+};
+
 function TabDictation({ s, patch }: { s: UiStatePayload; patch: Patch }) {
   const [rec, setRec] = useState(false);
   async function record() {
@@ -90,6 +99,24 @@ function TabDictation({ s, patch }: { s: UiStatePayload; patch: Patch }) {
       </Row>
       <Row label="Start/stop sound" help="A soft synthesized cue on press and release. No third-party audio, fully generated on your machine.">
         <Toggle label="Start/stop sound" on={s.settings.sounds} onChange={(v) => void patch({ sounds: v })} />
+      </Row>
+      {/* B2: the honest version of the trade. The help text names the cost
+          (Windows' microphone indicator), the bound (half a second, in memory,
+          never on disk) and the benefit, per option - because the whole reason
+          this setting exists is that the answer is genuinely personal. */}
+      <Row
+        label="Microphone pre-warm"
+        help={PREWARM_HELP[s.settings.micPrewarm]}
+      >
+        <select
+          value={s.settings.micPrewarm}
+          onChange={(e) => void patch({ micPrewarm: e.target.value })}
+          aria-label="Microphone pre-warm"
+        >
+          <option value="off">Off - open only while I hold the shortcut</option>
+          <option value="after">A few seconds after each dictation (default)</option>
+          <option value="always">Always, while Flow runs</option>
+        </select>
       </Row>
     </div>
   );

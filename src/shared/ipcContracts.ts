@@ -3,15 +3,25 @@
 
 import type { ThemePref, ResolvedTheme } from "./theme";
 import type { HookHealth } from "./hookWatchdog";
+import type { MicPrewarm } from "./micWarmth";
 
 // main -> overlay
 export const CAPTURE_START = "capture:start";
 export const CAPTURE_STOP = "capture:stop"; // finish and hand the WAV back
 export const CAPTURE_CANCEL = "capture:cancel"; // discard everything
+// B2: the microphone pre-warm policy. Deliberately NOT folded into
+// CaptureStartPayload: warming has to be able to happen when there is no
+// capture at all (at startup, and on a partially-pressed shortcut), which is
+// the entire point of it.
+export const CAPTURE_WARM = "capture:warm";
+export const CAPTURE_COOL = "capture:cool"; // drop the warm microphone and the pre-roll NOW
 
 // overlay -> main
 export const CAPTURE_DONE = "capture:done";
 export const CAPTURE_ERROR = "capture:error";
+// B2/B1: the two §3.3 budgets main cannot see on its own (see
+// CaptureTimingPayload).
+export const CAPTURE_TIMING = "capture:timing";
 
 // C2 native loopback capture (Windows-only): a hidden capture window mixes the PC's
 // own sound (loopback) with the microphone into one 16 kHz mono stream and streams
@@ -40,6 +50,39 @@ export interface CaptureDonePayload {
   // 16 kHz mono 16-bit WAV, alive only for this one utterance (never stored).
   wav: ArrayBuffer;
   durationMs: number;
+}
+
+/** B2: how the overlay should keep the microphone warm between dictations.
+ * Built in exactly one place (shared/micWarmth.ts's warmPolicy), from exactly
+ * one setting, so "what the user chose" and "what the renderer does" cannot
+ * drift apart. Absence of this payload (the CAPTURE_COOL channel) is itself a
+ * meaning: release the microphone and erase the pre-roll now. */
+export interface CaptureWarmPayload {
+  micDeviceId: string; // "" = system default microphone; a change releases the warm graph
+  preRollMs: number; // ring capacity, in milliseconds of audio - never exceeded
+  holdMs: number | null; // release after this long; null = keep it for as long as Flow runs
+}
+
+/** B2/B1: the two budgets of plan §3.3 that no amount of main-process
+ * instrumentation can answer - "press -> first animation frame" and "press ->
+ * the microphone is actually capturing" - both of which happen inside the
+ * overlay renderer, a SEPARATE process whose performance.now() has its own
+ * origin.
+ *
+ * So these are DURATIONS, never instants: the renderer measures both against
+ * its own clock, from the moment it received CAPTURE_START, and main adds them
+ * to the instant it already recorded for that same message (overlayStartSent).
+ * Two clocks are never compared - which is the one thing that would make these
+ * numbers quietly wrong instead of merely imprecise. The one-way IPC hop
+ * between the send and the receive is therefore NOT counted, which makes both
+ * numbers a lower bound; see hotpath.ts's markOverlayTimings. */
+export interface CaptureTimingPayload {
+  /** ms from CAPTURE_START to the first animation frame drawn for this press. */
+  firstPaintMs: number;
+  /** ms from CAPTURE_START to this capture's buffer holding audio that covers
+   * the keypress. Zero when a pre-roll was available: the audio from before
+   * the press was already in hand. */
+  firstSampleMs: number;
 }
 
 
@@ -93,6 +136,14 @@ export type {
 // B4: re-exported here for the same reason as the hot-path types above - a page
 // needs one import line to render everything one payload carries.
 export type { HookHealth, HookState } from "./hookWatchdog";
+
+// ---- self-diagnostic (plan V2, B5) ----
+// PULL, and NOT on the 1 Hz push, for a reason specific to this one: producing
+// the report enumerates audio devices through a renderer round trip and writes
+// a probe file to disk. That is exactly the kind of work that must happen when
+// a human asks for it, never once a second under the keyboard hook.
+export const UI_SELF_CHECK = "ui:self-check";
+export type { SelfCheckReport, SelfCheckLine, SelfCheckStatus, SelfCheckId } from "./selfCheck";
 
 // ---- snippets (U3) ----
 // PULL-only, deliberately: the snippet library is user content of unbounded
@@ -176,6 +227,8 @@ export interface UiStatePayload {
     forceCpu: boolean;
     insertMode: "paste" | "type";
     theme: ThemePref;
+    /** B2: "off" | "after" | "always" - see shared/micWarmth.ts. */
+    micPrewarm: MicPrewarm;
   };
   // U0: settings.theme is the PREFERENCE (what the Settings tab shows/edits);
   // resolvedTheme is what to actually PAINT right now. They diverge exactly

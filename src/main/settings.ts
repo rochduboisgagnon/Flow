@@ -5,6 +5,7 @@ import { DEFAULT_COMBO } from "../shared/constants";
 import { DEFAULT_MODEL_FILE } from "./asr/modelStore";
 import { resolveDataDir } from "./migrate";
 import { isThemePref, type ThemePref } from "../shared/theme";
+import { isMicPrewarm, type MicPrewarm } from "../shared/micWarmth";
 
 // Flow settings live in the user's own data folder (~/.flow), OUTSIDE the
 // install directory (plan §8): an update or reinstall never touches them.
@@ -23,6 +24,12 @@ export interface FlowSettings {
   forceCpu: boolean; // R1: escape hatch for capricious GPUs (skip the Vulkan backend)
   insertMode: "paste" | "type"; // how dictation lands in an editable field: clipboard paste (default) or typed keystrokes for paste-hostile apps
   theme: ThemePref; // U0: "system" | "dark" | "light", resolved in index.ts against nativeTheme
+  /** B2: how much microphone-open time the user is willing to trade for never
+   * losing a first word. The ONE setting that makes Flow hold the microphone
+   * outside a press, so it is a named choice with honest wording in Settings >
+   * Dictation rather than a hidden optimisation. See shared/micWarmth.ts for
+   * what each value means and for the four rules that bound all of them. */
+  micPrewarm: MicPrewarm;
   /** Roch 2026-07-27: Flow registers itself at login ON FIRST RUN, because a
    * dictation daemon that is not running dictates nothing (the Manager's
    * watchdog used to do this). This flag records that the one-time
@@ -56,6 +63,11 @@ export const SETTINGS_DEFAULTS: FlowSettings = {
   forceCpu: false, // R1: Vulkan first by default; on = CPU only
   insertMode: "paste", // clipboard paste + restore; "type" keystrokes the text (paste-hostile apps, never touches the clipboard)
   theme: "system", // U1: follow Windows now that both themes exist; dark stays one click away
+  // B2: on by default, in its middle setting. A dictation app that clips the
+  // first word is broken in the way users actually notice, and the default has
+  // to be the one that works; the exposure it costs is bounded in seconds, said
+  // plainly in Settings, and turned off in one click.
+  micPrewarm: "after",
   loginItemInitialized: false, // false = the one-time "start with Windows" registration has not run yet
   legacyHistoryDir: "", // "" = this machine never had its own recordings folder
   historyPurgeSuspended: false, // retention runs normally until we learn otherwise
@@ -124,6 +136,7 @@ export function sanitizeSettings(raw: unknown): FlowSettings {
   }
   if (r.insertMode === "type" || r.insertMode === "paste") out.insertMode = r.insertMode;
   if (isThemePref(r.theme)) out.theme = r.theme;
+  if (isMicPrewarm(r.micPrewarm)) out.micPrewarm = r.micPrewarm;
   if (typeof r.loginItemInitialized === "boolean") out.loginItemInitialized = r.loginItemInitialized;
   // U2c: a remembered FACT and the safety flag it justifies. Trimmed only - the
   // value is a path this app never writes into, so there is nothing to validate

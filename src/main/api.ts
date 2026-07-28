@@ -75,6 +75,12 @@ export interface ApiDeps {
    * reads from a running app, and what the Diagnostics panel polls over IPC
    * (same closure, see index.ts's hotpathSnapshotDep). */
   hotpathSnapshot(): unknown;
+  /** B5: the six-line self-diagnostic (src/shared/selfCheck.ts). Same closure
+   * the UI_SELF_CHECK IPC channel calls (index.ts's selfCheckDep), so a support
+   * request read over loopback and the Diagnostics panel can never disagree.
+   * States, counts, a port, a model file name and a folder path - never
+   * dictated content. */
+  selfCheck(): Promise<unknown>;
   quit(): void;
   /** Tests only: redirect the discovery file away from the real ~/.agr-flow. */
   infoPathOverride?: string;
@@ -210,6 +216,12 @@ export class LocalApi {
       // loopback-only and content-free by construction (see hotpath.ts).
       if (req.method === "GET" && url.pathname === "/diagnostics/hotpath") {
         return json(200, this.deps.hotpathSnapshot());
+      }
+      // B5: same trust level and the same content-free guarantee as the route
+      // above. GET, so it also passes the CSRF guard untouched - it changes
+      // nothing beyond writing (and deleting) a probe byte in Flow's own folder.
+      if (req.method === "GET" && url.pathname === "/diagnostics/selfcheck") {
+        return json(200, await this.deps.selfCheck());
       }
       if (req.method === "GET" && url.pathname === "/update-readiness") {
         // The quiet window: never swap binaries while a dictation, a long

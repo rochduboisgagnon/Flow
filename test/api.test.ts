@@ -126,6 +126,12 @@ function longDepsStub() {
       calls.push("hotpath-snapshot");
       return { completed: [], open: [], handlerLatenciesMs: [] };
     },
+    // B5: the self-diagnostic. Async here too, because the real one enumerates
+    // audio devices through a renderer.
+    selfCheck: () => {
+      calls.push("self-check");
+      return Promise.resolve({ generatedAtIso: "2026-07-27T00:00:00.000Z", worst: "ok", lines: [] });
+    },
   };
 }
 
@@ -185,6 +191,12 @@ test("local API: status, readiness, transcribe, discovery file", async () => {
     const hp = await get(port, "/diagnostics/hotpath");
     assert.equal(hp.code, 200);
     assert.deepEqual(hp.body, { completed: [], open: [], handlerLatenciesMs: [] });
+
+    // B5: same surface, and it must AWAIT its dep - a promise serialized as
+    // "{}" would be a green-looking 200 carrying no diagnosis at all.
+    const sc = await get(port, "/diagnostics/selfcheck");
+    assert.equal(sc.code, 200);
+    assert.deepEqual(sc.body, { generatedAtIso: "2026-07-27T00:00:00.000Z", worst: "ok", lines: [] });
 
     assert.equal((await get(port, "/nope")).code, 404);
   } finally {
