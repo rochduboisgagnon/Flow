@@ -16,19 +16,59 @@ Two things make it different from the tools it is inspired by:
 - **Nothing ever leaves your machine.** The speech-to-text engine runs locally
   (whisper.cpp as a warm sidecar); the optional cleanup and the meeting
   summaries run on a local LLM (Ollama). No cloud, no account, no API key.
-- **Dictation is never stored.** No history, no database, no in-memory buffer
-  kept around. Audio and text exist only for the duration of one utterance. If
-  you overwrite the clipboard before pasting, the dictation is gone - by
-  design. (Only the long-recording mode writes files, and only into the folder
-  you picked.)
+- **Dictation is never written down.** No history, no database, no transcript
+  on disk. A dictation's audio and text exist only for the duration of one
+  utterance. If you overwrite the clipboard before pasting, the dictation is
+  gone - by design. (Only the long-recording mode writes files, and only into
+  the folder you picked.) Flow does keep **one** audio buffer in memory, half a
+  second long, and it is described in full below - because a product that
+  claims the absolute and holds a buffer anyway has told you nothing you can
+  rely on.
 
 Status: **Windows, shipping** - autonomous app distributed via
 [GitHub Releases](https://github.com/rochduboisgagnon/Flow/releases) with built-in automatic updates.
+
+## The one buffer, and how to turn it off
+
+Flow ships with **microphone pre-warm** set to *a few seconds after each
+dictation*. That setting does exactly one thing, and it is worth stating
+plainly rather than burying: **Flow keeps a rolling half-second of sound in
+memory between dictations, and holds the microphone open for a few seconds
+after each one.**
+
+It exists because the alternative loses your first word. Opening a microphone
+costs a few hundred milliseconds; audio spoken during that window is not late,
+it never existed, and nothing downstream can recover a syllable the microphone
+was not open for. The half-second is prepended to your next dictation, so the
+first word is there whether or not the device was ready.
+
+What bounds it:
+
+- **Half a second, by construction.** It is a ring buffer capped in samples,
+  not a buffer that is trimmed when someone remembers to. Lowering the bound
+  erases the excess immediately.
+- **Memory only.** It is never written to disk, never sent to the speech
+  engine on its own, never sent anywhere. The only audio that ever leaves the
+  window holding the microphone is one finished utterance's WAV.
+- **Erased, not filed.** It is cleared when the dictation that consumed it
+  ends, when the microphone closes, and when you turn the setting off.
+- **Visible.** Windows shows its microphone indicator for the seconds Flow
+  holds the device. That is the honest cost of the trade, and it is not hidden.
+
+How to turn it off, in one click: **Settings > Dictation >
+Microphone pre-warm > Off**. The microphone then opens only while you hold the
+shortcut and closes the moment you let go, no buffer is ever allocated, and the
+first word of a dictation can be clipped instead - Diagnostics shows by how
+much. The third option, *Always, while Flow runs*, keeps the microphone open
+for the whole session: no acquisition cost ever, and the indicator stays lit
+the whole time.
 
 ## How dictation works
 
 ```
 hold Ctrl+Win ──> capture mic (16 kHz mono, in RAM) + listening ribbon + cue
+              ──> with pre-warm on, the rolling half-second recorded BEFORE the
+                  key went down is prepended, then erased
 release       ──> energy VAD (silence never reaches the model)
               ──> transcribe once (whisper.cpp sidecar, model kept warm,
                   encoder context sized to the utterance: ~0.4 s on CPU)
@@ -73,8 +113,8 @@ these is a deliberate trade, not an open bug.
   the pill does not draw over those windows. There is no error message, because
   from Flow's point of view nothing happened at all. Running Flow elevated would
   give an administrator process a view of every keystroke on the machine, which
-  is a bad trade for an app whose whole promise is that it does not keep
-  anything. Dictate in an unelevated window and paste.
+  is a bad trade for an app whose whole promise is that it does not keep what
+  you say. Dictate in an unelevated window and paste.
 - **Exclusive-fullscreen applications** (DirectX games, some presentation
   modes). Flow re-asserts its always-on-top level on every press, which covers
   *borderless* fullscreen. True exclusive fullscreen owns the display surface
@@ -90,7 +130,10 @@ these is a deliberate trade, not an open bug.
   (`mic-dropped-mid-dictation`). The detection is a deliberately conservative
   heuristic - it ignores presses shorter than 2 s and gaps smaller than 1.5 s,
   so it will miss a device lost in the last moment of an utterance rather than
-  ever accuse a healthy one.
+  ever accuse a healthy one. *Between* dictations it is prevented: a pre-warmed
+  microphone that dies, goes silent or stops being the device Windows now calls
+  the default is released and rebuilt rather than reused, so a dead device can
+  never become a run of empty dictations.
 - **The pill follows the mouse, not the text field.** On a multi-monitor desk it
   appears on the display under the cursor, which is not always the display you
   are typing on. Locating the focused field first would cost the activation

@@ -1,6 +1,6 @@
 import { GlobalKeyboardListener } from "keyspy";
 import type { IConfig, IGlobalKeyEvent } from "keyspy";
-import { createComboMatcher, normalizeCombo, type ComboMatcher } from "../shared/combo";
+import { createComboMatcher, normalizeCombo, STALE_HOLD_MS, type ComboMatcher } from "../shared/combo";
 import { MIN_HOLD_MS, DOUBLE_TAP_MS } from "../shared/constants";
 import { hotpath, HOTPATH_ABANDON_REASON, HOTPATH_EVENT, type HotpathAbandonReason } from "../shared/hotpath";
 import {
@@ -51,7 +51,12 @@ export interface PttCallbacks {
   /** B2: the shortcut is ALMOST pressed (see ComboMatcher.preArmed) - a good
    * moment to have the microphone ready before the last key lands. Optional
    * because it is an optimisation, not a step of the dictation loop: an
-   * adapter built without it dictates exactly the same, just colder. */
+   * adapter built without it dictates exactly the same, just colder.
+   *
+   * Dormant today: preArmed() answers false for every shortcut, because no rule
+   * over a combo holding at most one non-modifier can fire before the last key
+   * without firing on Ctrl+Shift. The wiring stays so that decision lives in one
+   * function and not in five files. */
   onPreArm?(): void;
 }
 
@@ -82,6 +87,10 @@ export interface HotkeyOptions {
   createListener?: HookListenerFactory;
   timers?: HookTimers;
   policy?: HookWatchdogPolicy;
+  /** Tests only: the stale-hold net's threshold. The matcher reads the wall
+   * clock through Date.now(), so a test that wants to watch the net fire has to
+   * shorten the window rather than wait out the real one. */
+  staleHoldMs?: number;
 }
 
 interface RecorderState {
@@ -117,6 +126,11 @@ const RECORD_TIMEOUT_MS = 10_000;
 // diagnostic that was missing gets a hard budget rather than an open channel.
 const MAX_INFO_LINES = 20;
 
+// The stale-hold net (shared/combo.ts) should fire a handful of times in a long
+// session at most. If it ever fires in a loop, the log must not be the thing
+// that turns a misjudgement into a disk-filling incident.
+const MAX_STALE_DROP_LINES = 20;
+
 const REAL_TIMERS: HookTimers = {
   set: (fn, ms) => setTimeout(fn, ms),
   clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
@@ -142,6 +156,7 @@ export class HotkeyAdapter {
    * matcher's key state (rearm, setCombo, suspend, a hook death) makes it fall
    * back to false on the very next keystroke. */
   private wasPreArmed = false;
+  private staleDropLines = 0;
 
   // The "open AGR Pilot" shortcut used to live here too (v5 c2), which coupled it to AGR Flow:
   // disabling Flow killed the shortcut. It now belongs entirely to AGR Manager (its own always-on
@@ -150,6 +165,8 @@ export class HotkeyAdapter {
     this.matcher = createComboMatcher(combo, {
       minHoldMs: MIN_HOLD_MS,
       doubleTapMs: DOUBLE_TAP_MS,
+      staleHoldMs: opts.staleHoldMs,
+      onStaleDrop: (keys) => this.noteStaleDrop(keys),
     });
     this.cbs = cbs;
     this.opts = opts;
@@ -271,13 +288,12 @@ export class HotkeyAdapter {
     // A hold that was in flight can never be released now: its UP event died
     // with the hook. Close it honestly instead of leaving a hot microphone and
     // an overlay pinned open behind a key nobody can lift.
-    if (this.matcher.capturing()) this.cbs.onCancel(HOTPATH_ABANDON_REASON.hookDied);
-    this.matcher.reset();
-    // The shortcut recorder swallows EVERY key while it runs and only finishes
-    // when the last key comes back up. Those UPs are gone, so a recorder left
-    // running across a respawn would swallow the whole keyboard until its 10 s
-    // timeout. Cancel it: the user retries a gesture, they do not lose a system.
-    this.recorder?.done(null);
+    if (this.holdInFlight()) this.cbs.onCancel(HOTPATH_ABANDON_REASON.hookDied);
+    // Key state and recorder both go, for the reasons written on forgetKeys().
+    // Shared with the B9 system transitions on purpose: a hook death and a
+    // secure desktop lose keyboard events in exactly the same way, and two
+    // hand-written copies of that cleanup are two chances to fix only one.
+    this.forgetKeys();
 
     const decision = this.watchdog.died(Date.now(), detail);
     if (decision.action === "ignore") return;
@@ -305,6 +321,28 @@ export class HotkeyAdapter {
         this.opts.log?.(`[hotkey] restart attempt failed: ${String(err)}`);
       });
     }, decision.delayMs);
+  }
+
+  /** The stale-hold net dropped a key it no longer believes is held (see
+   * ComboMatcher's dropStaleKeys). Worth a line: it is a silent self-repair on
+   * the one path where a mistake shows up as "my shortcut did nothing", and
+   * without a trace that report has no first suspect.
+   *
+   * Written OFF this stack on purpose. This runs inside the hook callback
+   * Windows is timing, and flowLog appends synchronously to disk - the same
+   * reason main/overlay.ts defers its own failure logging. */
+  private noteStaleDrop(keys: string[]): void {
+    if (this.staleDropLines >= MAX_STALE_DROP_LINES) return;
+    this.staleDropLines++;
+    const last = this.staleDropLines === MAX_STALE_DROP_LINES;
+    setImmediate(() => {
+      this.opts.log?.(
+        `[hotkey] ${keys.join(", ")} stopped reporting for ${STALE_HOLD_MS} ms while believed held; ` +
+          "treating the key(s) as released - a release lost to a secure desktop (UAC, Ctrl+Alt+Del, a user " +
+          "switch) would otherwise complete the shortcut on its own",
+      );
+      if (last) this.opts.log?.("[hotkey] the stale-key net is firing often; further lines are dropped for this run");
+    });
   }
 
   private exitDetail(code: number | null): string {
@@ -363,9 +401,10 @@ export class HotkeyAdapter {
     // B2: fire the pre-warm on the RISING edge only - the callback sends an IPC
     // message, and this runs inside the hook callback Windows is timing, so it
     // must happen once per hand position and not once per keystroke while a
-    // partial shortcut is held. preArmed() answers false on a single boolean
-    // read for any shortcut shorter than three keys (the default one included),
-    // so the overwhelmingly common case costs nothing measurable.
+    // partial shortcut is held. The edge detector is kept even though preArmed()
+    // is currently off for every shortcut (see ComboMatcher.preArmed): it costs
+    // one call returning a constant, and it is what makes turning pre-arming
+    // back on a one-function change instead of a re-wiring.
     const armed = this.matcher.preArmed();
     if (armed && !this.wasPreArmed) this.cbs.onPreArm?.();
     this.wasPreArmed = armed;
@@ -450,21 +489,55 @@ export class HotkeyAdapter {
     this.matcher.reset();
   }
 
-  /** B9: forget a hold that the keyboard can no longer end - the machine slept,
-   * or the session locked, and the UP event either arrived in a frozen process
-   * or went to the secure desktop. Returns whether a hold was actually in
-   * flight, so the caller only tears the capture down when there is one.
+  /** B9: is a push-to-talk hold in flight right now?
+   *
+   * THE source of truth for that question, and the reason it is exposed at all:
+   * main keeps a `listening` flag beside this adapter, and the two disagree on
+   * a path that ships. When a long recording is running, onStart refuses the
+   * dictation and returns before ever setting `listening`, while this matcher
+   * is capturing and the user is still holding the keys. A system transition
+   * that asked the flag would decide there was nothing to clean up, and leave
+   * exactly the hold it exists to close. Whoever asks should ask the matcher. */
+  holdInFlight(): boolean {
+    return this.matcher.capturing();
+  }
+
+  /** B9: forget every key this adapter believes is held - the machine slept, or
+   * the desktop switched, and the UP events either arrived in a frozen process
+   * or went somewhere this app cannot see.
+   *
+   * NOT the same thing as tearing a capture down, which is the caller's job
+   * (it owns the overlay) and only applies when holdInFlight() says so. This is
+   * the broader half: a shortcut held only PARTWAY never started anything, so
+   * no capture teardown would ever touch it, yet leaving "Ctrl is still down"
+   * behind means the next lone Win press completes the combo and starts a
+   * dictation nobody asked for. Which transitions qualify is a policy decision
+   * and lives in shared/systemResilience.ts; this only performs it.
    *
    * Deliberately does NOT call onCancel: every abandon reason in the closed
    * vocabulary names a KEYBOARD or engine cause, and none of them is true here.
    * Claiming one would put a wrong word in the Diagnostics panel forever;
    * leaving the trace to the 30 s staleness sweep records exactly what happened
    * (it never resolved) and the reason is written in flow.log, in words, by
-   * shared/systemResilience.ts. The capture teardown itself belongs to the
-   * caller, which owns the overlay - this class owns only the key state. */
-  interruptHold(): boolean {
-    const wasCapturing = this.matcher.capturing();
+   * shared/systemResilience.ts. */
+  forgetKeys(): void {
     this.matcher.reset();
+    // The very reasoning handleDeath() already applies to a hook death, which
+    // is the same outage seen from another door: the recorder swallows EVERY
+    // key while it runs and only finishes when the last one comes back UP.
+    // Those UPs were lost with the desktop or the freeze, so a recorder left
+    // running would eat the whole keyboard until its 10 s timeout - across a
+    // lock, that is ten seconds of a machine that answers nothing. Cancel it:
+    // the user retries a gesture, they do not lose a system.
+    this.recorder?.done(null);
+  }
+
+  /** @deprecated Superseded by holdInFlight() + forgetKeys(), which separate the
+   * question from the action. Kept only until main/index.ts is rewired onto the
+   * pair; delete it then, with its call site. */
+  interruptHold(): boolean {
+    const wasCapturing = this.holdInFlight();
+    this.forgetKeys();
     return wasCapturing;
   }
 

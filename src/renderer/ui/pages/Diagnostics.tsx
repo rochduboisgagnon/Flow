@@ -8,11 +8,13 @@ import {
   computeIntervals,
   evaluateBudgets,
   summarize,
+  LOOP_LAG_P99_THRESHOLD_MS,
   type HotpathEventKind,
   type HotpathSnapshot,
   type HotpathSummary,
   type HotpathTrace,
 } from "../../../shared/hotpath";
+import { LOOP_LAG_ACTIVE_PERIOD_MS, LOOP_LAG_IDLE_PERIOD_MS } from "../../../shared/loopLag";
 
 // Diagnostics (wave U1 restyle): same facts as before, mockup's card + table.
 // Everything here is copyable (the user-select allowlist covers table.diag
@@ -340,6 +342,39 @@ function HotpathPanel() {
             <tr><td>p95</td><td className="mono">{fmtMs(handlerLatency.p95Ms)}</td></tr>
             <tr><td>Worst case</td><td className="mono">{fmtMs(handlerLatency.maxMs)}</td></tr>
             <tr><td>Samples</td><td className="mono">{handlerLatency.count}</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      {/* B11: the other half of the hook budget, and the half B1 could never
+          see. The row above times our handler once it is CALLED; this one times
+          how late the call itself is. Windows measures both against the same
+          ceiling, so a green handler on a blocked loop is a hook being removed
+          while every number on this page looks healthy. */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <span className="lbl">Event-loop lag (plan §3.6.6, trigger T1)</span>
+        <p className="sub" style={{ margin: "6px 0 10px" }}>
+          How late a timer actually runs, which is how long a key event waits in the queue before Flow can
+          judge it at all. Sampled every {LOOP_LAG_ACTIVE_PERIOD_MS} ms while Flow is working and every{" "}
+          {LOOP_LAG_IDLE_PERIOD_MS} ms while it is idle, so a percentile here is over observations, not over
+          wall-clock time. A p99 above {LOOP_LAG_P99_THRESHOLD_MS} ms is the threshold that reopens the
+          native-helper question. Read every row against the floor: on Windows the system timer runs on a
+          15.625 ms grid, which alone puts about 11 ms under every sample.
+        </p>
+        <table className="diag" style={{ maxWidth: 420 }}>
+          <tbody>
+            <tr><td>Timer floor (smallest seen)</td><td className="mono">{fmtMs(snap.loopLag.minMs)}</td></tr>
+            <tr><td>p50</td><td className="mono">{fmtMs(snap.loopLag.p50Ms)}</td></tr>
+            <tr><td>p95</td><td className="mono">{fmtMs(snap.loopLag.p95Ms)}</td></tr>
+            <tr>
+              <td>p99</td>
+              <td className="mono" style={snap.loopLag.overThreshold ? { color: "var(--err)", fontWeight: 600 } : undefined}>
+                {fmtMs(snap.loopLag.p99Ms)}
+                {snap.loopLag.overThreshold ? ` (over ${LOOP_LAG_P99_THRESHOLD_MS} ms)` : ""}
+              </td>
+            </tr>
+            <tr><td>Worst case</td><td className="mono">{fmtMs(snap.loopLag.maxMs)}</td></tr>
+            <tr><td>Samples</td><td className="mono">{snap.loopLag.count}</td></tr>
           </tbody>
         </table>
       </div>

@@ -24,10 +24,12 @@ import {
   computeIntervals,
   evaluateBudgets,
   summarize,
+  LOOP_LAG_P99_THRESHOLD_MS,
   type HotpathSnapshot,
   type HotpathSummary,
   type HotpathTrace,
 } from "../src/shared/hotpath";
+import { LOOP_LAG_ACTIVE_PERIOD_MS, LOOP_LAG_IDLE_PERIOD_MS } from "../src/shared/loopLag";
 import fs from "node:fs";
 
 const HELP =
@@ -102,7 +104,7 @@ function summaryRow(label: string, budgetMs: number | null, measurable: boolean,
 }
 
 function report(snapshot: HotpathSnapshot): void {
-  const { completed, open, handlerLatenciesMs } = snapshot;
+  const { completed, open, handlerLatenciesMs, loopLag } = snapshot;
   console.log(`\nFlow activation hot path - ${completed.length} completed traces, ${open.length} in flight\n`);
 
   if (completed.length === 0) {
@@ -133,6 +135,46 @@ function report(snapshot: HotpathSnapshot): void {
     ["median(ms)", "p95(ms)", "worst(ms)", "n"],
     [[fmtMs(handlerSummary.medianMs), fmtMs(handlerSummary.p95Ms), fmtMs(handlerSummary.maxMs), String(handlerSummary.count)]],
   );
+
+  // ---- B11: the OTHER half of the hook budget (plan §3.6.2, trigger T1) ----
+  // The table above is our handler once it has been called. This one is how
+  // late the call itself was: the wait in Node's queue, which Windows counts
+  // against the same hook timeout and which B1 could not see at all.
+  console.log(
+    `\nEvent-loop lag (sampled every ${LOOP_LAG_ACTIVE_PERIOD_MS} ms while Flow works, ` +
+      `every ${LOOP_LAG_IDLE_PERIOD_MS} ms while it idles)\n`,
+  );
+  // This script talks to whatever Flow is RUNNING, which can be an installed
+  // build older than this checkout. An absent field is that, not a bug: say so
+  // and carry on with the rest of the report instead of dying on a property
+  // read (or, worse, printing zeros that would read as a perfectly free loop).
+  if (!loopLag) {
+    console.log("The running Flow predates B11 and does not sample the event loop. Restart it from this build.\n");
+  } else {
+    printTable(
+      ["floor(ms)", "p50(ms)", "p95(ms)", "p99(ms)", "worst(ms)", "n"],
+      [
+        [
+          fmtMs(loopLag.minMs),
+          fmtMs(loopLag.p50Ms),
+          fmtMs(loopLag.p95Ms),
+          fmtMs(loopLag.p99Ms) + (loopLag.overThreshold ? "*" : ""),
+          fmtMs(loopLag.maxMs),
+          String(loopLag.count),
+        ],
+      ],
+    );
+    console.log(
+      loopLag.overThreshold
+        ? `\n* p99 is over ${LOOP_LAG_P99_THRESHOLD_MS} ms: trigger T1 of plan §3.6.6 is met and the B7 no-go\n` +
+            "  on a native helper has to be re-argued on these numbers.\n"
+        : `\n(trigger T1 of plan §3.6.6 fires at a p99 over ${LOOP_LAG_P99_THRESHOLD_MS} ms, a third of the\n` +
+            " tightest LowLevelHooksTimeout. A percentile here is over observations, not over\n" +
+            " wall-clock time: the fast cadence only runs while Flow is working. `floor` is the\n" +
+            " smallest lag seen - on Windows the system timer's 15.625 ms grid alone puts about\n" +
+            " 11 ms under every sample, so read the other columns against it.)\n",
+    );
+  }
 
   // ---- outcome / abandon-reason breakdown ----
   const byOutcome = new Map<string, number>();

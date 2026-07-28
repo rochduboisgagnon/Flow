@@ -1,4 +1,4 @@
-import { app, session, ipcMain, nativeTheme, BrowserWindow } from "electron";
+import { app, session, ipcMain, nativeTheme, BrowserWindow, powerMonitor } from "electron";
 import path from "node:path";
 import fs from "node:fs";
 import { HotkeyAdapter } from "./hotkey";
@@ -32,12 +32,13 @@ import { UiBridge, LOGIN_ARGS } from "./uiBridge";
 import { FlowTray } from "./tray";
 import { FlowUpdater } from "./updater";
 import { hotpath, HOTPATH_ABANDON_REASON } from "../shared/hotpath";
+import { LoopLagSampler, realScheduler } from "../shared/loopLag";
 import { hookIsArmed, hookStatusLine } from "../shared/hookWatchdog";
 import { silentFailures, SILENT_FAILURE } from "../shared/silentFailures";
 import { LogQueue, LOG_QUEUE_FAILURE } from "../shared/logQueue";
 import { createFileLogSink } from "./logSink";
 import { SystemWatch } from "./systemWatch";
-import { judgeCaptureShortfall, shortfallLogLine } from "../shared/captureContinuity";
+import { judgeCaptureShortfall, preRollCreditMs, shortfallLogLine } from "../shared/captureContinuity";
 import { warmPolicy } from "../shared/micWarmth";
 import {
   evaluateSelfCheck,
@@ -183,7 +184,12 @@ if (!app.requestSingleInstanceLock()) {
       // The DERIVED line (pause overlay + update notice folded in): the tray
       // only reads it for its tooltip, it never writes anything back (A10).
       getStatus: () => engineStatus(),
-      pauseHotkey: (v) => hotkey.suspend(v),
+      pauseHotkey: (v) => {
+        hotkey.suspend(v);
+        // Suspending only the hotkey left the microphone open and its indicator
+        // lit, right after the user asked Flow to stop listening.
+        setMicWarmthSuspended(v);
+      },
       // U4 (blocking review): the SAME "busy" the updater refuses to install
       // through. "Quit Flow" was the one control that walked straight past it.
       isRecording: () => longRec.isBusy,
@@ -195,6 +201,10 @@ if (!app.requestSingleInstanceLock()) {
     if (NativeCapture.available()) nativeCapture.create(DEV); // C2: Windows loopback window
     wireCapture();
     startPtt();
+    // B11: started right after the hook, because the hook is what it measures
+    // for. From here on, every stretch where Flow is working is sampled at
+    // 20 ms and every idle stretch at 500 ms (see shared/loopLag.ts).
+    loopLagSampler.start();
     // B9: the machine itself - sleep, wake, lock, unlock. Built right after the
     // hook, because the hook is what it exists to protect: Windows removes a
     // low-level hook that overran its budget WITHOUT telling the application
@@ -203,12 +213,21 @@ if (!app.requestSingleInstanceLock()) {
     // pure policy; this only supplies the four facts it reads and performs what
     // it returns.
     systemWatch = new SystemWatch({
-      holdInFlight: () => listening,
+      // Review B10 (major): the truth about a hold lives in the MATCHER, never
+      // in this module's `listening` copy. The two disagree on exactly the path
+      // B3 added: when a long recording is running, onStart refuses and returns
+      // WITHOUT setting the flag, while the keys are genuinely held down. A
+      // sleep during that hold used to clean up nothing.
+      holdInFlight: () => hotkey.holdInFlight(),
       hookState: () => hotkey.health().state,
+      // Review B10 (blocking): called on EVERY transition, hold or not. A
+      // shortcut half held down when Windows switched to the secure desktop
+      // loses its key-up events there; believing those keys still down makes
+      // the NEXT combination start a dictation nobody asked for.
+      forgetKeys: () => hotkey.forgetKeys(),
       interruptHold: () => {
-        // Order is the policy's (tear down, then rebuild): the adapter only
-        // acts when there really was a hold, so this is safe to call blind.
-        if (!hotkey.interruptHold()) return;
+        // No blind guard here any more: the policy knows whether a hold exists
+        // (holdInFlight above) and only calls this when there really is one.
         listening = false;
         overlay.cancelCapture();
       },
@@ -223,6 +242,12 @@ if (!app.requestSingleInstanceLock()) {
       log: flowLog,
     });
     systemWatch.start();
+    // Deliberately SEPARATE from SystemWatch: that one decides about the HOOK,
+    // this decides about the MICROPHONE. Two subjects, no duplicated decision.
+    powerMonitor.on("lock-screen", () => setMicWarmthSuspended(true));
+    powerMonitor.on("suspend", () => setMicWarmthSuspended(true));
+    powerMonitor.on("unlock-screen", () => setMicWarmthSuspended(false));
+    powerMonitor.on("resume", () => setMicWarmthSuspended(false));
     void warmAsr();
     probe = new FocusProbe(focusProbeScript(), DEV ? (m) => console.log(m) : undefined);
     // B2: the same treatment warmAsr() already gives the speech engine, applied
@@ -507,7 +532,7 @@ function getUiState(): UiStatePayload {
   return {
     version: app.getVersion(),
     status: engineStatus(),
-    engineWarm: sidecar !== null,
+    engineWarm: asrWarm,
     listening,
     recording: longRec.isBusy,
     backend: sidecar ? path.basename(sidecar.activeBackend() || "") : "",
@@ -572,6 +597,12 @@ function focusProbeScript(): string {
 // own data folder, outside the install), whisper-server spawned once, model
 // loaded once. Dictating while the warm-up is still running simply queues on
 // ensureStarted() inside transcribe().
+// Review B10 (major): the self-check and the UI used to read `sidecar !== null`
+// as "the engine is warm". The object is assigned BEFORE ensureStarted() is
+// awaited, so a backend that FAILED to start still answered "Warm" - the one
+// question a self-diagnostic exists to answer honestly. This flag is fed ONLY
+// by the sidecar's own onState callback (see shared/selfCheck.ts engineWarm).
+let asrWarm = false;
 let sidecar: WhisperSidecar | null = null;
 
 // v5 c1: ordered whisper-server candidates. The Vulkan build is GPU-accelerated
@@ -655,6 +686,7 @@ function newSidecar(modelPath: string): WhisperSidecar {
     probeWav: loadProbeWav(), // R1: real decode gate at backend selection
     log: flowLog, // R1: always-on log file (dev also echoes to console)
     onState: (state, detail) => {
+      asrWarm = state === "warm"; // the ONE writer; see the flag's declaration
       // R1: keep the detail (which backend, why it switched) in the status the
       // Manager shows, so a silent fallback is no longer invisible.
       if (state === "warm") statusText = "ready";
@@ -670,9 +702,15 @@ async function warmAsr() {
   modelTransfers++;
   try {
     let lastPct = -1;
+    // Review B10 (major): lastModelState used to be written ONLY by swapModel,
+    // so the very first launch - the one that downloads 550 MB - left it at
+    // "idle" and the self-check reported a FAILURE while the app was doing
+    // exactly what it should. Same shape as swapModel's own loop, on purpose.
+    lastModelState = { status: "downloading", pct: 0 };
     const model = await ensureModel(settings.model ?? DEFAULT_MODEL_FILE, (pct) => {
       if (pct !== lastPct) {
         lastPct = pct;
+        lastModelState = { status: "downloading", pct };
         statusText = `downloading the speech model (${pct}%)`;
       }
     });
@@ -687,9 +725,11 @@ async function warmAsr() {
     sidecar = newSidecar(model);
     await sidecar.ensureStarted();
     statusText = "ready";
+    lastModelState = { status: "ready" };
   } catch (err) {
     console.error("[asr] warm-up failed:", err);
     flowLog(`[asr] warm-up failed: ${err}`); // R1: visible in a built app
+    lastModelState = { status: "error", message: String(err instanceof Error ? err.message : err) };
     statusText = "speech engine unavailable: " + String(err instanceof Error ? err.message : err);
   } finally {
     modelTransfers--;
@@ -732,6 +772,27 @@ function markActivity(): void {
 function engineBusy(): boolean {
   return listening || longRec.isBusy || modelTransfers > 0;
 }
+
+// B11: the event-loop lag sampler - the measurement B1 never had (plan §3.6.2)
+// and the trigger T1 that can reopen the B7 no-go (plan §3.6.6). The policy,
+// the two cadences and the reasoning behind them are in shared/loopLag.ts; this
+// is only the wiring: a real timer, the ring next to handlerLatenciesMs, and the
+// one predicate that decides the cadence.
+//
+// `isActive` deliberately reuses the pair this file already keeps for the
+// updater's quiet window rather than inventing a second notion of "busy": one
+// definition that can be wrong is better than two that can disagree. The tail
+// keeps the fast cadence running for a few seconds past the last transition,
+// because the work that blocks the loop (the WAV decode, the VAD, the sidecar's
+// stderr burst) lands just AFTER a press ends, not during it. Date.now() here is
+// a cadence decision, never a measurement - the lag itself is timed on the
+// monotonic clock inside the sampler.
+const LOOP_LAG_ACTIVE_TAIL_MS = 5_000;
+const loopLagSampler = new LoopLagSampler({
+  scheduler: realScheduler(),
+  onSample: (ms) => hotpath.sampleLoopLag(ms),
+  isActive: () => engineBusy() || Date.now() - lastActivityAt < LOOP_LAG_ACTIVE_TAIL_MS,
+});
 // Audit: the keyboard hook's health as a typed flag, not a status-string
 // sniff. B4: it is no longer a module-level boolean written once by startPtt -
 // that version could only ever say "the hook failed to START", and the failure
@@ -802,7 +863,7 @@ async function gatherSelfCheck(): Promise<SelfCheckReport> {
     hook: hotkey.health(),
     micCount: ready ? mics.length : null,
     micError: ready ? undefined : "the window that enumerates audio devices has not finished loading",
-    engineWarm: sidecar !== null,
+    engineWarm: asrWarm,
     backend: sidecar ? path.basename(sidecar.activeBackend() || "") : "",
     modelFile: settings.model,
     modelPresent,
@@ -1007,8 +1068,23 @@ const hotkey = new HotkeyAdapter(settings.combo, {
  * is a privacy decision, and a privacy decision computed in four places is a
  * privacy decision that will eventually disagree with itself. The mapping
  * itself is pure and unit-tested in shared/micWarmth.ts. */
+/** Review B10 (major): the warm microphone is SUSPENDED by an outside order -
+ * the session locking, the machine sleeping, dictation paused from the tray.
+ * Kept apart from settings.micPrewarm on purpose: a transient state must never
+ * overwrite what the user chose. A microphone left open through a gesture that
+ * MEANS "stop listening" is a privacy breach in the most literal sense, and the
+ * Windows indicator would sit there saying so. */
+let micWarmthSuspended = false;
+function setMicWarmthSuspended(v: boolean): void {
+  if (micWarmthSuspended === v) return;
+  micWarmthSuspended = v;
+  applyMicWarmth();
+}
+
 function applyMicWarmth(): void {
-  overlay.setWarmPolicy(warmPolicy(settings.micPrewarm, settings.micDeviceId));
+  overlay.setWarmPolicy(
+    micWarmthSuspended ? null : warmPolicy(settings.micPrewarm, settings.micDeviceId),
+  );
 }
 
 /** The shared utterance pipeline (PTT loop AND local API): anti-hallucination
@@ -1064,13 +1140,13 @@ let pressEndedAt = 0;
  * and clears it, so a WAV that arrives without a press behind it - the HTTP
  * /transcribe endpoint, or a press refused because a long recording owns the
  * engine - can never be judged against a stale press window. */
-function noteCaptureContinuity(capturedMs: number): void {
+function noteCaptureContinuity(capturedMs: number, preRollMs: number): void {
   const startedAt = pressStartedAt;
   const endedAt = pressEndedAt;
   pressStartedAt = 0;
   pressEndedAt = 0;
   if (startedAt === 0 || endedAt <= startedAt) return;
-  const verdict = judgeCaptureShortfall(endedAt - startedAt, capturedMs);
+  const verdict = judgeCaptureShortfall(endedAt - startedAt, capturedMs, preRollMs);
   if (!verdict.dropped) return;
   silentFailures.increment(SILENT_FAILURE.micDroppedMidDictation);
   flowLog(shortfallLogLine(verdict));
@@ -1087,12 +1163,17 @@ function wireCapture() {
     // back as a near-empty clip and gets dropped as "release noise" - the
     // loudest version of this failure is the one that would otherwise leave the
     // quietest trace.
-    noteCaptureContinuity(payload.durationMs);
+    // Review B10 (major): a warm capture carries up to preRollCreditMs of audio
+    // from BEFORE the key went down, so the raw WAV duration can EXCEED the hold.
+    // Both the shortfall judge and the release-noise guard below must reason on
+    // the hold's own audio, never on the padded clip.
+    const preRoll = preRollCreditMs(settings.micPrewarm);
+    noteCaptureContinuity(payload.durationMs, preRoll);
     // NOTHING is retained: the WAV lives in this handler, feeds one inference,
     // and every reference dies with it. Sub-300 ms of audio is release noise.
     // Every exit path calls overlay.flowDone() so the "Transcribing..." pill
     // never outlives the utterance.
-    if (payload.durationMs < 300) {
+    if (payload.durationMs - preRoll < 300) {
       hotpath.abandon(HOTPATH_ABANDON_REASON.tooShortClip);
       return overlay.flowDone();
     }
@@ -1331,6 +1412,7 @@ app.on("before-quit", () => {
   // valid. A no-op after a rescue, which flushes the stream itself first.
   longRec.flushNativeAudioSync();
   nativeCapture.destroy();
+  asrWarm = false;
   sidecar?.stop();
   probe?.stop();
   api?.stop();

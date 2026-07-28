@@ -12,7 +12,14 @@ import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { floatTo16BitPcm, encodeWav, durationMs, SAMPLE_RATE } from "../shared/wav";
 import type { CaptureStartPayload, CaptureWarmPayload } from "../shared/ipcContracts";
-import { PcmRing, preRollSamples } from "../shared/micWarmth";
+import {
+  PcmRing,
+  preRollSamples,
+  mayAdoptWarmGraph,
+  resolveWantedDevice,
+  type DeviceIdentity,
+  type WarmGraphVitals,
+} from "../shared/micWarmth";
 
 // The worklet forwards raw input frames to the page. Inlined via Blob so no
 // extra bundler entry or asset path is needed.
@@ -106,17 +113,28 @@ function reportTiming(): void {
  * capturing into it. A press between two dictations therefore does not build
  * anything - it flips this field and drains the ring.
  *
- * The graph is created and destroyed as ONE unit, deliberately: keeping the
- * AudioContext alive across releases would save another 10-100 ms per press,
- * but a context outlives the audio device it was bound to, and a context whose
- * output device disappeared can stop pulling render quanta - which would show
- * up as a capture that succeeds and contains nothing. This project has already
- * paid for that class of bug once (U4). The microphone's lifetime and the
- * graph's lifetime are the same lifetime.
+ * The graph is created and destroyed as ONE unit, deliberately: a context
+ * outlives the audio device it was bound to, and a context whose device
+ * disappeared can stop pulling render quanta - which shows up as a capture that
+ * succeeds and contains nothing. This project has already paid for that class
+ * of bug once (U4).
+ *
+ * B2 REVISED. The sentence that used to close this note - "the microphone's
+ * lifetime and the graph's lifetime are the same lifetime" - was TRUE while a
+ * graph was born and died inside one keypress, and B2 made it false without
+ * touching the guard that leaned on it. A graph now outlives its press, so the
+ * two lifetimes can diverge, and the only honest response is to stop assuming
+ * and start CHECKING: the four fields below (`ended`, the track, the context's
+ * state, `lastFrameAt`) exist so that "this graph is a working microphone" is
+ * something Flow verifies before every adoption instead of something it
+ * inherits from the fact that the object still exists.
  */
 interface MicGraph {
   ctx: AudioContext;
   stream: MediaStream;
+  /** The ONE audio track, held so both its liveness (`readyState`, `muted`,
+   * `onended`) and its IDENTITY can be read from the device itself. */
+  track: MediaStreamTrack;
   /** Held, not just connected. Our worklet node is never wired to
    * ctx.destination (this window captures, it never plays), so the spec's
    * "playing reference" that normally keeps a source node alive does not apply
@@ -125,13 +143,40 @@ interface MicGraph {
    * depend on the garbage collector's opinion of an unreferenced node. */
   src: MediaStreamAudioSourceNode;
   node: AudioWorkletNode;
-  /** The device this graph was opened for; a different choice releases it. */
-  micDeviceId: string;
-  /** Pre-roll. Capped at preRollMs of audio BY CONSTRUCTION (PcmRing), memory
+  /** The SETTING this graph was opened for ("" = "the system default"). Answers
+   * "did the user pick a different microphone" and nothing else - see `device`
+   * for the question it CANNOT answer. */
+  wantedDeviceId: string;
+  /** The REAL device the track bound to, snapshotted from the track at open
+   * time. `wantedDeviceId` stays "" while Windows swaps the device behind the
+   * word "default"; this does not. */
+  device: DeviceIdentity;
+  /** Pre-roll. Capped at the CURRENT policy's preRollMs of audio (PcmRing, and
+   * resized by applyWarm when the policy changes under a live graph), memory
    * only, drained into a capture or erased - never written anywhere. */
   ring: PcmRing;
   /** Non-null while a dictation is capturing into it. */
   sink: Float32Array[] | null;
+  /** Sticky: the track ended, the context closed, or this graph was released.
+   * A dead graph is never resurrected, only replaced. */
+  ended: boolean;
+  /** performance.now() of the last frame this graph delivered, seeded with the
+   * instant it opened. A graph that has stopped rendering is dead in the only
+   * way the user would ever notice. */
+  lastFrameAt: number;
+}
+
+/** What the adoption rule (shared/micWarmth.ts) needs to see, read off the live
+ * objects at the moment of the question - never cached, because every one of
+ * these can change without anything telling us. */
+function vitalsOf(g: MicGraph): WarmGraphVitals {
+  return {
+    ended: g.ended,
+    trackReadyState: g.track.readyState,
+    trackMuted: g.track.muted,
+    contextState: g.ctx.state,
+    msSinceLastFrame: performance.now() - g.lastFrameAt,
+  };
 }
 
 // Microphone enumeration for the Manager's settings view (device labels only
@@ -333,11 +378,49 @@ function Overlay() {
     // B2: the live graph, warm or capturing (see MicGraph). Null = the
     // microphone is closed and Windows' indicator is off.
     let mic: MicGraph | null = null;
-    // B2: the pre-warm policy main last pushed. Null = the user turned it off,
-    // which is enforced rather than merely obeyed: the ring is built with zero
-    // capacity, so there is no buffered audio to hold, clear or forget.
+    // B2: the pre-warm policy main last pushed. Null means "no warm
+    // microphone", and it is enforced rather than merely obeyed: applying it
+    // closes the device on the spot and erases the pre-roll, and any ring built
+    // while it holds has zero capacity - so there is no buffered audio to hold,
+    // clear or forget. It is also the channel an OUTSIDE order arrives on (the
+    // lock screen, sleep, the tray's pause), which is why nothing about it may
+    // ever be deferred to a timer.
     let policy: CaptureWarmPayload | null = null;
     let releaseTimer: number | undefined;
+    // What the CURRENT policy's micDeviceId resolves to on this machine right
+    // now, or null while Flow does not know (device ids are blank until one
+    // getUserMedia has been granted, and enumerateDevices can throw). Refreshed
+    // off the hot path only: after each open, and on every devicechange - which
+    // is the event that reports the one change no track-level signal ever
+    // will, Windows swapping its default input.
+    let resolvedDevice: DeviceIdentity | null = null;
+
+    async function refreshResolvedDevice(): Promise<void> {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        resolvedDevice = resolveWantedDevice(devices, policy?.micDeviceId ?? mic?.wantedDeviceId ?? "");
+      } catch {
+        // Not knowing is a state, and it is handled where it matters: the
+        // adoption rule skips the device comparison rather than guessing, which
+        // degrades to the setting-only behaviour and never to a false match.
+        resolvedDevice = null;
+      }
+    }
+
+    /** B2 revised: the ONE rule that decides whether a warm graph is still a
+     * working microphone, asked from the two places that need it - the press
+     * that would adopt it, and the policy push that would keep it open. Two
+     * answers to that question is exactly how the first version got a dead
+     * graph adopted for the rest of a session. */
+    function graphStillFits(g: MicGraph, wantedDeviceId: string): boolean {
+      return mayAdoptWarmGraph({
+        graphWantedDeviceId: g.wantedDeviceId,
+        graphDevice: g.device,
+        wantedDeviceId,
+        resolved: resolvedDevice,
+        vitals: vitalsOf(g),
+      });
+    }
 
     /** B2: open the microphone and build the graph. `forCapture` decides which
      * mode it is born in - a press builds it already capturing, a pre-warm
@@ -365,6 +448,16 @@ function Overlay() {
         // Chromium resamples the device rate to the context rate: asking the
         // context for 16 kHz gives us ASR-ready PCM with zero conversion step.
         ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
+        if (ctx.state === "suspended") {
+          // A context that starts suspended pulls no render quanta: the graph
+          // would look perfect and capture silence. The overlay window sets
+          // autoplayPolicy "no-user-gesture-required" precisely so this does not
+          // happen - but "should not" is not "cannot", so ask anyway, and let
+          // the adoption gate refuse whatever stayed asleep.
+          void ctx.resume().catch(() => {
+            /* refused: the graph fails its vitals and the cold path takes over */
+          });
+        }
         const workletUrl = URL.createObjectURL(new Blob([WORKLET], { type: "text/javascript" }));
         try {
           await ctx.audioWorklet.addModule(workletUrl);
@@ -376,17 +469,54 @@ function Overlay() {
           void ctx.close();
           return;
         }
+        const track = stream.getAudioTracks()[0];
+        // A stream with no audio track is not a microphone, however healthy it
+        // looks. Failing here routes it through the catch below, which stops
+        // everything and reports - instead of installing a graph that would
+        // pass every later check and record nothing.
+        if (!track) throw new Error("the microphone stream carried no audio track");
+        const bound = track.getSettings();
         const g: MicGraph = {
           ctx,
           stream,
+          track,
           src: ctx.createMediaStreamSource(stream),
           node: new AudioWorkletNode(ctx, "agrflow-capture"),
-          micDeviceId: deviceId,
+          wantedDeviceId: deviceId,
+          device: { deviceId: bound.deviceId ?? "", groupId: bound.groupId ?? "" },
           ring: new PcmRing(preRollSamples(policy?.preRollMs ?? 0, SAMPLE_RATE)),
           sink: forCapture ? [] : null,
+          ended: false,
+          lastFrameAt: performance.now(),
+        };
+        // Hear the death rather than discover it. A device can go away under a
+        // graph that is otherwise perfectly healthy - headset unplugged, audio
+        // service restarted, another app taking it exclusively - and before B2
+        // that was unreachable, because a graph could not outlive the keypress
+        // that built it. Now it can, so the end of the device has to arrive as
+        // an event, not as a surprise at the next press.
+        track.onended = () => {
+          g.ended = true;
+          if (mic !== g || g.sink !== null) return; // a live capture is ended by its own path
+          releaseMic();
+          applyWarm(policy); // reopen on whatever the setting names now, or stay closed
+        };
+        ctx.onstatechange = () => {
+          // A context that stopped running renders no quanta: the capture would
+          // succeed and be empty. Suspended is recoverable, closed is not.
+          if (g.ctx.state === "closed") g.ended = true;
+          else if (g.ctx.state === "suspended") {
+            void g.ctx.resume().catch(() => {
+              g.ended = true;
+            });
+          }
         };
         g.node.port.onmessage = (ev: MessageEvent<Float32Array>) => {
           const frame = ev.data;
+          // Proof of life, stamped before anything decides what to do with the
+          // audio: frames are what the graph DOES, where readyState and
+          // AudioContext.state are only what it says.
+          g.lastFrameAt = performance.now();
           if (!g.sink) {
             // Warm but idle. The ONLY thing that happens to this audio is a
             // bounded ring in memory: it is not levelled, not analysed, not
@@ -412,6 +542,11 @@ function Overlay() {
         // No connection to ctx.destination: capture only, never playback.
         g.src.connect(g.node);
         mic = g;
+        // Device ids are blank until a getUserMedia has been granted, which
+        // just happened: this is the cheapest moment to learn what "" resolves
+        // to on this machine. Fire-and-forget - nothing on the press path waits
+        // for it, and an unknown resolution is a handled state.
+        void refreshResolvedDevice();
         if (forCapture) setPhase("listening");
       } catch (err) {
         // A later step can throw AFTER the stream is live: never leak a hot mic.
@@ -436,8 +571,15 @@ function Overlay() {
       mic = null;
       if (!g) return;
       g.sink = null;
+      g.ended = true; // whatever still holds a reference must not adopt this
       g.ring.clear(); // the pre-roll never outlives the microphone that filled it
       g.node.port.onmessage = null;
+      // Both listeners fire DURING the teardown two lines down (stop() ends the
+      // track, close() closes the context). Left attached, a graph that is
+      // already gone would ask for a replacement it no longer has any business
+      // asking for.
+      g.track.onended = null;
+      g.ctx.onstatechange = null;
       g.stream.getTracks().forEach((t) => t.stop());
       void g.ctx.close();
     }
@@ -460,15 +602,35 @@ function Overlay() {
 
     /** B2: main pushed a new pre-warm policy (or, with null, told us to cool
      * down). Never touches a microphone a dictation is currently using: the
-     * setting takes effect at the end of that press, through armRelease. */
+     * setting takes effect at the end of that press, through endCapture's
+     * re-apply. */
     function applyWarm(next: CaptureWarmPayload | null): void {
       policy = next;
       if (mic && mic.sink !== null) return; // a capture owns it; decided at its end
       if (!next) {
+        // A null policy is an ORDER, not a preference: release NOW. Main sends
+        // it when the user turns pre-warm off, and it is the channel any other
+        // "stop listening" has to use - the lock screen, sleep, the tray's
+        // "pause dictation". Nothing here is deferred to a timer: releaseMic
+        // clears the pending one, closes the device and erases the pre-roll on
+        // this very tick, so Windows' microphone indicator goes out as part of
+        // the gesture rather than some seconds after it.
         releaseMic();
         return;
       }
-      if (mic && mic.micDeviceId !== next.micDeviceId) releaseMic();
+      // The pre-roll's capacity follows the CURRENT policy, not the one that
+      // happened to be in force when the graph was built. Turning pre-warm on
+      // during a press used to leave the microphone open - for the whole
+      // session, in "always" - behind a ring built at zero capacity: warm, lit,
+      // and holding nothing. Resizing also SHRINKS on the spot, which is what a
+      // privacy bound has to do; rebuilding the graph would achieve the same
+      // but by dropping the very microphone this feature exists to keep, and
+      // through a call to the OS that can fail.
+      if (mic) mic.ring.setCapacity(preRollSamples(next.preRollMs, SAMPLE_RATE));
+      // The SAME rule the press uses (graphStillFits): a graph nobody could
+      // dictate through - wrong device, ended track, stopped context, no frames
+      // - is not a warm microphone, it is a device handle held for nothing.
+      if (mic && !graphStillFits(mic, next.micDeviceId)) releaseMic();
       if (!mic) {
         gen++;
         void openMic(next.micDeviceId, false);
@@ -488,11 +650,18 @@ function Overlay() {
       releaseTimer = undefined;
       // B2, THE POINT OF THE TASK: a microphone kept warm by the previous
       // dictation (or by the startup warm-up) is adopted SYNCHRONOUSLY - no
-      // getUserMedia, no AudioContext, no worklet compile between the key and
+      // acquisition, no AudioContext, no worklet compile between the key and
       // the first recorded sample. And its ring already holds the half-second
       // BEFORE the key went down, which is what makes the first word
       // unloseable rather than merely fast.
-      if (mic && mic.sink === null && mic.micDeviceId === wanted) {
+      //
+      // graphStillFits is the whole revision: warmth is no longer inferred from
+      // the object existing, it is PROVEN on the spot - a track that is still
+      // live and unmuted, a context that is still running, frames that are
+      // still arriving, and the device the setting names RIGHT NOW rather than
+      // the string it was opened with. Everything it rejects falls through to
+      // the cold path below, which self-heals by re-asking the OS.
+      if (mic && mic.sink === null && graphStillFits(mic, wanted)) {
         const seed = mic.ring.drain();
         mic.sink = seed;
         if (seed.length > 0) {
@@ -502,8 +671,9 @@ function Overlay() {
         setPhase("listening");
         return;
       }
-      // Warm for a microphone the user no longer wants (or, defensively, a
-      // graph left capturing): drop it rather than dictate through it.
+      // Warm for a microphone the user no longer wants, or one Flow can no
+      // longer vouch for (or, defensively, a graph left capturing): drop it
+      // rather than dictate through it.
       if (mic) releaseMic();
       gen++;
       void openMic(wanted, true);
@@ -555,6 +725,23 @@ function Overlay() {
     });
     api.onCaptureWarm(applyWarm);
 
+    // The one event that reports what NO track-level signal ever will: Windows
+    // switched its default input. An open track does not migrate - it goes on
+    // feeding the microphone it was bound to, in perfect health - so a graph
+    // opened for the default ("" in the setting) silently becomes a graph on
+    // the old device, and every later press would keep dictating into it.
+    // Re-resolve, then hand the decision to the same rule as everywhere else.
+    const onDeviceChange = () => {
+      void refreshResolvedDevice().then(() => {
+        if (mic && mic.sink !== null) return; // a live dictation is never disturbed
+        applyWarm(policy);
+      });
+    };
+    navigator.mediaDevices?.addEventListener("devicechange", onDeviceChange);
+    return () => {
+      navigator.mediaDevices?.removeEventListener("devicechange", onDeviceChange);
+      releaseMic(); // this window going away must never leave a microphone open
+    };
   }, []);
 
   return (

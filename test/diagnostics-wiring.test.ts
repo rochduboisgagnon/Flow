@@ -18,6 +18,8 @@ function readSrc(...parts: string[]): string {
 const INDEX_SRC = readSrc("src", "main", "index.ts");
 const API_SRC = readSrc("src", "main", "api.ts");
 const BRIDGE_SRC = readSrc("src", "main", "uiBridge.ts");
+const PANEL_SRC = readSrc("src", "renderer", "ui", "pages", "Diagnostics.tsx");
+const BENCH_SRC = readSrc("scripts", "bench-hotpath.ts");
 
 function bodyOf(src: string, anchor: string, terminator = "\n}\n"): string {
   const at = src.indexOf(anchor);
@@ -71,6 +73,40 @@ test("B4b: before-quit flushes the log synchronously, and does it LAST", () => {
       `${earlier} must run BEFORE the log is flushed, or its lines are lost`,
     );
   }
+});
+
+// ---- B11: the event-loop lag sampler must be running, and be readable ----
+
+test("B11: the sampler is built on the real timer and feeds the hotpath ring", () => {
+  const at = INDEX_SRC.indexOf("const loopLagSampler = new LoopLagSampler(");
+  assert.ok(at > 0, "index.ts must build the sampler");
+  const decl = INDEX_SRC.slice(at, INDEX_SRC.indexOf("\n});\n", at));
+  assert.match(decl, /scheduler: realScheduler\(\)/);
+  assert.match(decl, /hotpath\.sampleLoopLag\(ms\)/, "samples must land in the bounded ring, nowhere else");
+});
+
+test("B11: the cadence is decided by the SAME 'busy' the updater's quiet window uses", () => {
+  // Two definitions of "is Flow working" is how a diagnostic ends up sampling
+  // at the idle cadence during exactly the work it was built to observe.
+  const at = INDEX_SRC.indexOf("const loopLagSampler = new LoopLagSampler(");
+  const decl = INDEX_SRC.slice(at, INDEX_SRC.indexOf("\n});\n", at));
+  assert.match(decl, /isActive: \(\) => engineBusy\(\)/);
+  assert.match(decl, /lastActivityAt < LOOP_LAG_ACTIVE_TAIL_MS/);
+});
+
+test("B11: the sampler is actually started, right after the hook it measures for", () => {
+  assert.match(INDEX_SRC, /loopLagSampler\.start\(\);/, "a sampler nobody starts measures nothing");
+  const startPttAt = INDEX_SRC.indexOf("\n    startPtt();");
+  const samplerAt = INDEX_SRC.indexOf("loopLagSampler.start();");
+  assert.ok(startPttAt > 0 && samplerAt > startPttAt, "start it after the hook exists");
+});
+
+test("B11: the number reaches BOTH surfaces - a measurement nobody can read is not a measurement", () => {
+  assert.match(PANEL_SRC, /snap\.loopLag\.p99Ms/, "the Diagnostics panel must render the p99");
+  assert.match(PANEL_SRC, /snap\.loopLag\.count/, "and the sample count behind it");
+  assert.match(PANEL_SRC, /snap\.loopLag\.minMs/, "and the timer floor, or the p50 reads as permanent lag");
+  assert.match(PANEL_SRC, /LOOP_LAG_P99_THRESHOLD_MS/, "the panel must name the T1 threshold");
+  assert.match(BENCH_SRC, /loopLag\.p99Ms/, "bench:hotpath must print it too");
 });
 
 // ---- B5: the self-diagnostic ----

@@ -66,13 +66,30 @@ export interface SelfCheckFacts {
   micCount: number | null;
   /** Why the enumeration could not be done, when that is known. */
   micError?: string;
-  /** A whisper-server backend is running with the model loaded. */
+  /** A whisper-server backend is running with the model loaded, RIGHT NOW.
+   *
+   * Adverse review V2, constat 2: this must be fed from the sidecar's own
+   * `onState` callback ("warm" -> true, "down"/"error" -> false), never from
+   * "does a WhisperSidecar object exist". The object is legitimately assigned
+   * before its startup is awaited (and, on a failed startup, can be left
+   * assigned with nothing behind it) - `instance !== null` answers "was a
+   * warm-up attempted", which is a different question this line does not ask,
+   * and answering "ok" from it turns a broken engine into a green light. See
+   * main/index.ts's newSidecar() for the callback this must be wired to. */
   engineWarm: boolean;
   /** Basename of the active backend binary, "" while selecting. */
   backend: string;
   modelFile: string;
   /** The model file is on disk; null = could not be checked. */
   modelPresent: boolean | null;
+  /** Adverse review V2, constat 3: this is the ONLY signal engineLine()/
+   * modelLine() have for "still downloading, nothing is wrong" versus "gave
+   * up" - so it must be kept live for EVERY path that can fetch a model, the
+   * very first boot's warm-up included, not only a later model swap. If the
+   * app's first-ever launch (a 550 MB download, per SELF_CHECK_STARTUP_DELAY_MS
+   * in main/index.ts) never moves this off "idle" while the fetch is in
+   * flight, the self-check has no way to tell that download apart from a
+   * model that is simply missing, and reports a working first run as FAIL. */
   modelState: { status: "idle" | "downloading" | "ready" | "error"; pct?: number; message?: string };
   /** The loopback control API's bound port, 0 when it is not listening. */
   apiPort: number;

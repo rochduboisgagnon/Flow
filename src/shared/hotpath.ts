@@ -160,6 +160,11 @@ export class Ring<T> {
 
 const DEFAULT_TRACE_CAPACITY = 200;
 const DEFAULT_LATENCY_CAPACITY = 2000;
+// B11: 3000 lag samples is one minute of the 20 ms active cadence, or about
+// twenty-five minutes of the 500 ms idle one (see shared/loopLag.ts). Bounded
+// by construction like every other ring here: 3000 doubles is ~24 KB that can
+// never grow, for a sampler that runs for the whole life of the process.
+const DEFAULT_LOOP_LAG_CAPACITY = 3000;
 // B4: hook incidents are rare by nature (the crash-loop guard caps automatic
 // restarts at 3 in five minutes), so a small ring holds a whole session's worth
 // and still cannot grow.
@@ -175,6 +180,37 @@ const OPEN_QUEUE_CAP = 8;
 // keeps the open queue's FIFO correlation (see findOpenMissing) from being
 // blocked forever by a trace that will never receive its next mark.
 const STALE_OPEN_MS = 30_000;
+
+// Adverse review V2, constat 1: which abandon reasons describe the press the
+// keyboard/hook layer is reacting to RIGHT NOW, as opposed to a verdict about
+// a WAV that already arrived.
+//
+// The matcher allows exactly one live hold at a time (see mark()'s own
+// comment), so while a hold is in progress nothing can have opened a trace
+// AFTER it - the most recently opened trace IS the hold this reason is about.
+// The oldest open trace, if there is a second one, is always something else:
+// an EARLIER press whose capture already finished and whose pipeline
+// (transcribe/probe/insert) is still resolving in the background. Closing
+// THAT one on a reason about the current keypress would end a still-live,
+// unrelated dictation on the wrong verdict, and leave the trace that actually
+// earned the reason open until the 30 s stale sweep quietly relabels it
+// "stale-timeout" instead of the true cause.
+//
+// Every reason here is fired from a hook/hotkey callback (onStart's refusal,
+// onCancel's five reasons) or from a capture-layer report about the press
+// still being captured (hookDied, captureError) - none of them are ever
+// decided FROM a WAV, so none of them can ever be about an older, WAV-bearing
+// trace.
+const KEYBOARD_ABANDON_REASONS: ReadonlySet<HotpathAbandonReason> = new Set([
+  HOTPATH_ABANDON_REASON.shortTap,
+  HOTPATH_ABANDON_REASON.extraKey,
+  HOTPATH_ABANDON_REASON.shortcutRecorder,
+  HOTPATH_ABANDON_REASON.comboChanged,
+  HOTPATH_ABANDON_REASON.paused,
+  HOTPATH_ABANDON_REASON.busyLongRecording,
+  HOTPATH_ABANDON_REASON.hookDied,
+  HOTPATH_ABANDON_REASON.captureError,
+]);
 
 function nowMs(): number {
   return performance.now();
@@ -194,15 +230,18 @@ export class HotpathLog {
   private readonly completed: Ring<HotpathTrace>;
   private readonly handlerLatencies: Ring<number>;
   private readonly events: Ring<HotpathEvent>;
+  private readonly loopLags: Ring<number>;
 
   constructor(
     traceCapacity = DEFAULT_TRACE_CAPACITY,
     latencyCapacity = DEFAULT_LATENCY_CAPACITY,
     eventCapacity = DEFAULT_EVENT_CAPACITY,
+    loopLagCapacity = DEFAULT_LOOP_LAG_CAPACITY,
   ) {
     this.completed = new Ring(traceCapacity);
     this.handlerLatencies = new Ring(latencyCapacity);
     this.events = new Ring(eventCapacity);
+    this.loopLags = new Ring(loopLagCapacity);
   }
 
   /** B4: one press-less hot-path event (see HOTPATH_EVENT). Deliberately does
@@ -219,6 +258,14 @@ export class HotpathLog {
    * that reaches the matcher, regardless of whether a trace is open. */
   sampleHandlerLatency(ms: number): void {
     this.handlerLatencies.push(ms);
+  }
+
+  /** B11: one event-loop lag observation (see shared/loopLag.ts for what the
+   * number means and why it is not a raw inter-tick delta). This is segment 2
+   * of the four the Windows hook budget covers - the wait in Node's timer/IO
+   * queue BEFORE our handler runs - and it is the only one B1 never saw. */
+  sampleLoopLag(ms: number): void {
+    this.loopLags.push(ms);
   }
 
   /**
@@ -298,7 +345,16 @@ export class HotpathLog {
 
   /** Close the oldest open trace as a success: appends `textInserted` itself
    * (never a separate mark() call) so the timestamp of "done" and the
-   * timestamp of "closed" can never drift apart. */
+   * timestamp of "closed" can never drift apart.
+   *
+   * Always the OLDEST, unconditionally - and that is correct, not merely
+   * convenient: `complete()` only ever fires at the end of a pipeline that
+   * already has `wavReceived` (see wireCapture in index.ts), and that mark
+   * was itself attached FIFO-oldest (mark()'s own rule). A trace that reached
+   * `complete()` is therefore always the one closest to the front of the
+   * queue among traces past that point - the same invariant mark() documents
+   * for `wavReceived` onward. Reasons decided BEFORE any WAV exists are a
+   * different case entirely; see abandon() and KEYBOARD_ABANDON_REASONS. */
   complete(result: HotpathResult, textChars: number, t: number = nowMs()): void {
     this.sweepStale(t);
     const trace = this.open.shift();
@@ -309,12 +365,23 @@ export class HotpathLog {
     this.close(trace, "completed", undefined, t);
   }
 
-  /** Close the oldest open trace as abandoned (no text ever reached the
-   * cursor or the clipboard for it): a short tap, a cancel, a VAD/hallucination
-   * gate, or a pipeline failure. */
+  /** Close a trace as abandoned (no text ever reached the cursor or the
+   * clipboard for it): a short tap, a cancel, a VAD/hallucination gate, or a
+   * pipeline failure.
+   *
+   * WHICH trace depends on WHAT the reason describes (constat 1, adverse
+   * review V2): a keyboard/hook-layer reason (see KEYBOARD_ABANDON_REASONS)
+   * is a verdict about the press just produced, so it must close the MOST
+   * RECENTLY opened trace - closing the oldest instead would end an older,
+   * still-live dictation on a verdict that was never about it, and leave the
+   * press that actually earned the reason open until the 30 s stale sweep.
+   * Every other reason is decided FROM a WAV that already arrived and
+   * already attached FIFO-oldest (mark()'s rule, same as complete() above),
+   * so the oldest open trace remains the correct - and unconditional -
+   * target for those. */
   abandon(reason: HotpathAbandonReason, t: number = nowMs()): void {
     this.sweepStale(t);
-    const trace = this.open.shift();
+    const trace = KEYBOARD_ABANDON_REASONS.has(reason) ? this.open.pop() : this.open.shift();
     if (!trace) return;
     this.close(trace, "abandoned", reason, t);
   }
@@ -328,6 +395,17 @@ export class HotpathLog {
       completed: this.completed.toArray().map(cloneTrace),
       open: this.open.map(cloneTrace),
       handlerLatenciesMs: this.handlerLatencies.toArray(),
+      // B11: STATISTICS, not the raw ring - the one field of this snapshot that
+      // is summarized before it ships. The lag ring fills at up to 50 samples
+      // per second, so shipping it raw would put ~50 KB of JSON through the IPC
+      // channel and the loopback route every two seconds while the Diagnostics
+      // panel is open. Serializing that costs main-thread time, on the very
+      // event loop this number exists to prove is free: a measurement that
+      // degrades what it measures is worse than no measurement. The arithmetic
+      // is shared (summarizeLoopLag below), so the panel and bench:hotpath still
+      // cannot disagree about the same data - which was the point of shipping
+      // raw values elsewhere in the first place.
+      loopLag: summarizeLoopLag(this.loopLags.toArray()),
       events: this.events.toArray().map((e) => ({ ...e })),
       // B6: rides this EXISTING snapshot/channel rather than opening a new
       // one - Diagnostics already polls UI_HOTPATH_SNAPSHOT. See
@@ -369,6 +447,8 @@ export interface HotpathSnapshot {
   completed: HotpathTrace[];
   open: HotpathTrace[];
   handlerLatenciesMs: number[];
+  /** B11: event-loop lag, already summarized (see the note in snapshot()). */
+  loopLag: LoopLagStats;
   /** B4: press-less incidents (hook died / restarted / abandoned), oldest first. */
   events: HotpathEvent[];
   /** B6: named best-effort catches on the dictation hot path, tallied since
@@ -546,5 +626,57 @@ export function summarize(values: number[]): HotpathSummary {
     medianMs: median(clean),
     p95Ms: percentile(clean, 95),
     maxMs: clean.length ? Math.max(...clean) : null,
+  };
+}
+
+// ---- B11: event-loop lag statistics and the T1 trigger ----
+
+/** The threshold that reopens B7 (plan §3.6.6, trigger T1), written in code so
+ * the panel, the CLI and any future automated check read ONE number.
+ *
+ * 100 ms is a third of the tightest `LowLevelHooksTimeout` in practical use
+ * (the registry default is 300 ms in older setups; Windows 10 1709 and later
+ * cap the effective value at 1000 ms). A loop that is a third of the budget
+ * behind BEFORE our handler is even called is a loop that gives Windows a real
+ * reason to remove the hook - and Microsoft documents that it removes it
+ * silently, with no way for the application to find out. This is therefore a
+ * TRIGGER, not a budget: crossing it does not mean dictation broke, it means
+ * the no-go of §3.6.5 has to be re-argued on new numbers. */
+export const LOOP_LAG_P99_THRESHOLD_MS = 100;
+
+export interface LoopLagStats {
+  count: number;
+  /** The SMALLEST lag observed, which on Windows is not zero and is not a
+   * defect: the system timer's default granularity is 15.625 ms, so a 20 ms
+   * interval is served at the next grid point, 31.25 ms later, and every single
+   * sample carries 11.25 ms of quantization that has nothing to do with a
+   * blocked loop. Measured on this machine at exactly that: a p50 of 11.0 to
+   * 11.2 ms on a completely idle process. Reported so a reader can subtract the
+   * instrument from the measurement instead of reading its floor as lag - and
+   * so the day the floor changes (Chromium raises the process timer resolution
+   * to 1 ms when it has work) that shows up as a fact rather than as a mystery.
+   * It is far below the 100 ms trigger either way. */
+  minMs: number | null;
+  p50Ms: number | null;
+  p95Ms: number | null;
+  p99Ms: number | null;
+  maxMs: number | null;
+  /** p99 strictly over LOOP_LAG_P99_THRESHOLD_MS. Null when there is nothing to
+   * judge, which a consumer must show differently from "false" - "no data yet"
+   * and "measured, and fine" are two very different sentences. */
+  overThreshold: boolean | null;
+}
+
+export function summarizeLoopLag(values: number[]): LoopLagStats {
+  const clean = values.filter((v) => Number.isFinite(v));
+  const p99 = percentile(clean, 99);
+  return {
+    count: clean.length,
+    minMs: clean.length ? Math.min(...clean) : null,
+    p50Ms: percentile(clean, 50),
+    p95Ms: percentile(clean, 95),
+    p99Ms: p99,
+    maxMs: clean.length ? Math.max(...clean) : null,
+    overThreshold: p99 === null ? null : p99 > LOOP_LAG_P99_THRESHOLD_MS,
   };
 }

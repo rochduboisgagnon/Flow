@@ -8,8 +8,10 @@ import {
   percentile,
   median,
   summarize,
+  summarizeLoopLag,
   HOTPATH_ABANDON_REASON,
   HOTPATH_BUDGETS_MS,
+  LOOP_LAG_P99_THRESHOLD_MS,
   type HotpathTrace,
 } from "../src/shared/hotpath";
 import { SILENT_FAILURE, silentFailures } from "../src/shared/silentFailures";
@@ -157,6 +159,107 @@ test("two overlapping presses correlate FIFO-by-age: the older trace gets the ne
   assert.equal(snap.completed.length, 1);
   assert.equal(snap.open.length, 1, "B is still open, waiting on its own release");
   assert.equal(snap.completed[0].utteranceMs, 100);
+});
+
+// ---- constat 1 (adverse review V2): abandon() must close the RIGHT press ----
+
+const KEYBOARD_REASONS = [
+  HOTPATH_ABANDON_REASON.shortTap,
+  HOTPATH_ABANDON_REASON.extraKey,
+  HOTPATH_ABANDON_REASON.shortcutRecorder,
+  HOTPATH_ABANDON_REASON.comboChanged,
+  HOTPATH_ABANDON_REASON.paused,
+  HOTPATH_ABANDON_REASON.busyLongRecording,
+  HOTPATH_ABANDON_REASON.hookDied,
+  HOTPATH_ABANDON_REASON.captureError,
+] as const;
+
+const WAV_REASONS = [
+  HOTPATH_ABANDON_REASON.tooShortClip,
+  HOTPATH_ABANDON_REASON.noSpeech,
+  HOTPATH_ABANDON_REASON.hallucinationGate,
+  HOTPATH_ABANDON_REASON.pipelineError,
+] as const;
+
+for (const reason of KEYBOARD_REASONS) {
+  test(`constat 1: abandon("${reason}") closes the trace the keyboard just opened, not an older still-finishing one`, () => {
+    const log = new HotpathLog();
+    // Press A: opened earlier, already past capture, still finishing its OWN
+    // async pipeline (transcribe/probe/insert) - a live, unrelated trace.
+    log.mark("keyEventReceived", 0);
+    log.mark("verdictRendered", 0.1);
+    log.mark("captureStartDecided", 0.2);
+    log.mark("overlayStartSent", 0.3);
+    log.mark("releaseObserved", 50);
+    log.markWavReceived(50, 55);
+    log.mark("transcriptionStarted", 56);
+    // Press B: opens WHILE A is still finishing, then earns `reason`.
+    log.mark("keyEventReceived", 100);
+    log.abandon(reason, 101);
+
+    const snap = log.snapshot();
+    assert.equal(snap.completed.length, 1, "exactly B closed");
+    assert.equal(snap.completed[0].reason, reason);
+    assert.equal(snap.completed[0].marks[0].t, 100, "B, not A, was closed");
+    assert.equal(snap.open.length, 1, "A is still open, mid-pipeline");
+    assert.equal(snap.open[0].marks[0].t, 0, "A is untouched");
+  });
+}
+
+for (const reason of WAV_REASONS) {
+  test(`constat 1: abandon("${reason}") still closes the OLDEST open trace (the one its WAV already attached to)`, () => {
+    const log = new HotpathLog();
+    // Press A: its WAV already arrived - this reason is a verdict about IT.
+    log.mark("keyEventReceived", 0);
+    log.markWavReceived(400, 10);
+    // Press B: opened after A's WAV, still just a bare press.
+    log.mark("keyEventReceived", 20);
+    log.abandon(reason, 30);
+
+    const snap = log.snapshot();
+    assert.equal(snap.completed.length, 1);
+    assert.equal(snap.completed[0].reason, reason);
+    assert.equal(snap.completed[0].marks[0].t, 0, "A, the trace its WAV belongs to, was closed");
+    assert.equal(snap.open.length, 1);
+    assert.equal(snap.open[0].marks[0].t, 20, "B is untouched");
+  });
+}
+
+test("constat 1 repro: a fast short tap while the previous dictation is still transcribing closes on the SHORT TAP, not the dictation", () => {
+  const log = new HotpathLog();
+  // The previous dictation: captured, transcribing...
+  log.mark("keyEventReceived", 0);
+  log.mark("verdictRendered", 0.1);
+  log.mark("captureStartDecided", 0.2);
+  log.mark("overlayStartSent", 0.3);
+  log.mark("releaseObserved", 400);
+  log.mark("overlayStopSent", 400.1);
+  log.markWavReceived(400, 405);
+  log.mark("transcriptionStarted", 406); // still running when B happens
+
+  // A fast, accidental tap right after: opens and releases under MIN_HOLD_MS.
+  log.mark("keyEventReceived", 410);
+  log.mark("verdictRendered", 410.1);
+  log.mark("overlayCancelSent", 415);
+  log.abandon(HOTPATH_ABANDON_REASON.shortTap, 415.1);
+
+  const snap = log.snapshot();
+  assert.equal(snap.completed.length, 1);
+  assert.equal(snap.completed[0].reason, "short-tap");
+  assert.equal(snap.completed[0].marks[0].t, 410, "the short tap closed, not the dictation still transcribing");
+  assert.equal(snap.open.length, 1, "the real dictation is still open, waiting on its own completion");
+  assert.equal(snap.open[0].marks[0].t, 0);
+
+  // The real dictation then finishes normally and closes on ITSELF.
+  log.mark("transcriptionFinished", 600);
+  log.mark("focusProbed", 605);
+  log.mark("routeDecided", 605.1);
+  log.complete("inserted", 12, 610);
+  const finalSnap = log.snapshot();
+  assert.equal(finalSnap.completed.length, 2);
+  assert.equal(finalSnap.open.length, 0);
+  const dictation = finalSnap.completed.find((t) => t.outcome === "completed");
+  assert.equal(dictation?.marks[0].t, 0, "the completed trace is the ORIGINAL dictation, correctly correlated");
 });
 
 // ---- bounded growth ----
@@ -437,6 +540,107 @@ test("percentile and summarize ignore non-finite values and handle an empty arra
   assert.equal(s.count, 3);
   assert.equal(s.medianMs, 3);
   assert.equal(s.maxMs, 5);
+});
+
+// ---- B11: event-loop lag storage and the T1 threshold ----
+
+test("the loop-lag ring is bounded like every other ring here", () => {
+  const log = new HotpathLog(5, 5, 5, 3);
+  for (let i = 1; i <= 10; i++) log.sampleLoopLag(i);
+  const stats = log.snapshot().loopLag;
+  assert.equal(stats.count, 3, "only the last 3 samples may survive");
+  assert.equal(stats.maxMs, 10);
+});
+
+test("snapshot() carries loop-lag STATISTICS, never the raw ring", () => {
+  // The ring fills at up to 50 samples/s; shipping it raw would push tens of
+  // kilobytes of JSON through the IPC channel every two seconds, on the very
+  // event loop these numbers exist to prove is free.
+  const log = new HotpathLog();
+  for (let i = 0; i < 100; i++) log.sampleLoopLag(i % 10);
+  const snap = log.snapshot() as unknown as Record<string, unknown>;
+  assert.equal(Array.isArray(snap.loopLag), false);
+  assert.equal(typeof (snap.loopLag as { count: number }).count, "number");
+  for (const key of Object.keys(snap)) {
+    assert.notEqual(key, "loopLagMs", "the raw lag array must not ride the snapshot");
+  }
+});
+
+test("summarizeLoopLag reports floor/p50/p95/p99/max over the samples it was given", () => {
+  const values = Array.from({ length: 100 }, (_, i) => i + 1); // 1..100
+  const s = summarizeLoopLag(values);
+  assert.equal(s.count, 100);
+  assert.equal(s.minMs, 1);
+  assert.equal(s.p50Ms, 50.5);
+  assert.equal(s.p95Ms, 95.05);
+  assert.equal(s.p99Ms, 99.01);
+  assert.equal(s.maxMs, 100);
+});
+
+test("the floor is reported so the instrument can be subtracted from the measurement", () => {
+  // Windows serves a 20 ms interval on its 15.625 ms grid, so every sample of a
+  // perfectly idle loop carries ~11.25 ms that is granularity, not blocking.
+  // Measured on this machine at a p50 of 11.0-11.2 ms with no load at all. A
+  // panel that showed only p50 would report a permanently late loop.
+  const quantized = [11.2, 11.3, 11.2, 11.4, 11.2];
+  const s = summarizeLoopLag(quantized);
+  assert.equal(s.minMs, 11.2);
+  assert.equal(s.overThreshold, false, "a granularity floor must never trip the trigger");
+});
+
+test("summarizeLoopLag tells 'nothing measured yet' apart from 'measured, and fine'", () => {
+  const empty = summarizeLoopLag([]);
+  assert.equal(empty.count, 0);
+  assert.equal(empty.p99Ms, null);
+  assert.equal(empty.overThreshold, null, "no data is not the same sentence as no problem");
+
+  const quiet = summarizeLoopLag([0, 0.2, 1, 2]);
+  assert.equal(quiet.overThreshold, false);
+});
+
+test("the T1 trigger fires strictly above the threshold, not at it", () => {
+  // 100 ms is a third of the tightest LowLevelHooksTimeout (plan §3.6.6). A
+  // reading exactly at the threshold is not yet the event that reopens B7.
+  const at = summarizeLoopLag(new Array(100).fill(LOOP_LAG_P99_THRESHOLD_MS));
+  assert.equal(at.p99Ms, LOOP_LAG_P99_THRESHOLD_MS);
+  assert.equal(at.overThreshold, false);
+
+  const over = summarizeLoopLag(new Array(100).fill(LOOP_LAG_P99_THRESHOLD_MS + 1));
+  assert.equal(over.overThreshold, true);
+});
+
+test("ONE stall does not trip the trigger, but it is never hidden either", () => {
+  // Worth pinning down, because it is the difference between a trigger and an
+  // alarm. percentile() interpolates, so a single 450 ms stall among 99 quiet
+  // samples lands the p99 between the two neighbouring ranks and stays low. A
+  // trigger that reopens a months-long architecture decision SHOULD need more
+  // than one hiccup - and the hiccup is still there in plain sight, as maxMs.
+  const s = summarizeLoopLag([...new Array(99).fill(0.3), 450]);
+  assert.equal(s.p50Ms, 0.3);
+  assert.equal(s.maxMs, 450, "the worst case is always reported, whatever the percentiles say");
+  assert.equal(s.overThreshold, false);
+});
+
+test("a loop that stalls REPEATEDLY trips the trigger, which is the point", () => {
+  const s = summarizeLoopLag([...new Array(98).fill(0.3), 450, 450]);
+  assert.equal(s.p99Ms, 450);
+  assert.equal(s.overThreshold, true);
+});
+
+test("LOOP_LAG_P99_THRESHOLD_MS matches the plan's §3.6.6 number", () => {
+  assert.equal(LOOP_LAG_P99_THRESHOLD_MS, 100);
+});
+
+test("loop-lag statistics carry numbers only, never anything dictated", () => {
+  const log = new HotpathLog();
+  log.sampleLoopLag(12.5);
+  const stats = log.snapshot().loopLag;
+  for (const [key, value] of Object.entries(stats)) {
+    assert.ok(
+      value === null || typeof value === "number" || typeof value === "boolean",
+      `${key} must be a number, a boolean or null`,
+    );
+  }
 });
 
 test("summarize reports count/median/p95/max together", () => {

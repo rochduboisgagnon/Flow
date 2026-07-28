@@ -5,6 +5,7 @@ import {
   normalizeCombo,
   comboLabel,
   genericOf,
+  STALE_HOLD_MS,
   type ComboMatcher,
 } from "../src/shared/combo";
 
@@ -198,12 +199,19 @@ test("comboLabel and genericOf", () => {
   assert.equal(genericOf("F9"), "F9");
 });
 
-// ---- B2: pre-arm, the narrowed version of "open the mic on the first key" ----
+// ---- B2: pre-arm, and why it is OFF ----
 //
-// The whole point of these tests is the FIRST one: the plan proposed treating a
-// lone Ctrl as intent to dictate, and the default shortcut is Ctrl+Win. If that
-// ever starts returning true, Flow opens the microphone on every Ctrl+C on the
-// machine - which is a privacy regression disguised as an optimisation.
+// The plan proposed treating a lone Ctrl as intent to dictate, on a default
+// shortcut of Ctrl+Win: that would open the microphone on every Ctrl+C on the
+// machine, a privacy regression disguised as an optimisation. The first
+// narrowing - "every key of the shortcut but one is held, minimum three keys" -
+// looked like it answered that and did not, because normalizeCombo keeps AT
+// MOST ONE non-modifier: a three-key shortcut is MOD+MOD+key, so "one key away"
+// is reached by the two modifiers alone and Ctrl+Shift opened the microphone.
+//
+// These tests pin the conclusion (nothing pre-arms) AND the premise it rests on
+// (a combo can never hold two non-modifiers), because if that premise ever
+// changes the decision deserves to be re-made rather than silently inherited.
 
 test("pre-arm: the DEFAULT two-key shortcut never pre-arms, whatever is held", () => {
   const m = ctrlWin();
@@ -221,50 +229,227 @@ test("pre-arm: a single-key shortcut never pre-arms either (there is no partial 
   assert.equal(m.preArmed(), false);
 });
 
-test("pre-arm: a three-key shortcut arms once two of its three keys are held", () => {
-  const m = createComboMatcher(["CTRL", "SHIFT", "F9"], OPTS);
-  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1000);
-  assert.equal(m.preArmed(), false, "one key of three is not evidence");
-  m.handle({ key: "LEFT SHIFT", state: "DOWN" }, 1010);
-  assert.equal(m.preArmed(), true, "two of three: one key away, and a rare hand position");
-  m.handle({ key: "F9", state: "DOWN" }, 1020);
-  assert.equal(m.preArmed(), false, "complete: this is a capture now");
+// THE regression test: this is the exact hand position the old rule armed on.
+test("pre-arm: two modifiers held together NEVER arm it - Ctrl+Shift is a prefix, not an intention", () => {
+  for (const combo of [
+    ["CTRL", "SHIFT", "F9"],
+    ["CTRL", "ALT", "F9"],
+    ["CTRL", "SHIFT", "ALT"],
+    ["CTRL", "WIN", "SPACE"],
+  ]) {
+    const m = createComboMatcher(combo, OPTS);
+    m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1000);
+    m.handle({ key: genericDownKey(combo[1]), state: "DOWN" }, 1010);
+    assert.equal(
+      m.preArmed(),
+      false,
+      `${combo.join("+")}: the two modifiers of a three-key shortcut are one key away, and that is not evidence`,
+    );
+  }
 });
 
-test("pre-arm: it falls back to false as soon as the hand comes off a key", () => {
-  const m = createComboMatcher(["CTRL", "SHIFT", "F9"], OPTS);
-  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1000);
-  m.handle({ key: "LEFT SHIFT", state: "DOWN" }, 1010);
-  assert.equal(m.preArmed(), true);
-  m.handle({ key: "LEFT SHIFT", state: "UP" }, 1100);
-  assert.equal(m.preArmed(), false);
+/** Physical key that satisfies a generic combo entry, for the loop above. */
+function genericDownKey(entry: string): string {
+  return { CTRL: "LEFT CTRL", SHIFT: "LEFT SHIFT", ALT: "LEFT ALT", WIN: "LEFT META" }[entry] ?? entry;
+}
+
+test("pre-arm: no reachable hand position arms any three-key shortcut", () => {
+  // Exhaustive over the subsets of the shortcut's own keys: the old rule was
+  // false for two of these four and true for the other two, so an exhaustive
+  // sweep is what turns "we fixed the Ctrl+Shift case" into "no case remains".
+  const keys = ["LEFT CTRL", "LEFT SHIFT", "F9"];
+  for (let mask = 0; mask < 1 << keys.length; mask++) {
+    const m = createComboMatcher(["CTRL", "SHIFT", "F9"], OPTS);
+    const held = keys.filter((_, i) => mask & (1 << i));
+    held.forEach((k, i) => m.handle({ key: k, state: "DOWN" }, 1000 + i));
+    assert.equal(m.preArmed(), false, `held: [${held.join(", ")}]`);
+  }
 });
 
-test("pre-arm: keys outside the shortcut do not count toward it", () => {
+test("pre-arm: keys outside the shortcut do not arm it either", () => {
   const m = createComboMatcher(["CTRL", "SHIFT", "F9"], OPTS);
   m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1000);
   m.handle({ key: "A", state: "DOWN" }, 1010);
   m.handle({ key: "B", state: "DOWN" }, 1020);
-  assert.equal(m.preArmed(), false, "three keys held, but only one of them is the shortcut's");
+  assert.equal(m.preArmed(), false);
 });
 
-test("pre-arm: side-agnostic, like every other match in this matcher", () => {
-  const m = createComboMatcher(["CTRL", "SHIFT", "F9"], OPTS);
-  m.handle({ key: "RIGHT CTRL", state: "DOWN" }, 1000);
-  m.handle({ key: "RIGHT SHIFT", state: "DOWN" }, 1010);
-  assert.equal(m.preArmed(), true);
-});
-
-test("pre-arm: reset() and setCombo() clear it, so no stale hand position survives", () => {
+test("pre-arm: still false after reset(), setCombo() and a completed dictation", () => {
   const m = createComboMatcher(["CTRL", "SHIFT", "F9"], OPTS);
   m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1000);
   m.handle({ key: "LEFT SHIFT", state: "DOWN" }, 1010);
-  assert.equal(m.preArmed(), true);
+  m.handle({ key: "F9", state: "DOWN" }, 1020);
+  assert.equal(m.capturing(), true, "the dictation itself is unaffected by pre-arming being off");
+  assert.equal(m.preArmed(), false);
   m.reset();
   assert.equal(m.preArmed(), false);
-  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 2000);
-  m.handle({ key: "LEFT SHIFT", state: "DOWN" }, 2010);
-  assert.equal(m.preArmed(), true);
   m.setCombo(["CTRL", "WIN"]);
-  assert.equal(m.preArmed(), false, "the new shortcut is two keys: it can never pre-arm");
+  assert.equal(m.preArmed(), false);
+});
+
+test("pre-arm premise: a stored combo can never hold two non-modifiers", () => {
+  // This is what makes every three-key shortcut MOD+MOD+key, and therefore what
+  // makes "one key away" reachable by modifiers alone. If this ever stops
+  // holding, re-open ComboMatcher.preArmed: a partial press would then be able
+  // to contain a key that means something on its own.
+  // A stored combo holds generic modifier names ("CTRL"), so genericOf() is a
+  // fixed point on them and cannot tell them apart: use the vocabulary itself.
+  const MODS = new Set(["CTRL", "SHIFT", "ALT", "WIN"]);
+  const nonMods = (combo: string[]) => combo.filter((k) => !MODS.has(k));
+  assert.equal(nonMods(normalizeCombo(["LEFT CTRL", "LEFT SHIFT", "F9", "G"])).length, 1);
+  assert.equal(nonMods(normalizeCombo(["F9", "G", "H"])).length, 1);
+  assert.equal(nonMods(normalizeCombo(["LEFT CTRL", "LEFT SHIFT", "LEFT ALT"])).length, 0);
+});
+
+// ---- the stale-hold net: the door powerMonitor cannot close ----
+//
+// shared/systemResilience.ts drops the key state on sleep, wake, lock and
+// unlock. It cannot help with a UAC prompt, a Ctrl+Alt+Del the user backs out
+// of, or some fast user switches: Electron never reports those, and they switch
+// to the secure desktop and swallow key-ups just the same. So the matcher
+// carries its own net, keyed on silence and on nothing anyone has to volunteer.
+//
+// Every test below is really one of two questions. Does the net close the
+// phantom door? And - the one that decides its shape - can it ever cut a real
+// dictation? The answer to the second must stay "no" at every reading.
+
+function netMatcher(combo: string[] = ["CTRL", "WIN"]): { m: ComboMatcher; drops: string[][] } {
+  const drops: string[][] = [];
+  // Deliberately the REAL threshold: the number is part of what is under test.
+  const m = createComboMatcher(combo, { ...OPTS, onStaleDrop: (keys) => drops.push(keys) });
+  return { m, drops };
+}
+
+test("stale-hold net: the threshold clears the slowest Windows key repeat with room to spare", () => {
+  // A key that is really down auto-repeats; the slowest Windows can be set to is
+  // a 1 s initial delay, then roughly two a second. Anything at or below that is
+  // not silence, it is a slow keyboard.
+  const WORST_TYPEMATIC_GAP_MS = 1_000;
+  assert.ok(STALE_HOLD_MS >= 3 * WORST_TYPEMATIC_GAP_MS, "a slow repeat setting must never read as a lost key");
+  assert.ok(STALE_HOLD_MS <= 5_000, "and a trip to the secure desktop must be over the line before the user returns");
+});
+
+test("stale-hold net: it stays OFF until it has watched that key repeat with its own eyes", () => {
+  // Silence only means "the key is up" on a keyboard where held keys repeat.
+  // Until that is observed, the net refuses to guess - Flow behaves exactly as
+  // it did before, which is the right way to be wrong.
+  const { m, drops } = netMatcher();
+  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1_000);
+  const d = m.handle({ key: "LEFT META", state: "DOWN" }, 60_000);
+  assert.equal(d.action, "start", "no evidence, no verdict");
+  assert.deepEqual(drops, []);
+});
+
+test("stale-hold net: once armed, a silent held key is dropped and completes nothing", () => {
+  // THE phantom, end to end: Ctrl held when Windows switched to the secure
+  // desktop, its release delivered there, and a plain Win press on the way back.
+  const { m, drops } = netMatcher();
+  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1_000);
+  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1_500); // auto-repeat: the net may now read this key
+  const d = m.handle({ key: "LEFT META", state: "DOWN" }, 5_000);
+  assert.equal(d.action, "none", "a dictation nobody asked for would show up as 'start'");
+  assert.equal(d.swallow, false, "and the Win press belongs to the user, not to us");
+  assert.deepEqual(drops, [["LEFT CTRL"]]);
+  assert.equal(m.capturing(), false);
+});
+
+test("stale-hold net: a key that keeps repeating is never dropped, however long it is held", () => {
+  const { m, drops } = netMatcher();
+  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1_000);
+  for (let t = 1_500; t <= 61_000; t += 500) m.handle({ key: "LEFT CTRL", state: "DOWN" }, t);
+  assert.equal(m.handle({ key: "LEFT META", state: "DOWN" }, 61_200).action, "start", "a minute of real holding");
+  assert.deepEqual(drops, []);
+});
+
+test("stale-hold net: the boundary is the threshold itself, and it is judged per key", () => {
+  const arm = (m: ComboMatcher) => {
+    m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1_000);
+    m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1_100);
+  };
+  const a = netMatcher();
+  arm(a.m);
+  assert.equal(
+    a.m.handle({ key: "LEFT META", state: "DOWN" }, 1_100 + STALE_HOLD_MS - 1).action,
+    "start",
+    "one millisecond inside the window is still a held key",
+  );
+
+  const b = netMatcher();
+  arm(b.m);
+  assert.equal(b.m.handle({ key: "LEFT META", state: "DOWN" }, 1_100 + STALE_HOLD_MS).action, "none");
+});
+
+test("stale-hold net: typing does NOT keep a stale key alive - the case a global clock would miss", () => {
+  // Deliberate: if any keystroke anywhere refreshed the clock, someone who comes
+  // back from a UAC prompt and writes an email would carry the stale Ctrl for as
+  // long as they type, which is exactly the window the phantom fires in.
+  const { m, drops } = netMatcher();
+  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1_000);
+  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1_500); // armed
+  for (let t = 2_000; t <= 12_000; t += 250) {
+    m.handle({ key: "A", state: "DOWN" }, t);
+    m.handle({ key: "A", state: "UP" }, t + 50);
+  }
+  assert.deepEqual(drops, [["LEFT CTRL"]], "busy keyboard, silent Ctrl: the silence is what counts");
+  assert.equal(m.handle({ key: "LEFT META", state: "DOWN" }, 13_000).action, "none");
+});
+
+// ---- and now the half that must never happen ----
+
+test("stale-hold net: it NEVER runs while a capture is live", () => {
+  const { m, drops } = netMatcher();
+  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1_000);
+  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1_100); // armed
+  m.handle({ key: "LEFT META", state: "DOWN" }, 1_200); // dictating
+  // Half a minute of total silence: a real push-to-talk hold, thinking.
+  const d = m.handle({ key: "A", state: "DOWN" }, 31_000);
+  assert.equal(d.action, "cancel", "the capture was intact - an emptied matcher could not have cancelled it");
+  assert.deepEqual(drops, [], "nothing may be second-guessed under a live microphone");
+});
+
+test("stale-hold net: a long silent hold still STOPS on its own release, text and all", () => {
+  // The false positive that would matter: judging staleness on the release would
+  // turn a real, patient dictation into a press nobody heard.
+  const { m } = netMatcher();
+  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1_000);
+  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1_100); // armed
+  m.handle({ key: "LEFT META", state: "DOWN" }, 1_200);
+  const d = m.handle({ key: "LEFT META", state: "UP" }, 46_000); // 45 seconds later
+  assert.equal(d.action, "stop", "an UP is the event that ends things; it is never distrusted");
+  assert.equal(d.swallow, true, "and the swallowed Win press is still balanced by a swallowed release");
+});
+
+test("stale-hold net: hands-free is out of reach twice over - no capture to touch, no key to drop", () => {
+  const { m, drops } = netMatcher();
+  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1_000);
+  m.handle({ key: "LEFT META", state: "DOWN" }, 1_010);
+  m.handle({ key: "LEFT META", state: "UP" }, 1_050); // tap
+  m.handle({ key: "LEFT META", state: "DOWN" }, 1_100);
+  m.handle({ key: "LEFT META", state: "UP" }, 1_150); // second tap: hands-free on
+  m.handle({ key: "LEFT CTRL", state: "UP" }, 1_200); // and the hand comes off entirely
+  m.handle({ key: "A", state: "DOWN" }, 61_000); // a minute of hands-free dictation later
+  assert.equal(m.capturing(), true, "a hands-free dictation holds no key at all: the net cannot see it");
+  assert.deepEqual(drops, []);
+});
+
+test("stale-hold net: a dropped WIN cannot leave Windows with a modifier stuck down", () => {
+  // The Start-menu trap runs both ways. Forgetting a key while keeping its
+  // swallow record would make the NEXT real press pass through to the OS and its
+  // release be swallowed - a Win key Windows believes is held forever. A
+  // released press the OS never saw can at worst open a menu; this cannot.
+  const { m, drops } = netMatcher();
+  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1_000);
+  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1_100); // armed
+  m.handle({ key: "LEFT META", state: "DOWN" }, 1_200); // start; this DOWN is swallowed
+  m.handle({ key: "LEFT META", state: "DOWN" }, 1_300); // armed too
+  m.handle({ key: "A", state: "DOWN" }, 1_400); // an OS shortcut: the capture is cancelled
+  assert.equal(m.capturing(), false);
+
+  m.handle({ key: "B", state: "DOWN" }, 5_200); // both combo keys have now gone silent
+  assert.deepEqual(drops, [["LEFT CTRL", "LEFT META"]]);
+
+  // Their real releases were lost with the desktop and never arrive. A LATER
+  // genuine Win press must behave like any first press.
+  assert.equal(m.handle({ key: "LEFT META", state: "DOWN" }, 6_000).swallow, false, "this DOWN reaches the OS");
+  assert.equal(m.handle({ key: "LEFT META", state: "UP" }, 6_100).swallow, false, "so its UP must reach it too");
 });

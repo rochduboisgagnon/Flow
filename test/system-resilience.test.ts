@@ -8,6 +8,7 @@ import {
   type SystemContext,
   type SystemTransition,
 } from "../src/shared/systemResilience";
+import { SystemWatch, type SystemWatchDeps } from "../src/main/systemWatch";
 import type { HookState } from "../src/shared/hookWatchdog";
 
 // B9 (plan V2): what Flow does when the MACHINE moves under it. The policy is
@@ -38,10 +39,19 @@ test("B9: no other transition rebuilds the hook", () => {
 });
 
 test("B9: unlocking rebuilds nothing - a desktop switch never removed the hook", () => {
-  const r = reactToSystemTransition("unlock", ctx({ holdInFlight: true }));
+  const r = reactToSystemTransition("unlock", ctx());
   assert.equal(r.rearmHook, false);
-  assert.equal(r.interruptHold, false, "and there is nothing to tear down: the hold ended at lock time");
   assert.match(r.logLine, /never torn down/);
+});
+
+test("B9: unlocking still tears a hold down if one somehow survived the lock", () => {
+  // Windows does not guarantee a lock event for every secure-desktop trip, and
+  // this branch used to hard-code false. It cannot: unlock now forgets the key
+  // state, and forgetting the keys under a live capture leaves a microphone that
+  // no key release can ever close.
+  const r = reactToSystemTransition("unlock", ctx({ holdInFlight: true }));
+  assert.equal(r.interruptHold, true);
+  assert.match(r.logLine, /the capture was ended/);
 });
 
 // ---- the guard rails on the rebuild ----
@@ -103,6 +113,55 @@ test("B9: with no hold in flight, nothing is torn down", () => {
   }
 });
 
+// ---- the PHANTOM dictation: the key state, which is a wider question ----
+//
+// The bug these pin: the policy only ever asked "was a capture running?", so a
+// shortcut held only PARTWAY - Ctrl down, Win not yet - was never forgotten. Its
+// key-up went to the secure desktop or into a frozen process, Flow came back
+// believing Ctrl was still held, and the next lone Win press completed the combo
+// and started a dictation nobody asked for. Two of those arm hands-free mode,
+// which keeps the microphone open with no key down at all.
+
+test("B9-blocking: EVERY transition forgets the key state, hold or no hold", () => {
+  for (const t of ALL) {
+    for (const holdInFlight of [false, true]) {
+      assert.equal(
+        reactToSystemTransition(t, ctx({ holdInFlight })).forgetKeys,
+        true,
+        `${t} with holdInFlight=${holdInFlight}: a half-pressed shortcut must not survive it`,
+      );
+    }
+  }
+});
+
+test("B9-blocking: forgetting the keys is BROADER than tearing a capture down", () => {
+  // The whole bug in one assertion: with nothing capturing, the old policy did
+  // nothing at all on these transitions - and "nothing capturing" is exactly the
+  // state a half-pressed shortcut is in.
+  for (const t of ALL) {
+    const r = reactToSystemTransition(t, ctx({ holdInFlight: false }));
+    assert.equal(r.interruptHold, false);
+    assert.equal(r.forgetKeys, true, `${t} must still act, even though there is no capture to end`);
+  }
+});
+
+test("B9: a hold is never torn down without the keys being forgotten with it", () => {
+  // The other direction of the same invariant: forgetting the keys is what makes
+  // the user's release unusable, so it must never happen alone under a capture.
+  for (const t of ALL) {
+    for (const hookState of ["armed", "starting", "restarting", "abandoned", "stopped"] as HookState[]) {
+      const r = reactToSystemTransition(t, ctx({ hookState, holdInFlight: true }));
+      assert.equal(r.interruptHold && !r.forgetKeys, false, `${t}/${hookState}`);
+    }
+  }
+});
+
+test("B9: the log says the keys were dropped - the line a 'Flow recorded by itself' report needs", () => {
+  for (const t of ALL) {
+    assert.match(reactToSystemTransition(t, ctx()).logLine, /every key believed held was forgotten/);
+  }
+});
+
 test("B9: the log line names the dictation when one was interrupted", () => {
   assert.match(reactToSystemTransition("suspend", ctx({ holdInFlight: true })).logLine, /during a dictation/);
   assert.match(reactToSystemTransition("lock", ctx({ holdInFlight: true })).logLine, /secure desktop/);
@@ -117,6 +176,7 @@ test("B9: every transition produces a log line - a transition that changes nothi
       const r = reactToSystemTransition(t, ctx({ hookState, holdInFlight: true }));
       assert.ok(r.logLine.length > 0, `${t}/${hookState} must journal something`);
       assert.match(r.logLine, /^\[system\] /, "one prefix, so a support read can grep for it");
+      assert.equal(typeof r.forgetKeys, "boolean");
       assert.equal(typeof r.interruptHold, "boolean");
       assert.equal(typeof r.rearmHook, "boolean");
     }
@@ -128,9 +188,9 @@ test("B9: every transition produces a log line - a transition that changes nothi
 test("B9-premise: the adapter tears the hold down BEFORE rebuilding the hook", () => {
   // A rebuild resets the combo matcher (HotkeyAdapter.arm), so doing it first
   // would erase the app's memory of the press while the renderer still held a
-  // live microphone. The order is in main/systemWatch.ts, which imports
-  // "electron" and so cannot be loaded here - assert it as source text, the
-  // same technique as test/silent-failures-wiring.test.ts.
+  // live microphone. Asserted as source text because the ORDER is what matters
+  // here and reading it is more direct than inferring it from a call log; the
+  // adapter's behaviour itself is driven for real further down.
   const src = fs
     .readFileSync(path.join(__dirname, "..", "src", "main", "systemWatch.ts"), "utf8")
     .replace(/\r\n/g, "\n");
@@ -155,4 +215,84 @@ test("B9-premise: systemWatch subscribes to exactly the four transitions the pol
   // And it releases them: a powerMonitor listener left behind on quit would
   // reach into a torn-down app.
   assert.match(src, /powerMonitor\.removeListener/);
+});
+
+// ---- the adapter, driven for real ----
+//
+// main/systemWatch.ts imports "electron", but only start()/stop() touch
+// powerMonitor: handle() is the transition path and it can be driven directly.
+// That is worth the import, because the blocking bug lived in what the adapter
+// CALLS, and a source-text grep can only ever check what it is written to call.
+
+interface Calls {
+  order: string[];
+  logs: string[];
+}
+
+function makeWatch(over: Partial<SystemWatchDeps> = {}): { watch: SystemWatch; calls: Calls } {
+  const calls: Calls = { order: [], logs: [] };
+  const watch = new SystemWatch({
+    holdInFlight: () => false,
+    hookState: () => "armed",
+    forgetKeys: () => calls.order.push("forgetKeys"),
+    interruptHold: () => calls.order.push("interruptHold"),
+    rearmHook: () => calls.order.push("rearmHook"),
+    log: (m) => calls.logs.push(m),
+    ...over,
+  });
+  return { watch, calls };
+}
+
+test("B9-blocking: a lock with NOTHING captured still drops the key state", () => {
+  // The test that would have caught it. Before the fix this produced an empty
+  // call log: no capture was running, so the adapter did nothing, and the Ctrl
+  // the user was holding when Windows switched desktops stayed "down" forever.
+  const { watch, calls } = makeWatch({ holdInFlight: () => false });
+  watch.handle("lock");
+  assert.deepEqual(calls.order, ["forgetKeys"]);
+});
+
+test("B9-blocking: every transition drops the key state, with or without a capture", () => {
+  for (const t of ALL) {
+    for (const holdInFlight of [false, true]) {
+      const { watch, calls } = makeWatch({ holdInFlight: () => holdInFlight });
+      watch.handle(t);
+      assert.ok(calls.order.includes("forgetKeys"), `${t} with holdInFlight=${holdInFlight}`);
+    }
+  }
+});
+
+test("B9: the capture is torn down BEFORE the keys are forgotten and before the rebuild", () => {
+  // Both later steps clear the matcher; either one running first would erase the
+  // press while the renderer still held a live microphone.
+  const { watch, calls } = makeWatch({ holdInFlight: () => true });
+  watch.handle("resume");
+  assert.deepEqual(calls.order, ["interruptHold", "forgetKeys", "rearmHook"]);
+});
+
+
+test("B9: the hold in flight is read once per transition, from the dep the wiring supplies", () => {
+  let reads = 0;
+  const { watch } = makeWatch({
+    holdInFlight: () => {
+      reads++;
+      return true;
+    },
+  });
+  watch.handle("suspend");
+  assert.equal(reads, 1, "one snapshot per transition: the keys are dropped underneath it");
+});
+
+test("B9: several resume events for one wake rebuild once - the clock is the adapter's", () => {
+  let now = 0;
+  const { watch, calls } = makeWatch({ now: () => now });
+  watch.handle("resume");
+  now += 1_000;
+  watch.handle("resume");
+  assert.equal(calls.order.filter((c) => c === "rearmHook").length, 1);
+  now += MIN_VOLUNTARY_REARM_INTERVAL_MS;
+  watch.handle("resume");
+  assert.equal(calls.order.filter((c) => c === "rearmHook").length, 2, "a genuine second wake is rebuilt");
+  // ...and every one of those transitions still dropped the key state.
+  assert.equal(calls.order.filter((c) => c === "forgetKeys").length, 3);
 });

@@ -101,7 +101,7 @@ interface Harness {
   logs: string[];
 }
 
-function makeHarness(): Harness {
+function makeHarness(extra: { staleHoldMs?: number } = {}): Harness {
   FakeKeyServer.reset();
   const timers = new FakeTimers();
   const events: string[] = [];
@@ -118,6 +118,7 @@ function makeHarness(): Harness {
       createListener: (config) => new FakeKeyServer(config),
       timers,
       policy: FAST_POLICY,
+      ...extra,
     },
   );
   return { adapter, timers, events, logs };
@@ -198,7 +199,161 @@ test("B9: a rebuild leaves the tray pause exactly where it was", async () => {
   h.adapter.stop();
 });
 
-// ---- interruptHold() ----
+// ---- holdInFlight(): the source of truth for "is the user holding the keys" ----
+
+test("B9: holdInFlight() follows the matcher, press by press", async () => {
+  const h = makeHarness();
+  await h.adapter.start();
+  assert.equal(h.adapter.holdInFlight(), false);
+  pressCombo(FakeKeyServer.last);
+  assert.equal(h.adapter.holdInFlight(), true);
+  FakeKeyServer.last.send("LEFT META", "UP");
+  assert.equal(h.adapter.holdInFlight(), false);
+  h.adapter.stop();
+});
+
+test("B9: a REFUSED start is still a hold in flight - the case main's own flag gets wrong", async () => {
+  // B3's long-recording path: onStart refuses the dictation and returns without
+  // ever setting main's `listening`, while the keys are down and this matcher is
+  // capturing. A system transition that asked `listening` would decide there was
+  // nothing to clean up and leave the hold exactly where it was.
+  FakeKeyServer.reset();
+  const refusals: string[] = [];
+  const adapter = new HotkeyAdapter(
+    ["CTRL", "WIN"],
+    {
+      onStart: () => refusals.push("refused"), // returns having changed nothing
+      onStop: () => {},
+      onCancel: () => {},
+    },
+    { createListener: (config) => new FakeKeyServer(config), timers: new FakeTimers(), policy: FAST_POLICY },
+  );
+  await adapter.start();
+  pressCombo(FakeKeyServer.last);
+  assert.deepEqual(refusals, ["refused"]);
+  assert.equal(adapter.holdInFlight(), true, "the keys are down: the matcher knows, a flag beside it does not");
+  adapter.stop();
+});
+
+// ---- forgetKeys() / interruptHold() ----
+
+test("B9-blocking: a PARTIALLY held shortcut is forgotten, and invents no dictation on the way back", async () => {
+  // The blocking bug, end to end. The user is holding Ctrl (half of Ctrl+Win)
+  // when Windows switches to the secure desktop; that key's UP is delivered
+  // there and never reaches Flow. Nothing was capturing, so the old policy
+  // forgot nothing - and the next lone Win press completed the combo.
+  const h = makeHarness();
+  await h.adapter.start();
+  FakeKeyServer.last.send("LEFT CTRL", "DOWN");
+  assert.equal(h.adapter.holdInFlight(), false, "half a shortcut starts nothing - which is why it was overlooked");
+
+  h.adapter.forgetKeys(); // what every transition now does, capture or no capture
+
+  FakeKeyServer.last.send("LEFT META", "DOWN"); // a plain Win press, for the Start menu
+  assert.deepEqual(h.events, [], "a phantom dictation would appear here as a 'start'");
+  assert.equal(h.adapter.holdInFlight(), false);
+  h.adapter.stop();
+});
+
+test("B9-blocking: and no phantom HANDS-FREE toggle either - two phantom taps used to latch it on", async () => {
+  const h = makeHarness();
+  await h.adapter.start();
+  FakeKeyServer.last.send("LEFT CTRL", "DOWN");
+  h.adapter.forgetKeys();
+  // Two quick Win taps: with a stale Ctrl still "held" this is the hands-free
+  // gesture, and Flow would have latched the microphone on.
+  FakeKeyServer.last.send("LEFT META", "DOWN");
+  FakeKeyServer.last.send("LEFT META", "UP");
+  FakeKeyServer.last.send("LEFT META", "DOWN");
+  FakeKeyServer.last.send("LEFT META", "UP");
+  assert.deepEqual(h.events, [], "a latched toggle holds the microphone open with no key down at all");
+  h.adapter.stop();
+});
+
+test("B9: forgetKeys() claims no abandon reason - none of the closed vocabulary is true here", async () => {
+  const h = makeHarness();
+  await h.adapter.start();
+  pressCombo(FakeKeyServer.last);
+  h.events.length = 0;
+  h.adapter.forgetKeys();
+  assert.deepEqual(
+    h.events,
+    [],
+    "onCancel is NOT called: every reason names a keyboard or engine cause, and the machine sleeping is neither",
+  );
+  h.adapter.stop();
+});
+
+test("B9: forgetKeys() cancels the shortcut recorder - its key-ups died with the desktop", async () => {
+  // handleDeath() already reasoned this out for a hook death: while the recorder
+  // runs it swallows EVERY key and only finishes when the last one comes back
+  // UP. Across a secure desktop those UPs are gone, so a recorder left running
+  // would eat the whole keyboard until its 10 s timeout.
+  const h = makeHarness();
+  await h.adapter.start();
+  const recording = h.adapter.record();
+  FakeKeyServer.last.send("LEFT CTRL", "DOWN"); // the gesture the user had begun
+
+  h.adapter.forgetKeys();
+  assert.equal(await recording, null, "the recorder must not outlive the transition");
+
+  // And the keyboard is free again: a key is no longer swallowed system-wide.
+  assert.equal(FakeKeyServer.last.send("A", "DOWN"), false);
+  h.adapter.stop();
+});
+
+// ---- the stale-hold net, through the adapter that owns the hook thread ----
+
+test("net: a stale key is dropped with no system signal at all, and starts nothing", async () => {
+  // The gap systemResilience cannot reach: a UAC prompt, a Ctrl+Alt+Del backed
+  // out of, a fast user switch. powerMonitor says nothing, so nobody calls
+  // forgetKeys() - and the matcher has to notice on its own.
+  const h = makeHarness({ staleHoldMs: 20 });
+  await h.adapter.start();
+  const s = FakeKeyServer.last;
+  s.send("LEFT CTRL", "DOWN");
+  s.send("LEFT CTRL", "DOWN"); // an auto-repeat: this key's silence now means something
+  await new Promise((r) => setTimeout(r, 40)); // the secure-desktop round trip
+
+  assert.equal(s.send("LEFT META", "DOWN"), false, "a plain Win press: ours to swallow only if we act on it");
+  assert.deepEqual(h.events, [], "no dictation nobody asked for");
+  assert.equal(h.adapter.holdInFlight(), false);
+  h.adapter.stop();
+});
+
+test("net: it says so in the log, and never from the hook's own stack", async () => {
+  const h = makeHarness({ staleHoldMs: 20 });
+  await h.adapter.start();
+  const s = FakeKeyServer.last;
+  s.send("LEFT CTRL", "DOWN");
+  s.send("LEFT CTRL", "DOWN");
+  await new Promise((r) => setTimeout(r, 40));
+  h.logs.length = 0;
+
+  s.send("LEFT META", "DOWN");
+  assert.deepEqual(h.logs, [], "flowLog appends to disk synchronously: never inside the callback Windows is timing");
+  await new Promise((r) => setImmediate(r));
+  assert.equal(h.logs.length, 1);
+  assert.match(h.logs[0], /LEFT CTRL/);
+  assert.match(h.logs[0], /believed held/);
+  h.adapter.stop();
+});
+
+test("net: dictation is completely normal on a keyboard whose keys are held and released", async () => {
+  // The regression that would matter most: the net must be invisible in the
+  // ordinary loop. Same harness, same short window, a press that behaves.
+  const h = makeHarness({ staleHoldMs: 20 });
+  await h.adapter.start();
+  const s = FakeKeyServer.last;
+  s.send("LEFT CTRL", "DOWN");
+  s.send("LEFT META", "DOWN");
+  // Longer than the stale window AND than MIN_HOLD_MS, so this is a real press
+  // that the net had every opportunity to spoil.
+  await new Promise((r) => setTimeout(r, 230));
+  s.send("LEFT META", "UP");
+  assert.deepEqual(h.events, ["start", "stop"], "a live capture is never second-guessed");
+  h.adapter.stop();
+});
 
 test("B9: interruptHold() reports a live hold and forgets it", async () => {
   const h = makeHarness();

@@ -37,6 +37,40 @@
 // ZERO RETENTION (plan §5.4), same discipline as hotpath.ts and
 // silentFailures.ts: two durations in milliseconds and a boolean. Nothing here
 // can carry a word of what was dictated.
+//
+// ADVERSE REVIEW V2, CONSTAT 4: a warm capture is not just "the audio recorded
+// during the hold" - shared/micWarmth.ts's pre-roll ring can PREPEND up to
+// PRE_ROLL_MS of audio captured BEFORE the key ever went down (that is the
+// whole point of the pre-roll: saving the first syllable a cold getUserMedia
+// would otherwise clip). So `capturedMs` for a warm press is, at most,
+// `heldMs + PRE_ROLL_MS`, and the original `heldMs - capturedMs` arithmetic
+// below - written before B2's pre-roll existed - silently credits that
+// cushion as if it proved the microphone kept working for the whole hold. A
+// real drop that a healthy mic's own pre-roll happens to paper over up to
+// PRE_ROLL_MS of would then read as "less missing than it is", weakening the
+// exact detector this module exists for.
+//
+// The fix: `judgeCaptureShortfall` takes an explicit `preRollMs` credit and
+// removes it from `capturedMs` before comparing to `heldMs` - i.e. it judges
+// only the audio that can be PROVEN to have been produced during the hold.
+// Callers that do not know their pre-roll (or predate this change) omit the
+// argument and get the old arithmetic back exactly, unchanged.
+//
+// The credit passed in is deliberately the ring's WORST-CASE capacity
+// (PRE_ROLL_MS), not an attempt to measure the exact amount actually buffered
+// for one specific press - main cannot see the renderer's ring fill level,
+// and guessing low would let a real drop hide under the guess. Crediting the
+// worst case can only ever make `missingMs` LARGER (never smaller) than the
+// pre-roll-blind reading, so it can only make the detector MORE willing to
+// flag a genuine drop - never less, and never a reason to cry wolf on a
+// healthy capture: a healthy capture's `capturedMs` is always >= `heldMs` (it
+// is real hold audio PLUS a non-negative pre-roll contribution of AT MOST
+// PRE_ROLL_MS), so crediting the full PRE_ROLL_MS on a healthy capture can
+// drive `missingMs` no higher than PRE_ROLL_MS itself - see the "safety
+// margin" test in capture-continuity.test.ts, which pins this down with real
+// numbers instead of leaving it as an argument in a comment.
+
+import { PRE_ROLL_MS, type MicPrewarm } from "./micWarmth";
 
 /** Below this, a press is too short for the arithmetic to mean anything: the
  * capture's own startup latency is too large a share of it. */
@@ -49,9 +83,13 @@ export const SHORTFALL_MIN_MISSING_MS = 1_500;
 export interface CaptureShortfall {
   /** How long the shortcut was held, main-process clock. */
   heldMs: number;
-  /** How much audio actually came back in the WAV. */
+  /** How much audio actually came back in the WAV, UNADJUSTED - the raw
+   * figure worth stating in a log line, pre-roll and all. */
   capturedMs: number;
-  /** heldMs - capturedMs, floored at 0. */
+  /** heldMs - (capturedMs credited for pre-roll), floored at 0: how much of
+   * the HOLD is unaccounted for once any pre-roll cushion has been removed
+   * from the credit. See the module note on why the credit is a worst case,
+   * never a per-press measurement. */
   missingMs: number;
   /** The verdict: the microphone stopped producing audio during the press. */
   dropped: boolean;
@@ -59,16 +97,36 @@ export interface CaptureShortfall {
 
 /** Pure, total, and defensive about its inputs: both numbers come from clocks
  * and a decoder, and a NaN or a negative must produce "nothing to report"
- * rather than a false accusation. */
-export function judgeCaptureShortfall(heldMs: number, capturedMs: number): CaptureShortfall {
+ * rather than a false accusation.
+ *
+ * `preRollMs` (constat 4): how much of `capturedMs` may legitimately be audio
+ * from BEFORE the hold began - the worst-case credit for the mic-prewarm mode
+ * in effect, computed by `preRollCreditMs` below. Defaults to 0 (the original
+ * behaviour) for a caller that does not know it. */
+export function judgeCaptureShortfall(heldMs: number, capturedMs: number, preRollMs = 0): CaptureShortfall {
   const held = Number.isFinite(heldMs) && heldMs > 0 ? heldMs : 0;
   const captured = Number.isFinite(capturedMs) && capturedMs > 0 ? capturedMs : 0;
-  // A clip LONGER than its press is not a contradiction worth flagging: the
-  // release travels to the renderer, which flushes whatever the worklet already
-  // handed it. Clamp instead of reporting a negative gap.
-  const missingMs = Math.max(0, held - captured);
+  const preRoll = Number.isFinite(preRollMs) && preRollMs > 0 ? preRollMs : 0;
+  // The credit can only reduce how much of `captured` counts as hold audio,
+  // never go negative itself.
+  const capturedDuringHold = Math.max(0, captured - preRoll);
+  // A clip LONGER than its press (net of any pre-roll credit) is not a
+  // contradiction worth flagging: the release travels to the renderer, which
+  // flushes whatever the worklet already handed it. Clamp instead of
+  // reporting a negative gap.
+  const missingMs = Math.max(0, held - capturedDuringHold);
   const dropped = held >= SHORTFALL_MIN_HELD_MS && missingMs >= SHORTFALL_MIN_MISSING_MS;
   return { heldMs: held, capturedMs: captured, missingMs, dropped };
+}
+
+/** The worst-case pre-roll credit for a mic-prewarm mode (constat 4/5): the
+ * ring holds up to PRE_ROLL_MS of audio recorded before the key went down
+ * whenever prewarm is not "off" (see shared/micWarmth.ts), and none at all
+ * when it is. Kept here, pure and tested, rather than computed ad hoc at each
+ * call site - `judgeCaptureShortfall` and the 300 ms release-noise guard in
+ * main/index.ts must never independently drift on what "the pre-roll" means. */
+export function preRollCreditMs(mode: MicPrewarm): number {
+  return mode === "off" ? 0 : PRE_ROLL_MS;
 }
 
 /** The line for flow.log. Says the numbers AND the likely cause, because a user

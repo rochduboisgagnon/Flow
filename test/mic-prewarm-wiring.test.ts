@@ -29,6 +29,7 @@ const INDEX_SRC = readSrc("src", "main", "index.ts");
 const HOTKEY_SRC = readSrc("src", "main", "hotkey.ts");
 const PROBE_SRC = readSrc("src", "main", "focus", "probe.ts");
 const SETTINGS_PAGE = readSrc("src", "renderer", "ui", "pages", "Settings.tsx");
+const README = readSrc("README.md");
 
 function slice(src: string, startMarker: string, endMarker: string): string {
   const start = src.indexOf(startMarker);
@@ -40,14 +41,20 @@ function slice(src: string, startMarker: string, endMarker: string): string {
 
 // ---- privacy rule 1: the pre-roll never leaves memory ----
 
-test("the pre-roll ring is only ever pushed to, drained into a capture, or cleared", () => {
+test("the pre-roll ring is only ever pushed to, drained into a capture, cleared, or re-bounded", () => {
   // If a fifth verb ever appears on `ring`, this fails - which is the point.
   // Anything that could copy, encode, send or persist those samples has to be
   // an explicit decision somebody argues for, never a line that slipped in.
+  // `setCapacity` IS such a decision (V2 review, finding 3): the bound has to
+  // follow the policy in force, not the one that happened to hold when the
+  // graph was built - see the test further down.
   const verbs = [...OVERLAY_TSX.matchAll(/\bring\.(\w+)/g)].map((m) => m[1]);
   assert.ok(verbs.length > 0, "the ring must actually be used");
   for (const v of verbs) {
-    assert.ok(["push", "drain", "clear"].includes(v), `unexpected operation on the pre-roll ring: ring.${v}()`);
+    assert.ok(
+      ["push", "drain", "clear", "setCapacity"].includes(v),
+      `unexpected operation on the pre-roll ring: ring.${v}()`,
+    );
   }
 });
 
@@ -86,6 +93,23 @@ test("the ring's capacity comes from the policy, so the 'off' setting builds a z
     /ring:\s*new PcmRing\(preRollSamples\(policy\?\.preRollMs \?\? 0, SAMPLE_RATE\)\)/,
     "no policy must mean no capacity - not a ring that is emptied often",
   );
+});
+
+test("the ring's capacity KEEPS following the policy after the graph is built", () => {
+  // V2 review, finding 3. Reading the policy once, at construction, meant a
+  // setting changed during a press was never applied to the ring that press
+  // left behind: "off" -> "always" mid-dictation produced a microphone held
+  // open for the whole session behind a ring that could hold nothing.
+  const apply = slice(OVERLAY_TSX, "function applyWarm(", "function start(");
+  assert.match(
+    apply,
+    /mic\.ring\.setCapacity\(preRollSamples\(next\.preRollMs, SAMPLE_RATE\)\)/,
+    "the bound must be re-derived from the policy being applied, not from the one that built the graph",
+  );
+  const capacityCalls = [...OVERLAY_TSX.matchAll(/setCapacity\(([^)]*\)?[^)]*)\)/g)].map((m) => m[1]);
+  for (const arg of capacityCalls) {
+    assert.match(arg, /preRollSamples\(/, `a capacity that does not come from the policy: setCapacity(${arg})`);
+  }
 });
 
 test("a warm-but-idle graph pushes to the ring and does nothing else with the audio", () => {
@@ -149,8 +173,8 @@ test("a cool command never cuts a dictation that is already running", () => {
 
 test("a warm graph is adopted synchronously - no acquisition between the key and the audio", () => {
   const start = slice(OVERLAY_TSX, "function start(cfg?: CaptureStartPayload)", "function endCapture()");
-  const adoptAt = start.indexOf("mic.sink === null && mic.micDeviceId === wanted");
-  assert.ok(adoptAt > 0, "the adoption branch must key on BOTH warmth and the chosen device");
+  const adoptAt = start.indexOf("mic.sink === null && graphStillFits(mic, wanted)");
+  assert.ok(adoptAt > 0, "the adoption branch must key on warmth AND a graph that is proven still good");
   const adopt = start.slice(adoptAt, start.indexOf("if (mic) releaseMic()"));
   assert.match(adopt, /mic\.ring\.drain\(\)/, "the pre-roll is prepended to the capture");
   assert.doesNotMatch(adopt, /await|getUserMedia|new AudioContext/, "the warm path must not await anything");
@@ -159,6 +183,138 @@ test("a warm graph is adopted synchronously - no acquisition between the key and
 test("a warm graph for a microphone the user no longer wants is released, not dictated through", () => {
   const start = slice(OVERLAY_TSX, "function start(cfg?: CaptureStartPayload)", "function endCapture()");
   assert.match(start, /if \(mic\) releaseMic\(\);/);
+});
+
+// ---- V2 review, finding 1 (blocking): a warm graph is only warm while it LIVES ----
+//
+// B2 adopted a warm graph on the strength of the object still existing. That
+// was a sound inference while a graph was born and died inside one keypress -
+// and B2 is precisely the change that made a graph outlive its press. The rule
+// itself is pure and exercised for real in test/mic-warmth.test.ts; what is
+// asserted here is that the renderer actually ASKS it, and asks it everywhere.
+
+test("the press revalidates the warm graph instead of inferring it from the object existing", () => {
+  const start = slice(OVERLAY_TSX, "function start(cfg?: CaptureStartPayload)", "function endCapture()");
+  assert.match(start, /graphStillFits\(mic, wanted\)/);
+  assert.doesNotMatch(
+    start,
+    /mic\.micDeviceId === wanted/,
+    "the old setting-only guard must be gone, not merely supplemented",
+  );
+});
+
+test("the SAME rule decides the press and the policy push - one question, one answer", () => {
+  const fits = slice(OVERLAY_TSX, "function graphStillFits(", "async function openMic(");
+  assert.match(fits, /mayAdoptWarmGraph\(\{/, "the decision lives in the pure, tested rule");
+  assert.match(fits, /vitals: vitalsOf\(g\)/, "read off the live objects, never cached");
+  assert.match(fits, /resolved: resolvedDevice/);
+  const apply = slice(OVERLAY_TSX, "function applyWarm(", "function start(");
+  assert.match(
+    apply,
+    /if \(mic && !graphStillFits\(mic, next\.micDeviceId\)\) releaseMic\(\)/,
+    "a graph nobody could dictate through must not be kept open either",
+  );
+  assert.equal(
+    (OVERLAY_TSX.match(/mayAdoptWarmGraph\(/g) ?? []).length,
+    1,
+    "two places deciding whether a graph is still good is how the first version got a dead one adopted",
+  );
+});
+
+test("the vitals are read from the TRACK and the CONTEXT, never from a remembered flag", () => {
+  const vitals = slice(OVERLAY_TSX, "function vitalsOf(g: MicGraph)", "\n}");
+  assert.match(vitals, /trackReadyState: g\.track\.readyState/);
+  assert.match(vitals, /trackMuted: g\.track\.muted/);
+  assert.match(vitals, /contextState: g\.ctx\.state/);
+  assert.match(vitals, /msSinceLastFrame: performance\.now\(\) - g\.lastFrameAt/);
+});
+
+test("every delivered frame stamps the graph as alive, before anything decides what to do with it", () => {
+  const handler = slice(OVERLAY_TSX, "g.node.port.onmessage = (ev", "// No connection to ctx.destination");
+  const stampAt = handler.indexOf("g.lastFrameAt = performance.now()");
+  const branchAt = handler.indexOf("if (!g.sink)");
+  assert.ok(stampAt > 0, "without this, 'the graph is still rendering' is not a fact anyone holds");
+  assert.ok(stampAt < branchAt, "proof of life belongs to the graph, not to whichever mode it is in");
+});
+
+test("the death of the device ARRIVES as an event; it is not discovered at the next press", () => {
+  const open = slice(OVERLAY_TSX, "async function openMic(", "/** B2: close the microphone NOW");
+  assert.match(open, /track\.onended = \(\) => \{/, "a headset unplug must not wait for a keypress to be noticed");
+  assert.match(open, /g\.ended = true;/);
+  assert.match(open, /ctx\.onstatechange = \(\) => \{/, "a context that stops running renders no audio at all");
+  const ended = slice(open, "track.onended = () => {", "ctx.onstatechange");
+  assert.match(ended, /if \(mic !== g \|\| g\.sink !== null\) return;/, "a live capture is ended by its own path");
+  assert.match(ended, /releaseMic\(\);/);
+  assert.match(ended, /applyWarm\(policy\)/, "and the policy decides whether a replacement is opened at all");
+});
+
+test("releasing detaches the listeners it installed, so a dead graph cannot ask for a successor", () => {
+  const release = slice(OVERLAY_TSX, "function releaseMic()", "function armRelease()");
+  assert.match(release, /g\.track\.onended = null/, "stop() fires it - a graph already gone must stay gone");
+  assert.match(release, /g\.ctx\.onstatechange = null/, "close() fires it");
+  assert.match(release, /g\.ended = true/, "anything still holding a reference must not adopt this");
+});
+
+// ---- V2 review, finding 2: the setting is not the microphone ----
+
+test("the graph remembers the REAL device it bound to, not just the string that asked for it", () => {
+  assert.match(OVERLAY_TSX, /const bound = track\.getSettings\(\);/);
+  assert.match(
+    OVERLAY_TSX,
+    /device: \{ deviceId: bound\.deviceId \?\? "", groupId: bound\.groupId \?\? "" \}/,
+    "'' is the SETTING for 'the system default' and stays '' while the device behind it changes",
+  );
+  assert.match(OVERLAY_TSX, /wantedDeviceId: deviceId/, "the setting is kept too - it answers a different question");
+});
+
+test("a default-device change is heard, because nothing about the TRACK ever reports it", () => {
+  assert.match(
+    OVERLAY_TSX,
+    /navigator\.mediaDevices\?\.addEventListener\("devicechange", onDeviceChange\)/,
+    "an open track does not migrate when Windows switches default: it keeps feeding the old microphone",
+  );
+  const handler = slice(OVERLAY_TSX, "const onDeviceChange = () => {", "navigator.mediaDevices?.addEventListener");
+  assert.match(handler, /refreshResolvedDevice\(\)/, "re-resolve what the setting now means");
+  assert.match(handler, /if \(mic && mic\.sink !== null\) return;/, "a live dictation is never disturbed");
+  assert.match(handler, /applyWarm\(policy\)/, "and the same rule as everywhere else decides what to keep");
+  assert.match(
+    OVERLAY_TSX,
+    /navigator\.mediaDevices\?\.removeEventListener\("devicechange", onDeviceChange\)/,
+    "the listener is removed with the window that owns it",
+  );
+});
+
+test("what '' resolves to is refreshed off the hot path, and never guessed when unknown", () => {
+  const refresh = slice(OVERLAY_TSX, "async function refreshResolvedDevice()", "/** B2 revised");
+  assert.match(refresh, /resolveWantedDevice\(devices, policy\?\.micDeviceId \?\? mic\?\.wantedDeviceId \?\? ""\)/);
+  assert.match(refresh, /resolvedDevice = null;/, "not knowing is a state, handled in the rule - never a false match");
+  const open = slice(OVERLAY_TSX, "async function openMic(", "/** B2: close the microphone NOW");
+  assert.match(
+    open,
+    /void refreshResolvedDevice\(\);/,
+    "device ids are blank until a getUserMedia is granted: refresh right after one, and await nothing",
+  );
+});
+
+// ---- V2 review, finding 4: a null policy must release NOW ----
+
+test("a null policy releases the microphone on the spot, never on a timer", () => {
+  // This is the channel an outside order uses (CAPTURE_COOL): the lock screen,
+  // sleep, the tray's "pause dictation". A user who has just said "stop
+  // listening" must not watch Windows' microphone indicator stay lit for
+  // another few seconds - that is the literal sense of a privacy breach.
+  const apply = slice(OVERLAY_TSX, "function applyWarm(", "function start(");
+  const nullBranch = slice(apply, "if (!next) {", "return;");
+  assert.match(nullBranch, /releaseMic\(\);/);
+  assert.doesNotMatch(nullBranch, /setTimeout|holdMs|armRelease/, "nothing about a null policy may be deferred");
+  const release = slice(OVERLAY_TSX, "function releaseMic()", "function armRelease()");
+  assert.match(release, /clearTimeout\(releaseTimer\)/, "a pending hold timer must not survive the order");
+  assert.match(release, /gen\+\+/, "nor may an acquisition still in flight install itself afterwards");
+});
+
+test("the window losing its renderer releases the microphone rather than leaking it", () => {
+  const cleanup = OVERLAY_TSX.slice(OVERLAY_TSX.indexOf("return () => {", OVERLAY_TSX.indexOf("onCaptureWarm")));
+  assert.match(cleanup, /releaseMic\(\);/);
 });
 
 test("the start cue still fires before anything else, exactly as B3 left it", () => {
@@ -209,7 +365,13 @@ test("the focus probe is pre-warmed at startup, off the dictation path", () => {
 });
 
 test("the pre-warm policy is derived in exactly ONE place", () => {
-  assert.match(INDEX_SRC, /function applyMicWarmth\(\): void \{\s*\n\s*overlay\.setWarmPolicy\(warmPolicy\(settings\.micPrewarm, settings\.micDeviceId\)\);/);
+  // Shape-tolerant on purpose. The BODY may grow a suspension (V2 finding 4:
+  // the lock screen, sleep and the tray's pause have to be able to force a
+  // null policy without touching the user's setting); what may never grow is a
+  // SECOND place that decides how long Flow may hold a microphone.
+  const body = slice(INDEX_SRC, "function applyMicWarmth(): void {", "\n}");
+  assert.match(body, /overlay\.setWarmPolicy\(/, "the one function that pushes the policy");
+  assert.match(body, /warmPolicy\(settings\.micPrewarm, settings\.micDeviceId\)/, "derived from the setting, here");
   const calls = INDEX_SRC.match(/applyMicWarmth\(\)/g) ?? [];
   assert.ok(calls.length >= 4, `expected boot + settings change + pre-arm + the definition, got ${calls.length}`);
   assert.equal(
@@ -266,6 +428,45 @@ test("a corrupt or missing micPrewarm falls back to the default rather than to a
   assert.equal(sanitizeSettings({ micPrewarm: true }).micPrewarm, "after");
   assert.equal(sanitizeSettings({ micPrewarm: "off" }).micPrewarm, "off");
   assert.equal(sanitizeSettings({ micPrewarm: "always" }).micPrewarm, "always");
+});
+
+// ---- V2 review, finding 5 (blocking): a public promise that went false ----
+//
+// Not a code defect. The README said, in these words: "Dictation is never
+// stored. No history, no database, no in-memory buffer kept around." The
+// SHIPPED DEFAULT (micPrewarm: "after") keeps an in-memory audio buffer between
+// dictations. The sentence was true when it was written and the feature made it
+// false; the feature is worth keeping and the sentence is not.
+
+test("the README no longer claims the thing the shipped default makes untrue", () => {
+  assert.doesNotMatch(
+    README,
+    /no in-memory buffer/i,
+    "the default holds one, so this sentence is false as written - say what the buffer IS instead",
+  );
+  assert.doesNotMatch(README, /Dictation is never stored\./, "replaced by a claim that survives reading the code");
+});
+
+test("the README describes the buffer the default ships with: what, why, how bounded, how to kill it", () => {
+  assert.notEqual(SETTINGS_DEFAULTS.micPrewarm, "off", "if the default ever becomes 'off', rewrite this section too");
+  assert.match(README, /half a second|half-second/i, "the size, in words a user can check against the setting");
+  assert.match(README, /in memory|in RAM/i, "where it lives");
+  assert.match(README, /never (be )?written to disk|never written to disk/i, "and where it does NOT");
+  assert.match(README, /erased/i, "and that it does not survive the dictation it feeds");
+  assert.match(README, /first word/i, "why it exists at all - the alternative is losing it");
+  assert.match(README, /microphone indicator/i, "the visible cost, stated rather than discovered");
+  assert.match(
+    README,
+    /Microphone pre-warm[\s\S]{0,40}Off/,
+    "and the exact one-click way out, named as the Settings control shows it",
+  );
+});
+
+test("the README's remaining retention claims are about what is WRITTEN, which is still absolute", () => {
+  assert.match(README, /No history, no database/, "the strong claims that are still true stay strong");
+  const claim = slice(README, "- **Dictation is never written down.**", "\n\n");
+  assert.match(claim, /one\s+utterance/);
+  assert.match(claim, /buffer/i, "the exception is named in the same breath as the promise, not in a footnote");
 });
 
 test("Settings > Dictation names the cost of every option, not just the benefit", () => {

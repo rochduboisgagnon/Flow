@@ -156,6 +156,54 @@ test("B5: an engine error is reported with the engine's own message", () => {
   assert.match(l.detail, /every backend failed/);
 });
 
+// ---- constat 2 (adverse review V2): engineWarm must be judged on its own,
+// never inferred from anything that could survive a failed startup ----
+
+test("constat 2: engineWarm=false is never 'ok', even if a previous attempt already named a backend", () => {
+  // Mirrors the exact shape of a correctly-wired failed warm-up: the sidecar
+  // object can have frozen a backend CHOICE before its own startup failed
+  // (see main/asr/sidecar.ts's binPath), but the verdict must key off
+  // engineWarm alone, never treat a non-empty backend name as proof of life.
+  const l = line(healthy({ engineWarm: false, backend: "whisper-server-win32-x64-vulkan.exe" }), "speech-engine");
+  assert.notEqual(l.status, "ok");
+  assert.equal(l.status, "fail");
+});
+
+// ---- constat 3 (adverse review V2): a first launch downloading the model
+// must read as amber, never as a failure ----
+
+test("constat 3: a first-launch download in progress is amber, matching the SELF_CHECK_STARTUP_DELAY_MS comment in main/index.ts", () => {
+  // The facts of a fresh install ~5 s after boot (see
+  // SELF_CHECK_STARTUP_DELAY_MS): nothing has ever been warm, no model file
+  // exists on disk yet, and the fetch is in flight.
+  const facts = healthy({
+    engineWarm: false,
+    backend: "",
+    modelPresent: false,
+    modelState: { status: "downloading", pct: 12 },
+  });
+  const report = evaluateSelfCheck(facts);
+  assert.notEqual(report.worst, "fail", "a first run doing exactly what it should must not read as broken");
+  assert.equal(report.worst, "warn");
+  assert.equal(line(facts, "speech-engine").status, "warn");
+  assert.equal(line(facts, "speech-model").status, "warn");
+});
+
+test("constat 3 (characterizes the bug): the SAME first-launch facts read as FAIL if modelState is left at 'idle' during the download - proof the defect is in what feeds this module, not in the judgment itself", () => {
+  const facts = healthy({
+    engineWarm: false,
+    backend: "",
+    modelPresent: false,
+    modelState: { status: "idle" }, // main/index.ts's warmAsr() never touched this before the fix
+  });
+  const report = evaluateSelfCheck(facts);
+  assert.equal(
+    report.worst,
+    "fail",
+    "this is the false failure constat 3 reports - main/index.ts must set modelState to 'downloading' during warmAsr(), same as swapModel() already does",
+  );
+});
+
 test("B5: a warm engine names the backend it actually chose", () => {
   const l = line(healthy({ backend: "whisper-server-win32-x64-cpu.exe" }), "speech-engine");
   assert.equal(l.status, "ok");
