@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { UiStatePayload } from "../../../shared/ipcContracts";
-import type { HistoryItem, HistoryDocPayload } from "../../../shared/longform";
+import { MAX_HISTORY_ITEMS, type HistoryItem, type HistoryDocPayload } from "../../../shared/longform";
 
-// Notes (wave U5). Every capture Flow has produced, readable and listenable in
-// place, and downloadable into the system Downloads folder.
+// Notes (wave U5). The captures in Flow's own recordings folder, readable and
+// listenable in place, and downloadable into the system Downloads folder.
 //
 // Three rules shape this page:
 //  - PULL-only, and NOT cached. Home's "last capture" card reads a 15 s cache
@@ -17,6 +17,14 @@ import type { HistoryItem, HistoryDocPayload } from "../../../shared/longform";
 //    browser. The weight is on the button BEFORE the click: a wav is ~115 MB
 //    per hour, and that is something to learn before, not after.
 
+// The engine pushes a state snapshot every second WHILE the window is visible,
+// and one immediately on every show/restore - and nothing at all while it is
+// hidden (main/uiBridge.ts, main/index.ts's setOnShow). So a gap comfortably
+// longer than one tick, measured on arrival, means the window was away and has
+// just come back. That is the whole re-show detector: no new channel, no new
+// poll. Erring high costs at most one extra listing on a stuttering push.
+const PUSH_GAP_MS = 2_500;
+
 export function Notes({ s }: { s: UiStatePayload }) {
   const [items, setItems] = useState<HistoryItem[] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -26,6 +34,7 @@ export function Notes({ s }: { s: UiStatePayload }) {
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState<"doc" | "audio" | null>(null);
+  const [audioError, setAudioError] = useState(false);
 
   const refresh = useCallback(async () => {
     const list = await window.flowui.historyList();
@@ -50,7 +59,29 @@ export function Notes({ s }: { s: UiStatePayload }) {
     wasRecording.current = s.recording;
   }, [s.recording, refresh]);
 
+  // Review U5, MAJEUR 5: the trigger above cannot fire for the capture the user
+  // was NOT watching. Both push channels are visibility-gated, so a hidden
+  // window sees nothing: not a recording started from the tray, not it
+  // stopping. Reopen the window after a meeting and the archive was still the
+  // one from before it - a capture that exists on disk, missing from the page
+  // that claims to list them.
+  //
+  // So the page also re-reads itself when it comes back into view, detected
+  // from the arrival gap in that same push stream (see PUSH_GAP_MS): the app
+  // already pushes a snapshot on show, and this turns it into the refresh
+  // signal without adding a channel or a second poll.
+  const lastPushMs = useRef(0);
   useEffect(() => {
+    const now = Date.now();
+    const cameBack = lastPushMs.current !== 0 && now - lastPushMs.current > PUSH_GAP_MS;
+    lastPushMs.current = now;
+    if (cameBack) void refresh();
+  }, [s, refresh]);
+
+  useEffect(() => {
+    // A new selection is a new player: whatever the last one failed at is not
+    // this one's state (MAJEUR 6).
+    setAudioError(false);
     if (!selected) {
       setDoc(null);
       setDocFor(null);
@@ -110,7 +141,13 @@ export function Notes({ s }: { s: UiStatePayload }) {
   return (
     <>
       <h2>Notes</h2>
-      <p className="sub">Every capture Flow has produced, readable and listenable in place.</p>
+      {/* Review U5, MAJEUR 4: this used to read "Every capture Flow has
+          produced", which the engine cannot honour - listHistory() stops at
+          MAX_HISTORY_ITEMS (shared/longform.ts) and says so only in the log.
+          Both halves of the fix are here: the promise is now the one the page
+          can keep, and when the cap is actually reached the page says how many
+          it is showing instead of letting the older ones vanish silently. */}
+      <p className="sub">The captures in Flow&apos;s recordings folder, readable and listenable in place.</p>
 
       {error ? <p className="note-err" style={{ marginTop: -12, marginBottom: 16 }}>{error}</p> : null}
       {note ? (
@@ -142,13 +179,26 @@ export function Notes({ s }: { s: UiStatePayload }) {
         </p>
       ) : null}
 
+      {items !== null && items.length >= MAX_HISTORY_ITEMS ? (
+        <p className="note-legacy">
+          This list stops at the {MAX_HISTORY_ITEMS} most recent captures. The older ones are
+          untouched in the recordings folder.
+          <button className="btn ghost" onClick={() => void window.flowui.openPath("history")}>
+            Open the recordings folder
+          </button>
+        </p>
+      ) : null}
+
       {items === null ? (
         <p className="sub">Reading the archive...</p>
       ) : items.length === 0 ? (
         <div className="coming">
           <div>
-            No captures yet. Record a meeting from the Record page and it lands here: the
-            transcript, the notes, and the audio if you kept it.
+            {/* "in this folder", not a flat "no captures": a user whose old
+                recordings sit in a folder they chose themselves has plenty of
+                captures, and the note above says where they are (MAJEUR 5). */}
+            No captures in Flow&apos;s recordings folder yet. Record a meeting from the Record
+            page and it lands here: the transcript, the notes, and the audio if you kept it.
           </div>
         </div>
       ) : (
@@ -216,12 +266,30 @@ export function Notes({ s }: { s: UiStatePayload }) {
                   s.apiPort ? (
                     // The engine's own streaming endpoint: range requests work, so
                     // seeking works, and nothing is buffered into the renderer.
-                    <audio
-                      className="doc-audio"
-                      controls
-                      preload="none"
-                      src={`http://127.0.0.1:${s.apiPort}/long/history/audio?id=${encodeURIComponent(current.id)}`}
-                    />
+                    <>
+                      <audio
+                        className="doc-audio"
+                        controls
+                        preload="none"
+                        src={`http://127.0.0.1:${s.apiPort}/long/history/audio?id=${encodeURIComponent(current.id)}`}
+                        // Review U5, MAJEUR 6: <audio> reports every failure -
+                        // a port that moved, a file purged since this list was
+                        // read, a CSP that stopped allowing media-src - through
+                        // this event and NOWHERE else. Without it the control
+                        // just sat there doing nothing when pressed, which is a
+                        // dead control wearing the costume of a live one.
+                        onError={() => setAudioError(true)}
+                        onPlaying={() => setAudioError(false)}
+                      />
+                      {audioError ? (
+                        <p className="note-err" style={{ margin: "8px 0 0" }}>
+                          Flow could not play that audio. Its local service may have restarted on
+                          another port (Diagnostics shows its state), or the file may have moved
+                          since this list was read. Refresh re-reads the archive; the download
+                          button reads the file directly.
+                        </p>
+                      ) : null}
+                    </>
                   ) : (
                     // Review U5d: the player used to vanish without a word when
                     // the local API held no port. The audio exists; saying so
@@ -242,7 +310,9 @@ export function Notes({ s }: { s: UiStatePayload }) {
 
       <p className="sub" style={{ margin: "16px 0 0", maxWidth: "62ch" }}>
         Downloads go straight to your Downloads folder, with no dialog. Nothing is ever
-        overwritten: a second download of the same capture sits beside the first.
+        overwritten: a second download of the same capture sits beside the first. A download
+        cut short - by a crash, an update or a shutdown - never leaves a half file under the
+        finished name.
       </p>
     </>
   );

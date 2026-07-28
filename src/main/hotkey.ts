@@ -2,6 +2,7 @@ import { GlobalKeyboardListener } from "keyspy";
 import type { IGlobalKeyEvent } from "keyspy";
 import { createComboMatcher, normalizeCombo, type ComboMatcher } from "../shared/combo";
 import { MIN_HOLD_MS, DOUBLE_TAP_MS } from "../shared/constants";
+import { hotpath, HOTPATH_ABANDON_REASON, type HotpathAbandonReason } from "../shared/hotpath";
 
 // HotkeyAdapter: the only place that touches keyspy. The rest of the app sees
 // three callbacks (start / stop / cancel), so the listener library can be
@@ -14,7 +15,12 @@ import { MIN_HOLD_MS, DOUBLE_TAP_MS } from "../shared/constants";
 export interface PttCallbacks {
   onStart(): void;
   onStop(): void;
-  onCancel(): void;
+  /** B1: why the press in flight is being abandoned - either the matcher's
+   * own verdict (short tap / extra key) or one of the three "off-band"
+   * cancels below (recorder / setCombo / suspend), which are not driven by a
+   * keyboard event at all but still cut a live hold short. Always provided:
+   * every call site below names one. */
+  onCancel(reason: HotpathAbandonReason): void;
 }
 
 interface RecorderState {
@@ -50,6 +56,11 @@ export class HotkeyAdapter {
     this.listener = new GlobalKeyboardListener();
     // keyspy spawns its key server; the promise rejects if the binary is missing.
     await this.listener.addListener((e: IGlobalKeyEvent) => {
+      // B1: the earliest instant this JS handler can timestamp. The OS
+      // delivered the event some unknowable amount of time before this line -
+      // that gap is outside JS's reach - so this is our zero baseline for
+      // "how long did OUR code hold the hook".
+      const t0 = performance.now();
       // The low-level hook gives the OS ~1 s per event before it silently
       // removes us: this handler must stay trivial (pure state machine, no IO).
       if (!e.name) return false;
@@ -60,15 +71,39 @@ export class HotkeyAdapter {
       // Settings must work - and keep swallowing every key - even while the
       // tray pause has the PTT suspended. The old order made the recorder go
       // deaf during a pause AND let the keys leak to the OS (Start menu).
+      // B1: not instrumented (see hotpath.ts's module note) - both branches
+      // below are rare/short-lived states, out of scope for the dictation
+      // hot path this task measures.
       if (this.recorder) return this.handleRecording(e);
       if (this.suspended) return false;
       const { action, swallow } = this.matcher.handle(
         { key: e.name, state: e.state },
         Date.now(),
       );
+      const verdictAt = performance.now();
+      if (action === "start") {
+        hotpath.mark("keyEventReceived", t0);
+        hotpath.mark("verdictRendered", verdictAt);
+      } else if (action === "stop" || action === "cancel") {
+        // B1: the release/cancel-triggering event's own instant - the anchor
+        // for the "release -> text" budget (§3.3). e.state distinguishes WHY
+        // a cancel fired for free: the matcher only cancels on an UP (a tap
+        // shorter than MIN_HOLD_MS) or on a DOWN of a key outside the combo
+        // (an OS shortcut invoked mid-hold) - see shared/combo.ts.
+        hotpath.mark("releaseObserved", t0);
+      }
       if (action === "start") this.cbs.onStart();
       else if (action === "stop") this.cbs.onStop();
-      else if (action === "cancel") this.cbs.onCancel();
+      else if (action === "cancel") {
+        this.cbs.onCancel(e.state === "UP" ? HOTPATH_ABANDON_REASON.shortTap : HOTPATH_ABANDON_REASON.extraKey);
+      }
+      // menace §3.2.2: the FULL synchronous cost of this hook callback - the
+      // matcher AND every onStart/onStop/onCancel side effect the two lines
+      // above just ran (window show, IPC send) - because all of it happens
+      // before `return swallow`, on the SAME thread, inside the SAME budget
+      // Windows measures. This is the number that actually answers "is this
+      // hook at risk of being silently removed", not verdictLatencyMs alone.
+      hotpath.sampleHandlerLatency(performance.now() - t0);
       return swallow;
     });
   }
@@ -79,7 +114,7 @@ export class HotkeyAdapter {
    * finalized when every key is released; Esc cancels; Backspace clears. */
   record(): Promise<string[] | null> {
     if (this.recorder) return Promise.resolve(null); // one recorder at a time
-    if (this.matcher.capturing()) this.cbs.onCancel();
+    if (this.matcher.capturing()) this.cbs.onCancel(HOTPATH_ABANDON_REASON.shortcutRecorder);
     this.matcher.reset();
     return new Promise((resolve) => {
       const finish = (combo: string[] | null) => {
@@ -128,13 +163,13 @@ export class HotkeyAdapter {
     const wasCapturing = this.matcher.capturing();
     this.matcher.setCombo(combo);
     // Never leave a hot microphone behind a state reset.
-    if (wasCapturing) this.cbs.onCancel();
+    if (wasCapturing) this.cbs.onCancel(HOTPATH_ABANDON_REASON.comboChanged);
   }
 
   /** User-facing pause (the tray's "Pause dictation"): PTT keys pass through
    * untouched. The shortcut RECORDER keeps working while suspended. */
   suspend(v: boolean) {
-    if (v && this.matcher.capturing()) this.cbs.onCancel();
+    if (v && this.matcher.capturing()) this.cbs.onCancel(HOTPATH_ABANDON_REASON.paused);
     this.suspended = v;
     this.matcher.reset();
   }

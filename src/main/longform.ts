@@ -24,6 +24,7 @@ import {
   chunkTranscript,
   spliceNotes,
   pushRecent,
+  MAX_HISTORY_ITEMS,
   type RecentEntry,
   type LongStateSnapshot,
   type LongStartResult,
@@ -545,10 +546,10 @@ function noteInterruption(docPath: string, note: string, log?: (msg: string) => 
 // outside historyRoot (security review: this is the whole point of the id
 // scheme, not an incidental detail).
 
-// A runaway history (years of unattended recordings piling up on the fixed
-// folder) must never make the archive view stall the engine's single-threaded
-// API. Bounded, like the ASR queue.
-const MAX_HISTORY_ITEMS = 2000;
+// The cap itself now lives in shared/longform.ts: the Notes page has to be able
+// to tell the user when the listing was truncated, and a second copy of the
+// number here is a second source of truth the page could drift from (U5 review,
+// MAJEUR 4). The walk below is still the ONE place that enforces it.
 
 /** True when `p` is a REAL directory: lstat says directory, and says it is not
  * a symlink/junction. lstat and never stat, so the decision is made about the

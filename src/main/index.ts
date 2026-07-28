@@ -28,6 +28,7 @@ import { resourcePath } from "./resources";
 import { UiBridge, LOGIN_ARGS } from "./uiBridge";
 import { FlowTray } from "./tray";
 import { FlowUpdater } from "./updater";
+import { hotpath, HOTPATH_ABANDON_REASON } from "../shared/hotpath";
 import {
   CAPTURE_DONE,
   CAPTURE_ERROR,
@@ -253,6 +254,10 @@ if (!app.requestSingleInstanceLock()) {
     // recordings are actually filed, off the SAME two functions.
     const listHistoryDep = () => listHistory(historyRoot(), flowLog);
     const readHistoryDocDep = (id: string) => readHistoryDoc(id, historyRoot());
+    // B1: same discipline as every dep above - the Diagnostics panel (IPC) and
+    // a `bench:hotpath` run against a live app (HTTP) must read the exact same
+    // in-memory ring, never two independently-serialized copies.
+    const hotpathSnapshotDep = () => hotpath.snapshot();
 
     api = new LocalApi({
       version: app.getVersion(),
@@ -262,6 +267,9 @@ if (!app.requestSingleInstanceLock()) {
       isRecording: () => longRec.isBusy,
       isEngineWarm: () => sidecar !== null,
       canLoopback: canLoopbackDep,
+      hotpathSnapshot: hotpathSnapshotDep,
+      // B1: the HTTP /transcribe endpoint (AGR Pilot's phone mic) is
+      // deliberately UNTRACED - see processUtterance's module note.
       transcribe: (wav) => processUtterance(wav),
       longState: longStateDep,
       longStart: (opts) => longRec.start({ dir: opts.dir, title: opts.title, keepAudio: !!opts.keepAudio }),
@@ -367,6 +375,10 @@ if (!app.requestSingleInstanceLock()) {
         downloadDoc: (id) => downloads.downloadDoc(id),
         downloadAudio: (id) => downloads.downloadAudio(id),
         lastDownloadedPath: () => downloads.lastDownloadedPath(),
+        // B1: identical closure to LocalApi's above (hotpathSnapshotDep,
+        // defined once, just above) - the Diagnostics panel and a
+        // `bench:hotpath` run must never disagree on what is currently open/completed.
+        hotpathSnapshot: hotpathSnapshotDep,
       },
       mainWindow,
     );
@@ -731,20 +743,27 @@ const hotkey = new HotkeyAdapter(settings.combo, {
     if (longRec.isBusy) {
       // The transcript belongs to the long recording; a dictation mid-meeting
       // would fight it for the warm engine.
+      // B1: the trace hotkey.ts just opened (keyEventReceived/verdictRendered)
+      // would otherwise sit open forever - no capture ever starts, so nothing
+      // would ever mark it done. Close it honestly instead of relying on the
+      // 30 s staleness sweep.
+      hotpath.abandon(HOTPATH_ABANDON_REASON.busyLongRecording);
       return;
     }
     listening = true;
+    hotpath.mark("captureStartDecided");
     overlay.startCapture({ sounds: settings.sounds, micDeviceId: settings.micDeviceId });
   },
   onStop() {
     markActivity();
     listening = false;
-    overlay.stopCapture();
+    overlay.stopCapture(); // marks "overlayStopSent"
   },
-  onCancel() {
+  onCancel(reason) {
     markActivity();
     listening = false;
-    overlay.cancelCapture();
+    overlay.cancelCapture(); // marks "overlayCancelSent" on the still-open trace
+    hotpath.abandon(reason);
   },
 });
 
@@ -755,6 +774,15 @@ const hotkey = new HotkeyAdapter(settings.combo, {
  * Empty text = gated. Nothing is retained. */
 async function processUtterance(
   wav: Uint8Array,
+  // B1: `trace` is true ONLY for the hotkey/overlay path (wireCapture, below).
+  // processUtterance is ALSO the HTTP /transcribe endpoint's implementation
+  // (AGR Pilot's phone-mic button, api.ts) - that call never went through a
+  // keyboard press, so it has no open hotpath trace to attach to; marking it
+  // anyway would either no-op (harmless) or, worse, mis-attach to an
+  // unrelated hotkey trace that happens to be open at the same moment. Opting
+  // in per call site is cheaper and safer than trying to tell the two apart
+  // after the fact.
+  opts: { trace?: boolean } = {},
 ): Promise<{ text: string; ms: number }> {
   // The whole decode counts as activity (A10): entry AND exit are stamped so
   // the updater's quiet window can never open in the middle of a transcription.
@@ -767,7 +795,9 @@ async function processUtterance(
       if (DEV) console.log(`[vad] dropped: ${speech.voicedMs} ms voiced`);
       return { text: "", ms: 0 };
     }
+    if (opts.trace) hotpath.mark("transcriptionStarted");
     const { text, ms } = await sidecar.transcribe(encodeWav(trimToSpeech(pcm, speech)));
+    if (opts.trace) hotpath.mark("transcriptionFinished");
     const clean = gateTranscript(text);
     if (!clean) {
       if (DEV) console.log(`[gate] dropped: ${JSON.stringify(text)}`);
@@ -781,33 +811,57 @@ async function processUtterance(
 
 function wireCapture() {
   ipcMain.on(CAPTURE_DONE, (_ev, payload: CaptureDonePayload) => {
+    // B1: the WAV genuinely arrived - mark it before any early return, so a
+    // too-short clip still closes as an honest (abandoned) trace instead of
+    // leaving its open trace to be swept 30 s later as "stale".
+    hotpath.markWavReceived(payload.durationMs);
     // NOTHING is retained: the WAV lives in this handler, feeds one inference,
     // and every reference dies with it. Sub-300 ms of audio is release noise.
     // Every exit path calls overlay.flowDone() so the "Transcribing..." pill
     // never outlives the utterance.
-    if (payload.durationMs < 300) return overlay.flowDone();
-    void processUtterance(new Uint8Array(payload.wav))
+    if (payload.durationMs < 300) {
+      hotpath.abandon(HOTPATH_ABANDON_REASON.tooShortClip);
+      return overlay.flowDone();
+    }
+    void processUtterance(new Uint8Array(payload.wav), { trace: true })
       .then(async ({ text, ms }) => {
-        if (!text) return;
+        if (!text) {
+          // B1: processUtterance returns the same {text:"",...} shape for two
+          // different causes; ms===0 is the existing, already-latent signal
+          // for "the energy VAD found nothing to send to the model at all"
+          // (the ms===0 branch returns before ever calling the sidecar) versus
+          // "the model answered and gateTranscript rejected it" (ms>0).
+          hotpath.abandon(ms === 0 ? HOTPATH_ABANDON_REASON.noSpeech : HOTPATH_ABANDON_REASON.hallucinationGate);
+          return;
+        }
         // Probe the focus WHILE nothing else has stolen it, then route and act.
         const focus = (await probe?.probe()) ?? null;
+        hotpath.mark("focusProbed");
         const route = decideRoute(focus);
+        hotpath.mark("routeDecided");
         if (route === "insert") {
           // "type" mode keystrokes the text (paste-hostile apps); default pastes.
           if (settings.insertMode === "type") await insertTyped(text);
           else await insertViaPaste(text);
         } else leaveOnClipboard(text);
+        // B1: textChars is a LENGTH, recorded after `text` has already done its
+        // job - never the text itself (see hotpath.ts's zero-retention note).
+        hotpath.complete(route === "insert" ? "inserted" : "clipboarded", text.length);
         // `text` goes out of scope here: the dictation is never retained (5.4).
         if (DEV)
           console.log(`[flow] ${ms} ms | focus=${focus?.control ?? "none"} -> ${route}`);
       })
-      .catch((err) => console.error("[flow] failed:", err))
+      .catch((err) => {
+        hotpath.abandon(HOTPATH_ABANDON_REASON.pipelineError);
+        console.error("[flow] failed:", err);
+      })
       .finally(() => {
         markActivity(); // insertion/clipboard included: the utterance JUST ended
         overlay.flowDone();
       });
   });
   ipcMain.on(CAPTURE_ERROR, (_ev, message: string) => {
+    hotpath.abandon(HOTPATH_ABANDON_REASON.captureError);
     console.error("[capture] failed:", message);
     statusText = "microphone unavailable";
   });

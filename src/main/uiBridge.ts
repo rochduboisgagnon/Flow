@@ -10,6 +10,7 @@ import {
   UI_SET_LOGIN_ITEM,
   UI_CHECK_UPDATES,
   UI_STATE_PUSH,
+  UI_HOTPATH_SNAPSHOT,
   UI_SNIPPET_LIST,
   UI_SNIPPET_SAVE,
   UI_SNIPPET_DELETE,
@@ -33,6 +34,7 @@ import {
   type HistoryItem,
   type HistoryDocPayload,
   type DownloadResult,
+  type HotpathSnapshot,
 } from "../shared/ipcContracts";
 import type { MainWindow } from "./mainWindow";
 import { listSnippets, saveSnippet, deleteSnippet, getSnippet } from "./snippets";
@@ -100,6 +102,11 @@ export interface UiBridgeDeps {
    * UI_OPEN_PATH's "downloaded-file" destination. Never sourced from the
    * renderer - null means nothing has been downloaded yet, a clean refusal. */
   lastDownloadedPath(): string | null;
+
+  // ---- activation hot-path diagnostics (V2, B1) ----
+  // The SAME closure the HTTP /diagnostics/hotpath route calls (main/api.ts) -
+  // see index.ts's hotpathSnapshotDep, never a second implementation.
+  hotpathSnapshot(): HotpathSnapshot;
 }
 
 const REPO_URL = "https://github.com/rochduboisgagnon/Flow";
@@ -301,6 +308,9 @@ export class UiBridge {
     this.guarded<[unknown], DownloadResult>(UI_DOWNLOAD_AUDIO, DOWNLOAD_UNAVAILABLE, (id) =>
       this.deps.downloadAudio(typeof id === "string" ? id : ""),
     );
+
+    // ---- activation hot-path diagnostics (V2, B1) ----
+    this.guarded<[], HotpathSnapshot | null>(UI_HOTPATH_SNAPSHOT, null, () => this.deps.hotpathSnapshot());
   }
 
   /** U3c: copy is not paste. No Ctrl+V, no clipboard snapshot/restore dance -

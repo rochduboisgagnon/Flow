@@ -122,6 +122,10 @@ function longDepsStub() {
     resolveHistoryEntry: () => null,
     readHistoryDoc: () => null,
     canLoopback: () => true,
+    hotpathSnapshot: () => {
+      calls.push("hotpath-snapshot");
+      return { completed: [], open: [], handlerLatenciesMs: [] };
+    },
   };
 }
 
@@ -176,6 +180,11 @@ test("local API: status, readiness, transcribe, discovery file", async () => {
     assert.equal((await post(port, "/shortcut/record", new Uint8Array(0))).code, 200);
     assert.deepEqual((await get(port, "/mics")).body, [{ id: "m1", label: "Mic" }]);
     assert.deepEqual((await get(port, "/ollama/models")).body, { models: ["gemma3:4b"] });
+
+    // B1: read-only diagnostics surface, same trust level as /status.
+    const hp = await get(port, "/diagnostics/hotpath");
+    assert.equal(hp.code, 200);
+    assert.deepEqual(hp.body, { completed: [], open: [], handlerLatenciesMs: [] });
 
     assert.equal((await get(port, "/nope")).code, 404);
   } finally {

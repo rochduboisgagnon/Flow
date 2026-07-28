@@ -7,6 +7,7 @@ import {
   type CaptureStartPayload,
 } from "../shared/ipcContracts";
 import { OverlayVisibility } from "./overlayVisibility";
+import { hotpath } from "../shared/hotpath";
 
 // The overlay window: a small transparent strip near the bottom of the screen,
 // shown while dictating. HARD CONSTRAINT: it must NEVER take focus - the whole
@@ -98,6 +99,11 @@ export class OverlayWindow {
     this.win.setAlwaysOnTop(true, "screen-saver"); // re-assert above any fullscreen app
     this.reposition(); // anchor on the display under the cursor (multi-monitor)
     this.win.showInactive(); // show WITHOUT focusing
+    // B1: marked HERE, right before the dispatch - not in HotkeyAdapter's
+    // onStart - because setAlwaysOnTop/reposition/showInactive (above) are
+    // real, sometimes non-trivial main-thread work that this order actually
+    // waits on.
+    hotpath.mark("overlayStartSent");
     this.win.webContents.send(CAPTURE_START, cfg);
   }
 
@@ -105,6 +111,7 @@ export class OverlayWindow {
     this.pendingStart = null;
     this.vis.onStop();
     if (!this.win || this.win.isDestroyed()) return;
+    hotpath.mark("overlayStopSent");
     this.win.webContents.send(CAPTURE_STOP);
     // Stay visible: the renderer shows "Transcribing..." until the text is routed
     // (flowDone), hiding the model's latency behind honest feedback. A safety timer
@@ -123,6 +130,7 @@ export class OverlayWindow {
   cancelCapture() {
     this.pendingStart = null;
     if (!this.win || this.win.isDestroyed()) return;
+    hotpath.mark("overlayCancelSent");
     this.win.webContents.send(CAPTURE_CANCEL);
     // A tapped/aborted press must not yank the overlay from under a PREVIOUS utterance
     // that is still transcribing: only hide when nothing is live.

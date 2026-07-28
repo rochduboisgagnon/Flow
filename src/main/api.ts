@@ -69,6 +69,12 @@ export interface ApiDeps {
   recordShortcut(): Promise<unknown>;
   listMics(): Promise<unknown>;
   ollamaModels(): Promise<unknown>;
+  /** B1: read-only snapshot of the activation hot-path ring (src/shared/hotpath.ts).
+   * Timings, step names and small counts only - never dictated content (see
+   * hotpath.ts's zero-retention note). This is what `npm run bench:hotpath`
+   * reads from a running app, and what the Diagnostics panel polls over IPC
+   * (same closure, see index.ts's hotpathSnapshotDep). */
+  hotpathSnapshot(): unknown;
   quit(): void;
   /** Tests only: redirect the discovery file away from the real ~/.agr-flow. */
   infoPathOverride?: string;
@@ -199,6 +205,11 @@ export class LocalApi {
           recording: this.deps.isRecording(),
           canLoopback: this.deps.canLoopback(), // C2
         });
+      }
+      // B1: read-only, GET, same trust level as /status and /settings below -
+      // loopback-only and content-free by construction (see hotpath.ts).
+      if (req.method === "GET" && url.pathname === "/diagnostics/hotpath") {
+        return json(200, this.deps.hotpathSnapshot());
       }
       if (req.method === "GET" && url.pathname === "/update-readiness") {
         // The quiet window: never swap binaries while a dictation, a long

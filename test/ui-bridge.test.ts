@@ -12,6 +12,7 @@ import {
   UI_GET_LOGIN_ITEM,
   UI_SET_LOGIN_ITEM,
   UI_CHECK_UPDATES,
+  UI_HOTPATH_SNAPSHOT,
   UI_SNIPPET_LIST,
   UI_SNIPPET_SAVE,
   UI_SNIPPET_DELETE,
@@ -87,6 +88,7 @@ test("every ui:* invoke channel this bridge owns is registered through guarded()
     UI_HISTORY_DOC,
     UI_DOWNLOAD_DOC,
     UI_DOWNLOAD_AUDIO,
+    UI_HOTPATH_SNAPSHOT,
   };
 
   assert.deepEqual(

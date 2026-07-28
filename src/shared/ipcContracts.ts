@@ -75,6 +75,14 @@ export const UI_SET_LOGIN_ITEM = "ui:set-login-item";
 export const UI_CHECK_UPDATES = "ui:check-updates";
 export const UI_STATE_PUSH = "ui:state"; // main -> window, periodic while visible
 
+// ---- activation hot-path diagnostics (plan V2, B1) ----
+// PULL-only, same reasoning as snippets below: the ring can hold up to 200
+// traces plus thousands of raw latency samples, and UiStatePayload is
+// re-serialized every second regardless of whether Diagnostics is even open -
+// putting this there would turn a status heartbeat into a data bus.
+export const UI_HOTPATH_SNAPSHOT = "ui:hotpath-snapshot";
+export type { HotpathSnapshot, HotpathTrace, HotpathStep, HotpathAbandonReason } from "./hotpath";
+
 // ---- snippets (U3) ----
 // PULL-only, deliberately: the snippet library is user content of unbounded
 // size, and UiStatePayload is re-serialized and pushed EVERY SECOND while the

@@ -297,6 +297,18 @@ export interface LongTranscriptResult {
 // renderer/preload build too) needs the type without pulling src/main in -
 // main/longform.ts imports these back FROM here and does the actual disk I/O.
 
+/** A runaway history (years of unattended recordings piling up on the fixed
+ * folder) must never make the archive view stall the engine's single-threaded
+ * API, so the listing is BOUNDED - newest first, so the cap keeps the recent
+ * ones. Bounded like the ASR queue.
+ *
+ * The number lives here, pure, rather than in main/longform.ts where the walk
+ * is (U5 review, MAJEUR 4): the Notes page has to be able to SAY it. A page
+ * that promises "every capture Flow has produced" over a list the engine
+ * silently truncated is exactly the quiet lie this app does not tell, and the
+ * page can only avoid it if it can see the same number the walk enforces. */
+export const MAX_HISTORY_ITEMS = 2000;
+
 /** One recording as the archive browser lists it. `hasAudio`/`audioBytes` let
  * the UI show a download's size BEFORE the click (U5c: a long WAV is ~115 MB/h,
  * the user must learn that up front, not after starting a multi-minute copy). */

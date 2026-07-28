@@ -22,6 +22,7 @@ import {
   UI_SET_LOGIN_ITEM,
   UI_CHECK_UPDATES,
   UI_STATE_PUSH,
+  UI_HOTPATH_SNAPSHOT,
   UI_SNIPPET_LIST,
   UI_SNIPPET_SAVE,
   UI_SNIPPET_DELETE,
@@ -49,6 +50,7 @@ import {
   type HistoryItem,
   type HistoryDocPayload,
   type DownloadResult,
+  type HotpathSnapshot,
 } from "../shared/ipcContracts";
 
 export type CaptureCommand = "start" | "stop" | "cancel";
@@ -149,6 +151,10 @@ const ui = {
     ipcRenderer.on(UI_STATE_PUSH, handler);
     return () => ipcRenderer.removeListener(UI_STATE_PUSH, handler);
   },
+  // ---- activation hot-path diagnostics (V2, B1): PULL, like snippets above -
+  // the Diagnostics page polls this on its own schedule rather than riding
+  // the 1 Hz UiStatePayload push (see ipcContracts.ts's module note).
+  hotpathSnapshot: (): Promise<HotpathSnapshot | null> => ipcRenderer.invoke(UI_HOTPATH_SNAPSHOT),
 };
 
 export type FlowUiApi = typeof ui;

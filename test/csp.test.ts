@@ -90,6 +90,37 @@ test("the policy itself does NOT allow blob: scripts - the fix is scope, not a w
   assert.ok(MAIN_WINDOW_CSP.includes("default-src 'self'"));
 });
 
+// U5 review, MINEUR 8: the archive's audio player has exactly ONE thing
+// standing between it and silence - `media-src http://127.0.0.1:*`. Without it
+// `default-src 'self'` applies to <audio>, Chromium refuses the stream, and the
+// only symptom is a player that does nothing (which is why the page now has an
+// onError). Nothing tested that directive, so tightening the policy one day
+// would have broken playback in packaged builds only, where the policy is the
+// one that ships.
+const NOTES_SRC = fs.readFileSync(
+  path.join(__dirname, "..", "src", "renderer", "ui", "pages", "Notes.tsx"),
+  "utf8",
+);
+
+test("the audio player's one dependency: media-src still allows Flow's own local API", () => {
+  const media = MAIN_WINDOW_CSP.split(";").map((d) => d.trim()).find((d) => d.startsWith("media-src"));
+  assert.ok(media, "the policy must carry a media-src directive of its own: default-src 'self' would refuse the player");
+  assert.ok(
+    media.includes("http://127.0.0.1:*"),
+    `media-src must allow Flow's local API on any port (the port is chosen at boot); got "${media}"`,
+  );
+  // Loopback and nothing else: this is the app's own engine, never a third party.
+  assert.ok(!/https?:\/\/(?!127\.0\.0\.1)/.test(media), `media-src must name no other origin; got "${media}"`);
+});
+
+test("and the player really is pointed at that origin (the policy and the page cannot drift apart)", () => {
+  assert.match(
+    NOTES_SRC,
+    /<audio[\s\S]{0,400}?src=\{`http:\/\/127\.0\.0\.1:\$\{s\.apiPort\}/,
+    "the Notes player streams from 127.0.0.1 - if that ever changes, the CSP above has to change with it",
+  );
+});
+
 // Structural, in the spirit of test/ui-bridge.test.ts: the pure decision above
 // is worth nothing if index.ts stops asking it. Both facts are checked - that
 // the hook consults shouldApplyCsp, and that no policy string was re-inlined

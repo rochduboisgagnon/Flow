@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { DownloadManager } from "../src/main/downloads";
+import { spawn } from "node:child_process";
+import { DownloadManager, PART_SUFFIX } from "../src/main/downloads";
 import { listHistory } from "../src/main/longform";
 
 // U5c: the archive's browser-style download flow. Every test below works
@@ -65,6 +66,11 @@ test("downloadDoc writes \"YYYY-MM-DD Title.md\" straight into the downloads dir
   assert.equal(fs.existsSync(res.path!), true);
   assert.equal(fs.readFileSync(res.path!, "utf8"), "# client-kickoff\n\nHello.");
   assert.equal(mgr.lastDownloadedPath(), res.path, "lastDownloadedPath tracks the most recent successful download");
+  assert.deepEqual(
+    fs.readdirSync(downloads),
+    ["2026-07-27 client-kickoff.md"],
+    "a finished download leaves the canonical name and NOTHING else - no work file",
+  );
 
   fs.rmSync(work, { recursive: true, force: true });
 });
@@ -245,6 +251,149 @@ test("U5 constat 1 (the trap): a failing copy removes ITS OWN debris and never t
     fs.readdirSync(downloads),
     ["2026-07-27 reunion.wav"],
     "the user's file is the ONLY thing left: the \" (1)\" we created was cleaned up",
+  );
+
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+// ---- U5 review, MAJEUR 1 + 2: the canonical name is only ever a WHOLE file ----
+//
+// The failure the first version could not cover: not an error, a DEATH. The
+// updater relaunches Flow mid-transfer (a download is not part of engineBusy()),
+// before-quit knows nothing about a copy in flight, and a power loss asks
+// nobody. What survived was a file bearing the exact expected name, playable
+// for its first minutes and then cut off - and it squatted the canonical name,
+// so the retry landed on " (1)" and retention eventually left the amputated
+// copy as the only one. Hence the work file + verified size + atomic publish.
+
+/** How big the source of the kill test is. Big enough that the copy spans many
+ * event-loop turns (the child kills itself on the first non-empty work file),
+ * small enough to write and copy in well under a second. */
+const KILL_TEST_BYTES = 32 * 1024 * 1024;
+
+test("U5 MAJEUR 1: a copy killed mid-flight leaves NOTHING under the canonical name", async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-dl-killed-"));
+  const { history, downloads } = makeHistory(work);
+  fileRecording(history, "2026-07-27", "reunion", { audio: true });
+  const wav = path.join(history, "2026-07-27", "reunion", "reunion.wav");
+  fs.writeFileSync(wav, Buffer.alloc(KILL_TEST_BYTES, 7));
+  const id = listHistory(history)[0].id;
+  const canonical = path.join(downloads, "2026-07-27 reunion.wav");
+  fs.mkdirSync(downloads, { recursive: true });
+
+  // A real child process, hard-killed while the copy runs: no exit hook, no
+  // finally, no cleanup of ours gets to run. Simulating this with a stream
+  // error would have tested the one path that already worked.
+  const child = spawn(
+    process.execPath,
+    ["--import", "tsx", path.join(__dirname, "fixtures", "download-and-die.ts"), history, downloads, id],
+    { cwd: path.join(__dirname, ".."), stdio: "ignore" },
+  );
+  await new Promise<void>((resolve) => child.once("exit", () => resolve()));
+
+  const left = fs.readdirSync(downloads);
+  const part = left.find((n) => n.endsWith(PART_SUFFIX));
+  assert.ok(part, `the child really died mid-copy (a work file is still there); folder held ${JSON.stringify(left)}`);
+  const partBytes = fs.statSync(path.join(downloads, part)).size;
+  assert.ok(
+    partBytes > 0 && partBytes < KILL_TEST_BYTES,
+    `the death landed IN the copy, not around it: ${partBytes} of ${KILL_TEST_BYTES} bytes`,
+  );
+  assert.equal(
+    fs.existsSync(canonical),
+    false,
+    "THE invariant: no file bearing the name the user expects, because it is not the file the user expects",
+  );
+  assert.deepEqual(
+    left.filter((n) => !n.endsWith(PART_SUFFIX)),
+    [],
+    "nothing but the work file survives the kill",
+  );
+
+  // The other half of what made this MAJEUR: the corpse must not push the next
+  // download onto " (1)", nor stay in the folder forever.
+  const mgr = new DownloadManager({ historyRoot: () => history, downloadsDir: () => downloads });
+  const res = await mgr.downloadAudio(id);
+  assert.equal(res.ok, true, res.error ?? "expected ok");
+  assert.equal(res.path, canonical, "the retry takes the canonical name: no corpse was squatting it");
+  assert.equal(fs.statSync(canonical).size, KILL_TEST_BYTES, "and it is the WHOLE recording");
+  assert.deepEqual(fs.readdirSync(downloads), ["2026-07-27 reunion.wav"], "the orphan work file was swept");
+
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+test("U5 MAJEUR 1: an orphan work file is swept, and never costs the next download its canonical name", async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-dl-orphan-"));
+  const { history, downloads } = makeHistory(work);
+  fileRecording(history, "2026-07-27", "reunion", { audio: true });
+  const id = listHistory(history)[0].id;
+  fs.mkdirSync(downloads, { recursive: true });
+  // Exactly what the test above leaves behind, without paying for a spawn.
+  const orphan = path.join(downloads, "2026-07-27 reunion.wav" + PART_SUFFIX);
+  fs.writeFileSync(orphan, "half a recording from a run that never came back");
+  // A file of the user's that merely LOOKS like debris to a careless sweep:
+  // ".part" is what Firefox calls its own downloads in progress, in this very
+  // folder. Flow deletes only its own suffix.
+  const foreign = path.join(downloads, "someone-elses-download.part");
+  fs.writeFileSync(foreign, "Firefox is still downloading this");
+
+  const mgr = new DownloadManager({ historyRoot: () => history, downloadsDir: () => downloads });
+  const res = await mgr.downloadAudio(id);
+
+  assert.equal(res.ok, true, res.error ?? "expected ok");
+  assert.equal(res.path, path.join(downloads, "2026-07-27 reunion.wav"), "the plain name, not \" (1)\"");
+  assert.equal(fs.existsSync(orphan), false, "the orphan work file is gone");
+  assert.equal(fs.readFileSync(foreign, "utf8"), "Firefox is still downloading this", "another program's .part is untouched");
+
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+test("U5 MAJEUR 2: a copy whose size does not match the source is a failure, never a \"Saved to\"", async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-dl-short-"));
+  const { history, downloads } = makeHistory(work);
+  fileRecording(history, "2026-07-27", "reunion", { audio: true });
+  const wav = path.join(history, "2026-07-27", "reunion", "reunion.wav");
+  fs.writeFileSync(wav, Buffer.alloc(64 * 1024, 3));
+  const id = listHistory(history)[0].id;
+
+  // The source is MEASURED before the destination folder is even asked for, so
+  // sabotaging it at downloadsDir() time (the same seam the tests above use)
+  // makes the copy come out shorter than the file Flow measured - the exact
+  // shape of a truncated download, with none of a real one's timing.
+  const mgr = managerSabotagingSource(history, downloads, () => fs.writeFileSync(wav, "short"));
+  const res = await mgr.downloadAudio(id);
+
+  assert.equal(res.ok, false, "a copy that does not match the source is never reported as saved");
+  assert.match(res.error ?? "", /incomplete/i, "and the user is told why");
+  assert.deepEqual(fs.readdirSync(downloads), [], "the incomplete file is removed - name free, nothing to mistake for a recording");
+  assert.equal(mgr.lastDownloadedPath(), null, "and nothing is remembered as downloaded");
+
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+test("U5 MINEUR 7: a failure hands the user a sentence and the LOG the raw Node error", async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-dl-human-"));
+  const { history } = makeHistory(work);
+  fileRecording(history, "2026-07-27", "client-kickoff", { audio: false });
+  const id = listHistory(history)[0].id;
+  const blocked = path.join(work, "downloads-is-a-file");
+  fs.writeFileSync(blocked, "not a directory");
+  const logged: string[] = [];
+  const mgr = new DownloadManager({
+    historyRoot: () => history,
+    downloadsDir: () => blocked,
+    log: (m) => logged.push(m),
+  });
+
+  const res = await mgr.downloadDoc(id);
+
+  assert.equal(res.ok, false);
+  // DownloadResult.error is rendered verbatim by the Notes page.
+  assert.doesNotMatch(res.error ?? "", /Error:|EEXIST|ENOTDIR|ENOENT|EPERM/, "no raw Node error reaches the page");
+  assert.match(res.error ?? "", /Downloads folder/, "the page gets a sentence a human wrote");
+  assert.ok(
+    logged.some((l) => /EEXIST|ENOTDIR|ENOENT|EPERM/.test(l)),
+    `the technical detail is in the log, where a bug report finds it; got ${JSON.stringify(logged)}`,
   );
 
   fs.rmSync(work, { recursive: true, force: true });
