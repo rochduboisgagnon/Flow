@@ -36,8 +36,16 @@ export interface SidecarOptions {
   language?: string; // "auto" lets the model detect French/English per utterance
   beamSize?: number; // whisper-server --beam-size (plan v4 c11: accuracy lever)
   /** A French initial prompt (plan v4 c11), sent per request ONLY when the
-   * effective language is French or auto, to bias accents/casing/punctuation. */
-  initialPrompt?: string;
+   * effective language is French or auto, to bias accents/casing/punctuation.
+   *
+   * U6b: may be a FUNCTION, resolved per request, because the prompt now also
+   * carries the user's starred dictionary terms (storey 1) and that list
+   * changes while the app runs - a string captured when the sidecar was built
+   * would go stale the moment a term is added, and would not come back until
+   * the next model swap. The callee (main/dictionary.ts's dictationPrompt)
+   * returns a CACHED string and never throws: this is the inference path, and
+   * it must not be able to cost the user his utterance. */
+  initialPrompt?: string | (() => string);
   /** R1: a short known-speech WAV. When set, a backend must actually DECODE it to
    * non-empty text before it is trusted (freezes it); a Vulkan build that loads but
    * cannot decode (weak/quirky GPU) is skipped in favour of CPU at SELECTION time.
@@ -338,7 +346,14 @@ export class WhisperSidecar {
     const lang = this.opts.language ?? "auto";
     // v5 c1: the French seed rides ONLY for an explicit French language (not auto), so it
     // never bleeds its vocabulary into a short clip that turned out to be another language.
-    const prompt = lang === "fr" ? this.opts.initialPrompt : undefined;
+    // U6b: that same guard is now also what keeps the DICTIONARY out of a clip
+    // whose language nobody declared - the widest leak surface storey 1 has.
+    const prompt =
+      lang === "fr"
+        ? typeof this.opts.initialPrompt === "function"
+          ? this.opts.initialPrompt()
+          : this.opts.initialPrompt
+        : undefined;
     // v5 c1: audio_ctx shrinking is a SPEED trick calibrated on `small`; it garbles bigger
     // models (turbo/large) - the root cause of the "horrible" French. Truncate only for small;
     // every other model omits the field so whisper-server uses its full encoder context.

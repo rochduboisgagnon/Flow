@@ -22,6 +22,9 @@ import { listOllamaModels } from "./llm/ollama";
 import { LocalApi } from "./api";
 import { LongRecorder, historyRoot, listHistory, resolveHistoryEntry, readHistoryDoc } from "./longform";
 import { DownloadManager } from "./downloads";
+import { StatsStore } from "./stats";
+import { countWords } from "../shared/wordCount";
+import { primeDictionary, dictationPrompt, applyDictionaryReplacements } from "./dictionary";
 import type { LongStartResult, LongStopResult } from "../shared/longform";
 import { legacyHistoryInfo, type LegacyHistoryInfo } from "./legacyHistory";
 import { decideLaunchAtLogin } from "../shared/launchAtLogin";
@@ -123,6 +126,13 @@ if (!app.requestSingleInstanceLock()) {
     // they could ever read the note. Persisting it here settles that by order.
     captureLegacyHistory(migratedLegacyHistoryDir);
     for (const line of migrationLogs) flowLog(line);
+    // U6a/U6e: load the dictionary ONCE, here, and write the shipped default
+    // terms on a machine that has never had a dictionary.json. Both storeys
+    // read a cache from now on, so no dictation ever pays a synchronous read
+    // (main/dictionary.ts's cache note). It is after loadSettings() for the
+    // same reason everything else is: dataDir() must already be the
+    // post-migration folder.
+    primeDictionary(flowLog);
     hotkey.setCombo(settings.combo); // the adapter was built on the defaults above
     applyTheme(settings.theme);
     // U0: a Windows theme flip while theme="system" must repaint in under a
@@ -264,6 +274,10 @@ if (!app.requestSingleInstanceLock()) {
     // arriving before the page is not a race - and this is what makes the FIRST
     // press after a start a warm one instead of the coldest of the session.
     applyMicWarmth();
+    // U7b: arm the 60 s counter flush. Reads NOTHING from disk here - the store
+    // loads lazily at its first flush or read - so a boot pays nothing for it,
+    // and an install where the counters are off never even creates the file.
+    stats.start();
     logLegacyHistoryState(); // U2c: say where the older recordings are, before purging anything
     // U4 (blocking review): the app can die without ever running before-quit -
     // a power cut, a bugcheck, a taskkill. Whatever is still in the staging
@@ -473,6 +487,12 @@ if (!app.requestSingleInstanceLock()) {
         // just above) - the panel's button and the loopback route can never
         // answer two different diagnoses of the same machine.
         selfCheck: selfCheckDep,
+        // U7: deliberately NOT given to LocalApi. These counters describe the
+        // person sitting at this machine, and the local API answers a remote
+        // PWA over the network; there is no reason for a phone to be able to
+        // read - or erase - them.
+        statsRead: () => stats.read(),
+        statsClear: () => stats.clear(),
       },
       mainWindow,
     );
@@ -550,6 +570,10 @@ function getUiState(): UiStatePayload {
       insertMode: settings.insertMode,
       theme: settings.theme,
       micPrewarm: settings.micPrewarm,
+      // U7a: the two switches only - the counters themselves are PULLED
+      // (ui:stats-read), never pushed once a second (ipcContracts.ts).
+      stats: settings.stats,
+      statsPerApp: settings.statsPerApp,
     },
     // U0: what to actually paint right now, separate from the preference above.
     resolvedTheme: nativeTheme.shouldUseDarkColors ? "dark" : "light",
@@ -682,7 +706,12 @@ function newSidecar(modelPath: string): WhisperSidecar {
     modelPath,
     language: settings.language,
     beamSize: BEAM_SIZE,
-    initialPrompt: FRENCH_PROMPT,
+    // U6b (storey 1): the seed PLUS a bounded slice of the user's dictionary.
+    // A function, not a string: the sidecar outlives every edit to the
+    // dictionary, and dictationPrompt() returns a cached string rebuilt at each
+    // write - so a term added at 10:00 is in the prompt of the 10:00:01
+    // dictation, without this path ever reading a file.
+    initialPrompt: () => dictationPrompt(FRENCH_PROMPT),
     probeWav: loadProbeWav(), // R1: real decode gate at backend selection
     log: flowLog, // R1: always-on log file (dev also echoes to console)
     onState: (state, detail) => {
@@ -995,6 +1024,24 @@ const downloads = new DownloadManager({
   log: flowLog,
 });
 
+// U7 (Roch's privacy policy, plan §10 - read shared/stats.ts's module note):
+// the AGGREGATED dictation counters. Every dep is a closure for the same reason
+// as `downloads` just above: dataDir() caches the POST-migration folder on its
+// first call, so nothing here may resolve a path at module load.
+//
+// It is fed from exactly ONE place, the dictation path in wireCapture() below.
+// The HTTP /transcribe endpoint (AGR Pilot's phone microphone) deliberately
+// does NOT feed it: that dictation happens on another device, with no key press
+// behind it and no focused app on this machine, so folding it in would make
+// both the streak and the words-per-minute describe a mixture of two machines.
+// Same opt-in-per-call-site reasoning as the hot-path trace.
+const stats = new StatsStore({
+  file: () => path.join(dataDir(), "stats.json"),
+  counting: () => settings.stats,
+  perApp: () => settings.statsPerApp,
+  log: flowLog,
+});
+
 // NOTE: the "open AGR Pilot" shortcut used to live here (v5 c2, fired from Flow's keyspy),
 // which coupled it to AGR Flow - disabling Flow killed the shortcut. It now belongs entirely to
 // AGR Manager (its always-on LL hook), which owns Pilot and runs whether or not Flow does. This
@@ -1123,7 +1170,19 @@ async function processUtterance(
       if (DEV) console.log(`[gate] dropped: ${JSON.stringify(text)}`);
       return { text: "", ms };
     }
-    return { text: clean, ms };
+    // U6c (storey 2): the deterministic substitutions, on the FINAL text -
+    // after every existing filter and before anything downstream inserts it.
+    //
+    // The order is the point. Before gateTranscript, a rule could rewrite a
+    // known hallucination into something the gate no longer recognizes, and the
+    // phantom string would land at the cursor. After it, the only text a rule
+    // can touch is text Flow has already decided to keep.
+    //
+    // Cost: linear in the transcript, independent of the number of rules, and
+    // literally the same string back when the user has none (shared/
+    // dictionary.ts). This runs once per utterance on the process that carries
+    // the keyboard hook, so that bound is a requirement, not a nicety.
+    return { text: applyDictionaryReplacements(clean), ms };
   } finally {
     markActivity();
   }
@@ -1201,6 +1260,22 @@ function wireCapture() {
         // B1: textChars is a LENGTH, recorded after `text` has already done its
         // job - never the text itself (see hotpath.ts's zero-retention note).
         hotpath.complete(route === "insert" ? "inserted" : "clipboarded", text.length);
+        // U7b: the aggregated counters. This is the ONLY thing the statistics
+        // feature ever learns about an utterance: a word COUNT, a duration, and
+        // - only if the user turned attribution on - the application name the
+        // focus probe already read a few lines above for routing. The text
+        // itself never enters the subsystem: countWords consumes it here and
+        // StatsUtterance carries a number (main/stats.ts). Memory only; the
+        // disk is touched on a timer and at quit, never on this path.
+        stats.record({
+          words: countWords(text),
+          // The HOLD's own audio. A warm capture carries up to preRollCreditMs
+          // of sound from BEFORE the key went down (review B10), and counting
+          // that as speaking time would quietly understate every
+          // words-per-minute reading the page shows.
+          ms: Math.max(0, payload.durationMs - preRoll),
+          app: focus?.app,
+        });
         // `text` goes out of scope here: the dictation is never retained (5.4).
         if (DEV)
           console.log(`[flow] ${ms} ms | focus=${focus?.control ?? "none"} -> ${route}`);
@@ -1340,6 +1415,9 @@ function applySettings(patch: Partial<FlowSettings>): FlowSettings {
   // fast, from the microphone the user just stopped choosing.
   const warmthChanged =
     next.micPrewarm !== settings.micPrewarm || next.micDeviceId !== settings.micDeviceId;
+  // U7a: read BEFORE the assignment, like every other change flag here - the
+  // store reads the LIVE settings, so it must be told after they have moved.
+  const statsChanged = next.stats !== settings.stats || next.statsPerApp !== settings.statsPerApp;
   Object.assign(settings, next);
   saveSettings(settings);
   if (comboChanged) hotkey.setCombo(settings.combo);
@@ -1350,6 +1428,13 @@ function applySettings(patch: Partial<FlowSettings>): FlowSettings {
   // user asking for the microphone to be closed, and "it will be, later" is not
   // an answer to that request.
   if (warmthChanged) applyMicWarmth();
+  // U7a: the same rule for the other privacy switches - both act on the SPOT,
+  // in both directions. Turning attribution off ERASES what is already on disk
+  // (settingsChanged rewrites the file without any apps field), and turning the
+  // counters off drops what is sitting in memory before it can ever be written.
+  // "It will take effect at the next restart" is not an answer to a privacy
+  // switch either.
+  if (statsChanged) stats.settingsChanged();
   return { ...settings, combo: [...settings.combo] };
 }
 
@@ -1416,6 +1501,12 @@ app.on("before-quit", () => {
   sidecar?.stop();
   probe?.stop();
   api?.stop();
+  // U7b: the last counter flush, synchronously, while the process still exists.
+  // Same reasoning and the same place in the sequence as flushPendingRestore()
+  // and logQueue.flushSync() below: whatever is only in memory at this instant
+  // is lost forever otherwise, and up to a minute of counters is exactly what
+  // the 60 s timer trades away for keeping the disk off the dictation path.
+  stats.stop();
   // B4b: LAST, on purpose. Every line the shutdown above just wrote (the
   // recorder's rescue, the API's cleanup) is still sitting in the queue: the
   // writes are asynchronous now, and this handler is synchronous with the

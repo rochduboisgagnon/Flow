@@ -145,6 +145,21 @@ export type { HookHealth, HookState } from "./hookWatchdog";
 export const UI_SELF_CHECK = "ui:self-check";
 export type { SelfCheckReport, SelfCheckLine, SelfCheckStatus, SelfCheckId } from "./selfCheck";
 
+// ---- statistics (U7) ----
+// PULL-only, for the same reason as snippets and the hot-path ring: a year of
+// daily counters is up to 366 objects, and UiStatePayload is re-serialized and
+// pushed EVERY SECOND while the window is visible. The two SETTINGS live in
+// UiStatePayload.settings (they are two booleans a Settings tab has to render);
+// the DATA never does.
+//
+// UI_STATS_CLEAR (U7d) answers with the same StatsPayload as UI_STATS_READ so
+// the page can replace its state with whatever comes back, and never has to
+// guess what "cleared" looks like - exactly the discipline the snippet channels
+// follow with SnippetsResult.
+export const UI_STATS_READ = "ui:stats-read";
+export const UI_STATS_CLEAR = "ui:stats-clear";
+export type { StatsPayload, StatsDay, StatsAppShare } from "./stats";
+
 // ---- snippets (U3) ----
 // PULL-only, deliberately: the snippet library is user content of unbounded
 // size, and UiStatePayload is re-serialized and pushed EVERY SECOND while the
@@ -190,6 +205,61 @@ export interface SnippetsResult {
   error?: string; // human-readable, shown as-is by the page
 }
 
+// ---- dictionary (U6) ----
+// PULL-only, for the SAME reason as snippets above: the dictionary is user
+// content of unbounded size and UiStatePayload is re-serialized every second
+// while the window is visible. Nothing about the dictionary belongs in that
+// heartbeat - not the entries, not a count, not a "last changed" stamp.
+export const UI_DICT_LIST = "ui:dict-list";
+export const UI_DICT_SAVE = "ui:dict-save"; // create when id is absent/empty, else update
+export const UI_DICT_DELETE = "ui:dict-delete";
+
+/** Which of the dictionary's three storeys an entry feeds (plan-standalone
+ * §4.1, and shared/dictionary.ts's module note):
+ *  - "vocabulary": storey 1 only. Its term is offered to whisper's initial
+ *    prompt, biasing recognition. It NEVER rewrites a transcript, which makes
+ *    it the right (and only safe) choice for a word whose misheard form is an
+ *    ordinary word - "Claude" heard as "cloud".
+ *  - "replacement": storeys 1 and 2. Its term is prompted AND guaranteed: every
+ *    alias, plus the term itself, is substituted on the final text. */
+export type DictKind = "vocabulary" | "replacement";
+
+/** One dictionary entry as it lives on disk (~/.flow/dictionary.json, never
+ * settings.json) and travels over IPC.
+ *
+ * `aliases` are the WRONG spellings ("cloud code", "loi vingt-cinq") - what the
+ * engine writes when it mishears the term. They drive storey 2 and are
+ * deliberately kept OUT of the whisper prompt: prompting a misspelling teaches
+ * the decoder to produce it. On a "vocabulary" entry they are inert, stored but
+ * unused, so that flipping an entry's kind never silently discards work. */
+export interface DictEntry {
+  id: string;
+  term: string; // the canonical spelling, the one that ends up in the text
+  aliases: string[];
+  kind: DictKind;
+  starred: boolean; // first in line for the bounded prompt budget
+  createdIso: string;
+}
+
+/** What the save channel accepts. An absent/empty id creates; an id that
+ * matches nothing is REFUSED, never treated as a creation key. */
+export interface DictInput {
+  id?: string;
+  term: string;
+  aliases: string[];
+  kind: DictKind;
+  starred: boolean;
+}
+
+/** Every dictionary channel answers with the WHOLE dictionary, so the page can
+ * never hold a stale list after a write it did not make (same contract as
+ * SnippetsResult). */
+export interface DictResult {
+  ok: boolean;
+  items: DictEntry[];
+  error?: string; // human-readable, shown as-is by the page
+}
+
 /** One recent long-form capture, as the window shows it (a subset of the
  * engine's RecentEntry: the window never needs the staging internals). */
 export interface UiRecentCapture {
@@ -229,6 +299,12 @@ export interface UiStatePayload {
     theme: ThemePref;
     /** B2: "off" | "after" | "always" - see shared/micWarmth.ts. */
     micPrewarm: MicPrewarm;
+    /** U7a: aggregated counters are being written (default true). */
+    stats: boolean;
+    /** U7a: per-application attribution is being written (default FALSE).
+     * Two booleans ride the 1 Hz push because they are settings a tab renders;
+     * the counters themselves are pulled (see UI_STATS_READ above). */
+    statsPerApp: boolean;
   };
   // U0: settings.theme is the PREFERENCE (what the Settings tab shows/edits);
   // resolvedTheme is what to actually PAINT right now. They diverge exactly

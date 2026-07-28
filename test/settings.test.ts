@@ -102,3 +102,26 @@ test("U2a: a legacy historyDir field is dropped tolerantly, not thrown on", () =
   assert.equal("historyDir" in s, false);
   assert.deepEqual(s, sanitizeSettings({ combo: ["CTRL", "WIN"] }), "identical to a settings.json without the field");
 });
+
+// U7a: the two halves of the statistics policy (Roch, 2026-07-27). The DEFAULTS
+// are the policy: counters on, per-application attribution off. An upgrade must
+// land on exactly that, and no malformed value may ever turn attribution on.
+test("U7a: a settings.json written before the statistics wave gives counters ON and attribution OFF", () => {
+  const upgraded = sanitizeSettings({ combo: ["CTRL", "WIN"], language: "fr", theme: "system" });
+  assert.equal(upgraded.stats, true);
+  assert.equal(upgraded.statsPerApp, false);
+  assert.equal(SETTINGS_DEFAULTS.stats, true);
+  assert.equal(SETTINGS_DEFAULTS.statsPerApp, false);
+});
+
+test("U7a: both statistics switches are literal booleans - junk falls back to the default", () => {
+  assert.equal(sanitizeSettings({ stats: false }).stats, false);
+  assert.equal(sanitizeSettings({ statsPerApp: true }).statsPerApp, true);
+  // The safe direction for a privacy switch: anything unreadable reads as OFF
+  // for attribution, and as ON for the plain counters (their own default).
+  assert.equal(sanitizeSettings({ statsPerApp: "true" }).statsPerApp, false);
+  assert.equal(sanitizeSettings({ statsPerApp: 1 }).statsPerApp, false);
+  assert.equal(sanitizeSettings({ statsPerApp: null }).statsPerApp, false);
+  assert.equal(sanitizeSettings({ stats: "false" }).stats, true);
+  assert.equal(sanitizeSettings({ stats: 0 }).stats, true);
+});

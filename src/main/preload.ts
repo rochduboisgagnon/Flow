@@ -27,10 +27,15 @@ import {
   UI_STATE_PUSH,
   UI_HOTPATH_SNAPSHOT,
   UI_SELF_CHECK,
+  UI_STATS_READ,
+  UI_STATS_CLEAR,
   UI_SNIPPET_LIST,
   UI_SNIPPET_SAVE,
   UI_SNIPPET_DELETE,
   UI_SNIPPET_COPY,
+  UI_DICT_LIST,
+  UI_DICT_SAVE,
+  UI_DICT_DELETE,
   UI_LONG_STATE,
   UI_LONG_START,
   UI_LONG_STOP,
@@ -48,6 +53,8 @@ import {
   type UpdateCheckResult,
   type SnippetInput,
   type SnippetsResult,
+  type DictInput,
+  type DictResult,
   type UiLongStartRequest,
   type LongStateSnapshot,
   type LongStartResult,
@@ -58,6 +65,7 @@ import {
   type DownloadResult,
   type HotpathSnapshot,
   type SelfCheckReport,
+  type StatsPayload,
 } from "../shared/ipcContracts";
 
 export type CaptureCommand = "start" | "stop" | "cancel";
@@ -150,6 +158,12 @@ const ui = {
   snippetSave: (input: SnippetInput): Promise<SnippetsResult> => ipcRenderer.invoke(UI_SNIPPET_SAVE, input),
   snippetDelete: (id: string): Promise<SnippetsResult> => ipcRenderer.invoke(UI_SNIPPET_DELETE, id),
   snippetCopy: (id: string): Promise<SnippetsResult> => ipcRenderer.invoke(UI_SNIPPET_COPY, id),
+  // ---- dictionary (U6): PULL-only, and all three answer with the WHOLE
+  // dictionary - including dictDelete - so the page replaces its list with what
+  // comes back rather than mutating its own copy and drifting from disk.
+  dictList: (): Promise<DictResult> => ipcRenderer.invoke(UI_DICT_LIST),
+  dictSave: (input: DictInput): Promise<DictResult> => ipcRenderer.invoke(UI_DICT_SAVE, input),
+  dictDelete: (id: string): Promise<DictResult> => ipcRenderer.invoke(UI_DICT_DELETE, id),
   // ---- long-form recorder (U4a): IPC surface only, no page yet. PULL-only
   // like snippets/state above - the page will poll longTranscript at 1 Hz
   // rather than have the engine push a growing document every second.
@@ -180,6 +194,11 @@ const ui = {
   // audio devices and writes a probe file; that belongs to a button press, not
   // to a poll (see ipcContracts.ts's note on UI_SELF_CHECK).
   selfCheck: (): Promise<SelfCheckReport | null> => ipcRenderer.invoke(UI_SELF_CHECK),
+  // ---- statistics (U7): PULL, on demand. statsClear answers with the SAME
+  // payload shape as statsRead, so the page replaces its state with what comes
+  // back instead of assuming what "cleared" looks like (see ipcContracts.ts).
+  statsRead: (): Promise<StatsPayload> => ipcRenderer.invoke(UI_STATS_READ),
+  statsClear: (): Promise<StatsPayload> => ipcRenderer.invoke(UI_STATS_CLEAR),
 };
 
 export type FlowUiApi = typeof ui;

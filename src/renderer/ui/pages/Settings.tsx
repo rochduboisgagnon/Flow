@@ -255,7 +255,15 @@ function TabStorage({ s, patch }: { s: UiStatePayload; patch: Patch }) {
           </button>
         </Row>
       ) : null}
-      <Row label="Dictation retention" help="None, by design. Dictated audio and text live only for the one utterance, then every reference is dropped. There is nothing to purge.">
+      {/* Review U6/U7 (major): this row claimed there was "nothing to purge" on
+          the ONE screen whose subject is retention - while two waves had since
+          added files that do persist. Nothing of what is DICTATED is kept, and
+          that part was and stays true; what is kept is counters and settings,
+          and a screen about retention has to name them. */}
+      <Row label="Dictation retention" help="None of what you dictate is kept. Audio and text live for the one utterance, then every reference is dropped - there is no transcript of a dictation anywhere on disk.">
+        <span />
+      </Row>
+      <Row label="What Flow does keep" help="Your settings, your snippets and your dictionary, because you wrote them. Long recordings, because you asked for them. And aggregate counters - words per day, no text, no timestamps - which the Statistics page shows and can erase in one click.">
         <span />
       </Row>
     </div>

@@ -44,6 +44,21 @@ export interface FlowSettings {
    * that field for good (sanitizeSettings drops it). "" = nothing to say, which
    * is the case on the overwhelming majority of machines. */
   legacyHistoryDir: string;
+  /** U7a: keep aggregated dictation counters (words per day, words per minute,
+   * day streaks) in ~/.flow/stats.json. ON by default: the file holds sums per
+   * DAY and nothing else - never a word of what was dictated, never an excerpt,
+   * never the timestamp of one utterance - so the honest default for a feature
+   * the user asked for is on, with an off switch that stops the writing.
+   * See shared/stats.ts for the policy this implements. */
+  stats: boolean;
+  /** U7a: ALSO record WHICH application each dictation landed in. OFF at
+   * install, and deliberately a second switch rather than a detail of the one
+   * above: the focus probe has always SEEN the foreground app's name without
+   * ever storing it, and a day-by-day log of which apps you dictate into
+   * describes working habits that are arguably more sensitive than the text.
+   * Turning it back off ERASES what was collected (mergeDays strips the field
+   * from every day it writes), it does not merely pause the collection. */
+  statsPerApp: boolean;
   /** U2c: the 90-day retention purge is SUSPENDED on this machine. Set once,
    * together with the field above, when we learn the (now fixed) history folder
    * is not the one Flow was actually filing into: its dated folders are then a
@@ -71,6 +86,13 @@ export const SETTINGS_DEFAULTS: FlowSettings = {
   loginItemInitialized: false, // false = the one-time "start with Windows" registration has not run yet
   legacyHistoryDir: "", // "" = this machine never had its own recordings folder
   historyPurgeSuspended: false, // retention runs normally until we learn otherwise
+  // U7a: the two halves of the statistics policy, and the ONLY place their
+  // defaults are stated. A settings.json written before this wave carries
+  // neither field, so the tolerant merge below leaves both at these values:
+  // counters ON, per-application attribution OFF. That is the upgrade path,
+  // and it is the same one a fresh install takes.
+  stats: true,
+  statsPerApp: false,
 };
 
 // A5: the folder is ~/.flow since 1.0.0, but a machine coming from an AGR
@@ -144,6 +166,12 @@ export function sanitizeSettings(raw: unknown): FlowSettings {
   // which is the safe direction (no note, no claim about anyone's data).
   if (typeof r.legacyHistoryDir === "string") out.legacyHistoryDir = r.legacyHistoryDir.trim();
   if (typeof r.historyPurgeSuspended === "boolean") out.historyPurgeSuspended = r.historyPurgeSuspended;
+  // U7a: literal booleans only, exactly like sounds/forceCpu above. A truthy
+  // string ("false" is truthy) or a missing field falls back to the default,
+  // which for statsPerApp is OFF - the safe direction for a privacy switch is
+  // the one where a malformed file never turns attribution on.
+  if (typeof r.stats === "boolean") out.stats = r.stats;
+  if (typeof r.statsPerApp === "boolean") out.statsPerApp = r.statsPerApp;
   return out;
 }
 

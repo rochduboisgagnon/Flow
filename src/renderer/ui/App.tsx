@@ -9,6 +9,8 @@ import { SettingsPage } from "./pages/Settings";
 import { SnippetsPage } from "./pages/Snippets";
 import { Record } from "./pages/Record";
 import { Notes } from "./pages/Notes";
+import { Dictionary } from "./pages/Dictionary";
+import { Statistics } from "./pages/Statistics";
 
 // Flow main window shell (wave U1). State discipline unchanged since A1/A2:
 // the window renders ONE snapshot pushed by the engine (UiStatePayload),
@@ -26,18 +28,6 @@ const COMING: Partial<Record<Section, { title: string; blurb: string; missing: s
     blurb: "Drop audio files, get notes. Phone memos, downloaded recordings, any common format.",
     missing: "Long files need a chunked decode pipeline (a 2 h memo decoded whole would exhaust memory), so this is an engine wave, not a page skin.",
     wave: "Planned after the design campaign.",
-  },
-  stats: {
-    title: "Statistics",
-    blurb: "Counters only. Your words are never stored, so there is nothing here to leak.",
-    missing: "No counters are written today - whether they ever are is an explicit privacy decision, made before any data exists.",
-    wave: "Planned after the design campaign, opening on that decision.",
-  },
-  dictionary: {
-    title: "Dictionary",
-    blurb: "Teach the engine your names, acronyms and jargon. Starred terms get priority.",
-    missing: "The dictionary store and its injection into transcription are not built yet.",
-    wave: "Planned as the dictionary wave of the standalone plan (V3).",
   },
   functions: {
     title: "Functions",
@@ -87,6 +77,8 @@ export function App() {
               {section === "diagnostics" ? <Diagnostics s={s} /> : null}
               {section === "record" ? <Record s={s} /> : null}
               {section === "notes" ? <Notes s={s} /> : null}
+              {section === "stats" ? <Statistics s={s} patch={patch} /> : null}
+              {section === "dictionary" ? <Dictionary /> : null}
               {section === "snippets" ? <SnippetsPage /> : null}
               {section === "settings" ? <SettingsPage s={s} patch={patch} /> : null}
               {coming ? <Coming {...coming} /> : null}

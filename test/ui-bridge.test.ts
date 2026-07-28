@@ -14,10 +14,15 @@ import {
   UI_CHECK_UPDATES,
   UI_HOTPATH_SNAPSHOT,
   UI_SELF_CHECK,
+  UI_STATS_READ,
+  UI_STATS_CLEAR,
   UI_SNIPPET_LIST,
   UI_SNIPPET_SAVE,
   UI_SNIPPET_DELETE,
   UI_SNIPPET_COPY,
+  UI_DICT_LIST,
+  UI_DICT_SAVE,
+  UI_DICT_DELETE,
   UI_LONG_STATE,
   UI_LONG_START,
   UI_LONG_STOP,
@@ -80,6 +85,12 @@ test("every ui:* invoke channel this bridge owns is registered through guarded()
     UI_SNIPPET_SAVE,
     UI_SNIPPET_DELETE,
     UI_SNIPPET_COPY,
+    // U6: ui:dict-save changes what every FUTURE dictation is transcribed and
+    // rewritten into - a write with a longer reach than any snippet edit, and
+    // reachable from the overlay's preload if it were ever left ungated.
+    UI_DICT_LIST,
+    UI_DICT_SAVE,
+    UI_DICT_DELETE,
     UI_LONG_STATE,
     UI_LONG_START,
     UI_LONG_STOP,
@@ -91,6 +102,11 @@ test("every ui:* invoke channel this bridge owns is registered through guarded()
     UI_DOWNLOAD_AUDIO,
     UI_HOTPATH_SNAPSHOT,
     UI_SELF_CHECK,
+    // U7: ui:stats-clear DESTROYS data, and the same preload is loaded by the
+    // overlay and the hidden capture window - exactly the shape of channel this
+    // enumeration exists to keep behind the fromMain() gate.
+    UI_STATS_READ,
+    UI_STATS_CLEAR,
   };
 
   assert.deepEqual(

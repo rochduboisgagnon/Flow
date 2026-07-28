@@ -464,3 +464,56 @@ textarea.snip-src:focus { outline: 2px solid var(--amber); outline-offset: 1px; 
   max-width: 72ch;
 }
 .note-search { display: flex; gap: 8px; align-items: center; }
+
+/* ---- Dictionary (wave U6) ---- */
+.dict-add { display: flex; gap: 9px; margin-bottom: 14px; }
+.dict-add input { flex: 1; min-width: 0; }
+.dict { display: flex; flex-direction: column; gap: 8px; }
+.drow { display: flex; align-items: center; gap: 10px; padding: 11px 15px; flex-wrap: wrap; }
+.drow .term { font-weight: 600; min-width: 130px; }
+.drow .arrow { color: var(--ink2); }
+.drow .kind {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--ink2);
+  margin-left: auto;
+}
+.star {
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--amber);
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 5px;
+}
+.star.off { color: var(--ink2); }
+.star:hover { color: var(--amber); }
+.star:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
+
+/* ---- Statistics (wave U7) ---- */
+.tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 14px; }
+.tile b { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; display: block; margin: 4px 0 2px; }
+.tile .delta { font-size: 11.5px; color: var(--ink2); }
+.stats-low { display: grid; grid-template-columns: 1.4fr 1fr; gap: 14px; }
+.heat { display: grid; grid-template-columns: repeat(26, 1fr); gap: 3px; margin-top: 12px; }
+.heat i { aspect-ratio: 1; border-radius: 2.5px; background: var(--panel2); }
+/* Three steps of the SAME amber, dark enough to read on both grounds. Not
+   tokens: they are a scale, and a scale that follows --amber would collapse. */
+.heat i.l1 { background: #6b4a20; }
+.heat i.l2 { background: #9c6c2c; }
+.heat i.l3 { background: var(--amber); }
+html.light .heat i.l1 { background: #e8d3b4; }
+html.light .heat i.l2 { background: #cf9d55; }
+.bars { display: flex; flex-direction: column; gap: 11px; margin-top: 12px; }
+.bar .t { display: flex; justify-content: space-between; font-size: 12px; color: var(--ink2); margin-bottom: 5px; gap: 12px; }
+.bar .rail2 { height: 5px; border-radius: 999px; background: var(--panel2); }
+.bar .rail2 i { display: block; height: 100%; border-radius: 999px; background: var(--amber); }
+.stats-foot { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-top: 18px; flex-wrap: wrap; }
+@media (max-width: 960px) {
+  .tiles { grid-template-columns: 1fr 1fr; }
+  .stats-low { grid-template-columns: 1fr; }
+}

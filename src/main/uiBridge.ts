@@ -12,10 +12,15 @@ import {
   UI_STATE_PUSH,
   UI_HOTPATH_SNAPSHOT,
   UI_SELF_CHECK,
+  UI_STATS_READ,
+  UI_STATS_CLEAR,
   UI_SNIPPET_LIST,
   UI_SNIPPET_SAVE,
   UI_SNIPPET_DELETE,
   UI_SNIPPET_COPY,
+  UI_DICT_LIST,
+  UI_DICT_SAVE,
+  UI_DICT_DELETE,
   UI_LONG_STATE,
   UI_LONG_START,
   UI_LONG_STOP,
@@ -28,6 +33,7 @@ import {
   type UiStatePayload,
   type UpdateCheckResult,
   type SnippetsResult,
+  type DictResult,
   type LongStateSnapshot,
   type LongStartResult,
   type LongStopResult,
@@ -37,9 +43,11 @@ import {
   type DownloadResult,
   type HotpathSnapshot,
   type SelfCheckReport,
+  type StatsPayload,
 } from "../shared/ipcContracts";
 import type { MainWindow } from "./mainWindow";
 import { listSnippets, saveSnippet, deleteSnippet, getSnippet } from "./snippets";
+import { listDictionary, saveDictEntry, deleteDictEntry } from "./dictionary";
 import { cancelPendingRestore } from "./insert";
 import { decideLongStart } from "../shared/longStart";
 
@@ -115,6 +123,16 @@ export interface UiBridgeDeps {
   // index.ts's selfCheckDep. Async because enumerating audio devices needs a
   // round trip to a renderer.
   selfCheck(): Promise<SelfCheckReport>;
+
+  // ---- statistics (U7) ----
+  // Main-process only, with NO HTTP equivalent on purpose: these counters
+  // describe the owner of this machine, and the local API answers a remote PWA
+  // over the network. The store (main/stats.ts) owns the file; this bridge only
+  // gates the sender.
+  statsRead(): StatsPayload;
+  /** U7d: erases ~/.flow/stats.json on the spot and answers with the (now
+   * empty) payload, so the page repaints from the same call. */
+  statsClear(): StatsPayload;
 }
 
 const REPO_URL = "https://github.com/rochduboisgagnon/Flow";
@@ -133,6 +151,12 @@ export const LOGIN_ARGS = ["--hidden"];
 // library".
 const SNIPPETS_UNAVAILABLE: SnippetsResult = { ok: false, items: [], error: "unavailable" };
 
+// U6: the same fallback discipline for the dictionary. Shaped like every real
+// DictResult so the page never has to special-case "refused" against "the
+// dictionary is genuinely empty" - two states that look identical in a naive
+// `items.length === 0` check and mean opposite things.
+const DICT_UNAVAILABLE: DictResult = { ok: false, items: [], error: "unavailable" };
+
 // U4a: same fallback discipline as SNIPPETS_UNAVAILABLE - what a refused
 // sender (guarded()'s fromMain() gate) gets back, shaped like every real
 // answer so a caller never has to special-case "refused" vs "genuinely empty".
@@ -143,6 +167,24 @@ const LONG_STOP_UNAVAILABLE: LongStopResult = { ok: false, docPath: "" };
 // download, shaped like every real DownloadResult so the page never has to
 // special-case "refused" vs "genuinely failed".
 const DOWNLOAD_UNAVAILABLE: DownloadResult = { ok: false, error: "unavailable" };
+
+// U7: same fallback discipline again. Every counter reads zero and both
+// switches read off, which is the honest thing for an answer that never
+// reached the store: a refused sender must not be able to make a page claim
+// that attribution is on.
+const STATS_UNAVAILABLE: StatsPayload = {
+  ok: false,
+  counting: false,
+  perApp: false,
+  days: [],
+  monthWords: 0,
+  totalWords: 0,
+  avgWpm: 0,
+  streakDays: 0,
+  apps: [],
+  today: "",
+  error: "unavailable",
+};
 
 export class UiBridge {
   private deps: UiBridgeDeps;
@@ -260,6 +302,20 @@ export class UiBridge {
     this.guarded<[unknown], SnippetsResult>(UI_SNIPPET_DELETE, SNIPPETS_UNAVAILABLE, (id) => deleteSnippet(id));
     this.guarded<[unknown], SnippetsResult>(UI_SNIPPET_COPY, SNIPPETS_UNAVAILABLE, (id) => this.copySnippet(id));
 
+    // ---- dictionary (U6a): exactly the snippets shape - the store owns
+    // persistence AND the runtime caches (main/dictionary.ts), this class only
+    // gates the sender. Every channel answers with the WHOLE dictionary, and
+    // none of it is ever in UiStatePayload (see ipcContracts.ts).
+    //
+    // The gate is not ceremony here: the same preload is loaded by the overlay
+    // and the hidden capture window, and ui:dict-save is a write that changes
+    // what every FUTURE dictation is transcribed and rewritten into. An
+    // ungated one would let either of those windows edit the engine's own
+    // vocabulary.
+    this.guarded<[], DictResult>(UI_DICT_LIST, DICT_UNAVAILABLE, () => listDictionary());
+    this.guarded<[unknown], DictResult>(UI_DICT_SAVE, DICT_UNAVAILABLE, (input) => saveDictEntry(input));
+    this.guarded<[unknown], DictResult>(UI_DICT_DELETE, DICT_UNAVAILABLE, (id) => deleteDictEntry(id));
+
     // ---- long-form recorder (U4a): IPC surface only, no page consumes it yet
     // (the plan wants this surface reviewed as its own unit before the page
     // exists). Every handler below calls the SAME dep the matching HTTP
@@ -322,6 +378,13 @@ export class UiBridge {
 
     // ---- self-diagnostic (V2, B5): on demand only, never on a timer ----
     this.guarded<[], SelfCheckReport | null>(UI_SELF_CHECK, null, () => this.deps.selfCheck());
+
+    // ---- statistics (U7): PULL, on demand. The store owns the file; this
+    // only gates the sender - and the gate matters here as much as anywhere,
+    // because ui:stats-clear DESTROYS data and the same preload is loaded by
+    // the overlay and the hidden capture window.
+    this.guarded<[], StatsPayload>(UI_STATS_READ, STATS_UNAVAILABLE, () => this.deps.statsRead());
+    this.guarded<[], StatsPayload>(UI_STATS_CLEAR, STATS_UNAVAILABLE, () => this.deps.statsClear());
   }
 
   /** U3c: copy is not paste. No Ctrl+V, no clipboard snapshot/restore dance -
