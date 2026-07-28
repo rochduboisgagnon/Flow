@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { LongRecorder, historyRoot, historyRootFor, listHistory, resolveHistoryEntry } from "../src/main/longform";
+import { LongRecorder, historyRoot, historyRootFor, listHistory, resolveHistoryEntry, readHistoryDoc } from "../src/main/longform";
 import { dataDir, sanitizeSettings } from "../src/main/settings";
 import { resolveDataDir, runMigration, DATA_DIR_NEW } from "../src/main/migrate";
 import type { WhisperSidecar } from "../src/main/asr/sidecar";
@@ -598,5 +598,171 @@ test("Archive: a symlinked date directory is neither enumerated by listHistory n
   }
 
   fs.rmSync(target, { recursive: true, force: true });
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+test("Archive: a recording folder with no transcript never resolves (the rule listHistory used to enforce for it)", () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-resolve-nodoc-"));
+  const history = path.join(work, "history");
+  fs.mkdirSync(history, { recursive: true });
+  fs.writeFileSync(path.join(history, ".agr-flow-history"), "marker\n");
+  // Audio but no .md: not a recording anything may surface.
+  const orphan = path.join(history, "2026-05-02", "audio-only");
+  fs.mkdirSync(orphan, { recursive: true });
+  fs.writeFileSync(path.join(orphan, "audio-only.wav"), Buffer.from("RIFF0000WAVE"));
+
+  const id = Buffer.from("2026-05-02/audio-only", "utf8").toString("base64url");
+  assert.equal(resolveHistoryEntry(id, history), null, "no transcript = the entry does not exist");
+
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+// ---- U5 review, constat 2: resolving an id must not walk the whole archive ----
+//
+// resolveHistoryEntry used to end with listHistory(root).find(...), a full
+// SYNCHRONOUS enumeration of the archive on the main process - once per
+// download AND once per Range request, i.e. once per seek in the audio player.
+// The proof below is a COUNT, not a claim: every synchronous filesystem entry
+// point longform.ts uses is wrapped for the duration of one call and the calls
+// are tallied. An implementation that enumerates grows with the archive; one
+// that goes straight to the folder cannot.
+
+const COUNTED_FS_CALLS = ["readdirSync", "lstatSync", "statSync", "existsSync", "readFileSync", "openSync"] as const;
+
+function countFsCalls<T>(fn: () => T): { result: T; calls: number } {
+  const target = fs as unknown as Record<string, (...args: unknown[]) => unknown>;
+  const saved = new Map<string, (...args: unknown[]) => unknown>();
+  let calls = 0;
+  for (const name of COUNTED_FS_CALLS) {
+    const orig = target[name];
+    saved.set(name, orig);
+    target[name] = (...args: unknown[]) => {
+      calls++;
+      return orig(...args);
+    };
+  }
+  try {
+    const result = fn();
+    return { result, calls };
+  } finally {
+    for (const [name, orig] of saved) target[name] = orig;
+  }
+}
+
+/** Seed a MARKED history root with `days` date folders of `perDay` recordings,
+ * returning every entry's id (built the way listHistory builds it). */
+function seedArchive(root: string, days: number, perDay: number, tag: string): string[] {
+  fs.mkdirSync(root, { recursive: true });
+  fs.writeFileSync(path.join(root, ".agr-flow-history"), "marker\n");
+  const ids: string[] = [];
+  const base = Date.UTC(2026, 0, 1);
+  for (let d = 0; d < days; d++) {
+    const date = new Date(base + d * 86_400_000).toISOString().slice(0, 10);
+    for (let r = 0; r < perDay; r++) {
+      const title = `${tag}-${d}-${r}`;
+      const dir = path.join(root, date, title);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, `${title}.md`), "# " + title);
+      ids.push(Buffer.from(`${date}/${title}`, "utf8").toString("base64url"));
+    }
+  }
+  return ids;
+}
+
+test("U5 constat 2: resolving an id costs the same handful of filesystem calls whatever the archive holds", () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-resolve-cost-"));
+  const small = path.join(work, "small");
+  const large = path.join(work, "large");
+  const smallIds = seedArchive(small, 2, 2, "s"); // 4 recordings
+  const largeIds = seedArchive(large, 40, 5, "l"); // 200 recordings: 50x the archive
+
+  // Control, so a constant result below actually means something: the full
+  // ENUMERATION does scale with the archive, and the counter sees it.
+  const smallList = countFsCalls(() => listHistory(small));
+  const largeList = countFsCalls(() => listHistory(large));
+  assert.equal(smallList.result.length, 4);
+  assert.equal(largeList.result.length, 200);
+  assert.ok(
+    largeList.calls > smallList.calls * 10,
+    `a full listing scales with the archive (${smallList.calls} -> ${largeList.calls} calls)`,
+  );
+
+  const smallResolve = countFsCalls(() => resolveHistoryEntry(smallIds[0], small));
+  const firstOfLarge = countFsCalls(() => resolveHistoryEntry(largeIds[0], large));
+  const lastOfLarge = countFsCalls(() => resolveHistoryEntry(largeIds[largeIds.length - 1], large));
+  assert.ok(smallResolve.result, "the small archive's id resolves");
+  assert.ok(firstOfLarge.result, "the large archive's first id resolves");
+  assert.ok(lastOfLarge.result, "the large archive's last id resolves too");
+
+  assert.equal(firstOfLarge.calls, smallResolve.calls, "a 50x bigger archive costs exactly the same");
+  assert.equal(lastOfLarge.calls, smallResolve.calls, "and where the entry sits in it is irrelevant");
+  assert.ok(
+    smallResolve.calls < smallList.calls,
+    `a resolution is cheaper than listing even the TINY archive (${smallResolve.calls} vs ${smallList.calls})`,
+  );
+  assert.ok(smallResolve.calls <= 8, `a resolution stays a handful of calls (was ${smallResolve.calls})`);
+
+  // The Range-request case that motivated this: the audio player emits one
+  // Range request per seek, and each one resolves the id again. Ten seeks must
+  // cost ten cheap lookups, not ten walks of the whole archive.
+  const tenSeeks = countFsCalls(() => {
+    for (let i = 0; i < 10; i++) resolveHistoryEntry(largeIds[3], large);
+  });
+  assert.equal(tenSeeks.calls, 10 * smallResolve.calls, "ten Range requests = ten constant-cost lookups");
+
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+// ---- U5a: readHistoryDoc - the ONE implementation behind both the HTTP
+// /long/history/doc route and the UI_HISTORY_DOC IPC channel ----
+
+test("U5a: readHistoryDoc resolves a real id to its title/date/text", () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-readdoc-"));
+  const history = path.join(work, "history");
+  fs.mkdirSync(history, { recursive: true });
+  fs.writeFileSync(path.join(history, ".agr-flow-history"), "marker\n");
+  const recDir = path.join(history, "2026-07-27", "client-kickoff");
+  fs.mkdirSync(recDir, { recursive: true });
+  fs.writeFileSync(path.join(recDir, "client-kickoff.md"), "# Client Kickoff\n\nHello there.");
+
+  const id = listHistory(history)[0].id;
+  const doc = readHistoryDoc(id, history);
+  assert.ok(doc, "a real id resolves");
+  assert.equal(doc!.date, "2026-07-27");
+  assert.equal(doc!.title, "client-kickoff");
+  assert.equal(doc!.text, "# Client Kickoff\n\nHello there.");
+
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+test("U5a: readHistoryDoc refuses an unknown/forged id cleanly (null, not a throw)", () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-readdoc-bad-"));
+  const history = path.join(work, "history");
+  fs.mkdirSync(history, { recursive: true });
+  fs.writeFileSync(path.join(history, ".agr-flow-history"), "marker\n");
+
+  assert.equal(readHistoryDoc("not-a-real-id", history), null);
+  assert.equal(readHistoryDoc("", history), null);
+  const staleId = Buffer.from("2026-01-01/never-existed", "utf8").toString("base64url");
+  assert.equal(readHistoryDoc(staleId, history), null);
+
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+test("U5a: readHistoryDoc caps an oversized document rather than reading it whole into memory-bound text", () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-readdoc-cap-"));
+  const history = path.join(work, "history");
+  fs.mkdirSync(history, { recursive: true });
+  fs.writeFileSync(path.join(history, ".agr-flow-history"), "marker\n");
+  const recDir = path.join(history, "2026-07-27", "huge-meeting");
+  fs.mkdirSync(recDir, { recursive: true });
+  const big = "x".repeat(6 * 1024 * 1024); // 6 MB > the 5 MB cap
+  fs.writeFileSync(path.join(recDir, "huge-meeting.md"), big);
+
+  const id = listHistory(history)[0].id;
+  const doc = readHistoryDoc(id, history);
+  assert.ok(doc);
+  assert.equal(doc!.text.length, 5 * 1024 * 1024, "capped at ~5 MB");
+
   fs.rmSync(work, { recursive: true, force: true });
 });

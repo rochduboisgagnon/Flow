@@ -18,7 +18,6 @@ import {
   UI_LIST_MICS,
   UI_OLLAMA_MODELS,
   UI_OPEN_PATH,
-  UI_PICK_FOLDER,
   UI_GET_LOGIN_ITEM,
   UI_SET_LOGIN_ITEM,
   UI_CHECK_UPDATES,
@@ -32,6 +31,10 @@ import {
   UI_LONG_STOP,
   UI_LONG_MARK,
   UI_LONG_TRANSCRIPT,
+  UI_HISTORY_LIST,
+  UI_HISTORY_DOC,
+  UI_DOWNLOAD_DOC,
+  UI_DOWNLOAD_AUDIO,
   type CaptureStartPayload,
   type NativeStartPayload,
   type UiStatePayload,
@@ -43,6 +46,9 @@ import {
   type LongStartResult,
   type LongStopResult,
   type LongTranscriptResult,
+  type HistoryItem,
+  type HistoryDocPayload,
+  type DownloadResult,
 } from "../shared/ipcContracts";
 
 export type CaptureCommand = "start" | "stop" | "cancel";
@@ -108,9 +114,8 @@ const ui = {
   listMics: (): Promise<Array<{ id: string; label: string }>> =>
     ipcRenderer.invoke(UI_LIST_MICS),
   ollamaModels: (): Promise<string[] | null> => ipcRenderer.invoke(UI_OLLAMA_MODELS),
-  openPath: (which: "log" | "data" | "history" | "legacy-history" | "repo"): Promise<void> =>
+  openPath: (which: "log" | "data" | "history" | "legacy-history" | "repo" | "downloaded-file"): Promise<void> =>
     ipcRenderer.invoke(UI_OPEN_PATH, which),
-  pickFolder: (): Promise<string | null> => ipcRenderer.invoke(UI_PICK_FOLDER),
   getLoginItem: (): Promise<boolean> => ipcRenderer.invoke(UI_GET_LOGIN_ITEM),
   setLoginItem: (on: boolean): Promise<boolean> => ipcRenderer.invoke(UI_SET_LOGIN_ITEM, on),
   checkUpdates: (): Promise<UpdateCheckResult> => ipcRenderer.invoke(UI_CHECK_UPDATES),
@@ -130,6 +135,15 @@ const ui = {
   longStop: (): Promise<LongStopResult> => ipcRenderer.invoke(UI_LONG_STOP),
   longMark: (): Promise<{ ok: boolean }> => ipcRenderer.invoke(UI_LONG_MARK),
   longTranscript: (since: number): Promise<LongTranscriptResult> => ipcRenderer.invoke(UI_LONG_TRANSCRIPT, since),
+  // ---- archive browser (U5a): PULL, on demand - never cached like state's
+  // `recent` field (see ipcContracts.ts's module note), so the Notes page
+  // always sees the exact on-disk archive.
+  historyList: (): Promise<HistoryItem[]> => ipcRenderer.invoke(UI_HISTORY_LIST),
+  historyDoc: (id: string): Promise<HistoryDocPayload | null> => ipcRenderer.invoke(UI_HISTORY_DOC, id),
+  // ---- capture downloads (U5c): id in, never a path - main resolves and
+  // writes straight into the OS Downloads folder, no dialog.
+  downloadDoc: (id: string): Promise<DownloadResult> => ipcRenderer.invoke(UI_DOWNLOAD_DOC, id),
+  downloadAudio: (id: string): Promise<DownloadResult> => ipcRenderer.invoke(UI_DOWNLOAD_AUDIO, id),
   onState(cb: (s: UiStatePayload) => void): () => void {
     const handler = (_e: Electron.IpcRendererEvent, s: UiStatePayload) => cb(s);
     ipcRenderer.on(UI_STATE_PUSH, handler);

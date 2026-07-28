@@ -2,7 +2,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { dataDir } from "./settings";
-import type { HistoryItem } from "./longform";
+import type { HistoryItem, HistoryDocPayload } from "./longform";
 
 // AGR Flow's local API (plan 7.2): how the rest of the AGR ecosystem talks to
 // the app WITHOUT reimplementing it. AGR Pilot's PWA posts phone-recorded
@@ -52,11 +52,15 @@ export interface ApiDeps {
   longGap(seconds: number): unknown;
   longTranscript(since: number): unknown;
   // Archive 2026-07-14: recording history browser (C10's history folder, now
-  // readable from the PWA). listHistory re-enumerates the real dirs on every
-  // call; resolveHistoryEntry turns an opaque id back into on-disk paths, or
-  // null if the id is forged/stale (see longform.ts for the path-safety).
+  // readable from the PWA, and U5a's UI_HISTORY_* IPC channels). listHistory
+  // re-enumerates the real dirs on every call; resolveHistoryEntry turns an
+  // opaque id back into on-disk paths, or null if the id is forged/stale (see
+  // longform.ts for the path-safety). readHistoryDoc is the ONE
+  // implementation behind both this route and UI_HISTORY_DOC (U5a) - never a
+  // second copy of the resolve+read+cap logic.
   listHistory(): HistoryItem[];
   resolveHistoryEntry(id: string): { dir: string; doc: string | null; audio: string | null } | null;
+  readHistoryDoc(id: string): HistoryDocPayload | null;
   // Settings surface (plan v2 chantier A): AGR Flow is headless; AGR Manager's
   // AGR Flow view is the ONLY user-facing settings UI and drives it through
   // these endpoints.
@@ -310,21 +314,9 @@ export class LocalApi {
       }
       if (req.method === "GET" && url.pathname === "/long/history/doc") {
         const id = url.searchParams.get("id") || "";
-        const entry = this.deps.resolveHistoryEntry(id);
-        if (!entry || !entry.doc) return json(404, { error: "not found" });
-        let text: string;
-        try {
-          const buf = fs.readFileSync(entry.doc);
-          const cap = 5 * 1024 * 1024; // ~5 MB: a transcript this long is already pathological
-          text = (buf.length > cap ? buf.subarray(0, cap) : buf).toString("utf8");
-        } catch {
-          return json(404, { error: "not found" });
-        }
-        // Reconstruct date/title from the resolved dir (built as root/date/folder
-        // by resolveHistoryEntry) rather than re-deriving them from the id.
-        const date = path.basename(path.dirname(entry.dir));
-        const title = path.basename(entry.dir);
-        return json(200, { title, date, text });
+        const payload = this.deps.readHistoryDoc(id);
+        if (!payload) return json(404, { error: "not found" });
+        return json(200, payload);
       }
       if (req.method === "GET" && url.pathname === "/long/history/audio") {
         const id = url.searchParams.get("id") || "";

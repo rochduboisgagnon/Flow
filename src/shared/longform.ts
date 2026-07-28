@@ -290,3 +290,31 @@ export interface LongTranscriptResult {
   text: string;
   nextSince: number;
 }
+
+// ---- U5a/U5c: the archive browser (history list + doc), shared by the HTTP
+// /long/history* routes and the UI_HISTORY_* IPC channels. Defined here for
+// the same reason as the shapes above: ipcContracts.ts (compiled into the
+// renderer/preload build too) needs the type without pulling src/main in -
+// main/longform.ts imports these back FROM here and does the actual disk I/O.
+
+/** One recording as the archive browser lists it. `hasAudio`/`audioBytes` let
+ * the UI show a download's size BEFORE the click (U5c: a long WAV is ~115 MB/h,
+ * the user must learn that up front, not after starting a multi-minute copy). */
+export interface HistoryItem {
+  id: string;
+  date: string;
+  title: string;
+  hasAudio: boolean;
+  audioBytes: number;
+  docBytes: number;
+  savedMs: number;
+}
+
+/** A history entry's transcript, read for display - shared by the HTTP
+ * /long/history/doc route and the UI_HISTORY_DOC IPC channel (main/longform.ts's
+ * readHistoryDoc is the ONE implementation behind both). */
+export interface HistoryDocPayload {
+  title: string;
+  date: string;
+  text: string;
+}

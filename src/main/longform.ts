@@ -29,7 +29,15 @@ import {
   type LongStartResult,
   type LongStopResult,
   type LongTranscriptResult,
+  type HistoryItem,
+  type HistoryDocPayload,
 } from "../shared/longform";
+
+// U5a: HistoryItem/HistoryDocPayload now live in shared/longform.ts (same
+// reason RecentEntry & co. do - see that file's module note); re-exported here
+// so api.ts's existing `import type { HistoryItem } from "./longform"` keeps
+// working unchanged.
+export type { HistoryItem, HistoryDocPayload };
 
 // C2: a 44-byte canonical WAV header (16 kHz mono 16-bit). Written with a
 // placeholder size at native-capture start, then patched with the real sizes when
@@ -537,20 +545,24 @@ function noteInterruption(docPath: string, note: string, log?: (msg: string) => 
 // outside historyRoot (security review: this is the whole point of the id
 // scheme, not an incidental detail).
 
-export interface HistoryItem {
-  id: string;
-  date: string;
-  title: string;
-  hasAudio: boolean;
-  audioBytes: number;
-  docBytes: number;
-  savedMs: number;
-}
-
 // A runaway history (years of unattended recordings piling up on the fixed
 // folder) must never make the archive view stall the engine's single-threaded
 // API. Bounded, like the ASR queue.
 const MAX_HISTORY_ITEMS = 2000;
+
+/** True when `p` is a REAL directory: lstat says directory, and says it is not
+ * a symlink/junction. lstat and never stat, so the decision is made about the
+ * entry itself and can never follow a link out of the history root. The ONE
+ * expression of that rule, shared by listHistory's walk and by
+ * resolveHistoryEntry's direct lookup - the two must not be able to drift. */
+function isRealDirectory(p: string): boolean {
+  try {
+    const st = fs.lstatSync(p);
+    return st.isDirectory() && !st.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
 
 /** Enumerate `<root>/<YYYY-MM-DD>/<title>/` recordings, newest first. Marker-gated
  * like the purge (never lists a folder AGR Flow did not itself establish as a
@@ -582,13 +594,7 @@ export function listHistory(root: string = historyRoot(), log?: (msg: string) =>
         break;
       }
       const dateDir = path.join(root, dateName);
-      let dateStat: fs.Stats;
-      try {
-        dateStat = fs.lstatSync(dateDir); // lstat: never follow a linked date dir
-      } catch {
-        continue;
-      }
-      if (dateStat.isSymbolicLink() || !dateStat.isDirectory()) continue;
+      if (!isRealDirectory(dateDir)) continue; // never follow a linked date dir
       let subEntries: fs.Dirent[];
       try {
         subEntries = fs.readdirSync(dateDir, { withFileTypes: true });
@@ -598,13 +604,7 @@ export function listHistory(root: string = historyRoot(), log?: (msg: string) =>
       const dayItems: HistoryItem[] = [];
       for (const sub of subEntries) {
         const folderDir = path.join(dateDir, sub.name);
-        let folderStat: fs.Stats;
-        try {
-          folderStat = fs.lstatSync(folderDir); // lstat: never follow a linked title dir
-        } catch {
-          continue;
-        }
-        if (folderStat.isSymbolicLink() || !folderStat.isDirectory()) continue;
+        if (!isRealDirectory(folderDir)) continue; // never follow a linked title dir
         let files: fs.Dirent[];
         try {
           files = fs.readdirSync(folderDir, { withFileTypes: true });
@@ -674,11 +674,35 @@ function isUnsafePathSegment(s: string): boolean {
   return false;
 }
 
-/** Decode an opaque history id and resolve it to the on-disk recording folder,
- * re-enumerating history (via listHistory) to confirm the id names a REAL,
- * currently-listed entry before returning anything. Returns null on any
- * failure - a forged id, a stale id whose folder was purged, a symlink, or a
- * path that would resolve outside historyRoot - never partial information. */
+/** Decode an opaque history id and resolve it to the on-disk recording folder.
+ * Returns null on any failure - a forged id, a stale id whose folder was
+ * purged, a symlink, or a path that would resolve outside historyRoot - never
+ * partial information.
+ *
+ * U5 review, constat 2: this used to finish with `listHistory(root).find(...)`,
+ * i.e. a full SYNCHRONOUS walk of the entire archive (a readdir of the root,
+ * then per date folder an lstat + readdir, then per recording an lstat + readdir
+ * + one or two stats) on the main process, the one carrying the keyboard hook.
+ * That walk ran on every download AND on every Range request - and the audio
+ * player emits one Range request per seek, so scrubbing a track re-enumerated
+ * years of recordings per drag.
+ *
+ * The id already encodes everything needed to go straight to the folder: it is
+ * the base64url of "<date>/<title>", two single path segments. So the lookup is
+ * now direct, and each guarantee the walk used to provide incidentally is
+ * asserted explicitly and locally, at O(1) filesystem calls whatever the
+ * archive holds:
+ *  - marker gate: the same `.agr-flow-history` check listHistory does, so a
+ *    root Flow did not itself establish still serves nothing.
+ *  - the DATE folder is checked on its own (isRealDirectory, shared with
+ *    listHistory): a symlinked/junctioned date folder is never walked into,
+ *    which the old code only got by virtue of the enumeration skipping it.
+ *  - the recording folder itself: same lstat, unchanged.
+ *  - the entry must actually carry a transcript, or it does not exist as far as
+ *    this function is concerned - unchanged, and the same rule listHistory uses
+ *    to decide an entry is worth surfacing.
+ * The containment check (never a path outside historyRoot) was always local and
+ * is untouched. */
 export function resolveHistoryEntry(
   id: string,
   root: string = historyRoot(),
@@ -707,18 +731,14 @@ export function resolveHistoryEntry(
   // Containment check (non-negotiable): the resolved dir must sit strictly
   // inside historyRoot, never AT it (that would mean an empty folder name).
   if (!resolvedDir.startsWith(resolvedRoot + path.sep)) return null;
-  let dirStat: fs.Stats;
-  try {
-    dirStat = fs.lstatSync(resolvedDir); // lstat: never follow a symlinked entry
-  } catch {
-    return null;
-  }
-  if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) return null;
-  // Re-enumerate: the id must name an entry a fresh scan actually finds. This
-  // is what turns "syntactically clean id" into "a real, currently-listed
-  // history entry" - closes the gap between path-safety and existence.
-  const found = listHistory(root).find((it) => it.id === id);
-  if (!found) return null;
+  // Marker gate, byte-for-byte listHistory's own check: a folder AGR Flow did
+  // not establish as a history root is never served, whatever it contains.
+  if (!fs.existsSync(path.join(root, HISTORY_MARKER))) return null;
+  // The date folder, then the recording folder. Both must be real directories,
+  // neither may be a symlink/junction: resolving "through" a linked date folder
+  // would be a read outside historyRoot in everything but the string.
+  if (!isRealDirectory(path.join(resolvedRoot, date))) return null;
+  if (!isRealDirectory(resolvedDir)) return null;
   let doc: string | null = null;
   let audio: string | null = null;
   try {
@@ -733,6 +753,38 @@ export function resolveHistoryEntry(
   }
   if (!doc) return null;
   return { dir: resolvedDir, doc, audio };
+}
+
+/** date/title derived from a RESOLVED entry's own folder (root/date/folder,
+ * resolveHistoryEntry's own layout) - the one place that decode happens, used
+ * everywhere a resolved entry needs to be named for a human (the doc payload
+ * below, U5c's downloaded filenames): never re-derived from the id itself. */
+export function historyEntryLabel(dir: string): { date: string; title: string } {
+  return { date: path.basename(path.dirname(dir)), title: path.basename(dir) };
+}
+
+// ~5 MB: a transcript this long is already pathological. Shared by
+// readHistoryDoc (HTTP + IPC) so the two surfaces can never disagree on the cap.
+const MAX_HISTORY_DOC_BYTES = 5 * 1024 * 1024;
+
+/** Read a history entry's transcript for display: resolves the id, reads the
+ * document (capped), and derives title/date from the resolved folder - the
+ * ONE implementation behind both the HTTP /long/history/doc route and the
+ * UI_HISTORY_DOC IPC channel (U5a), so a forged/stale id is refused
+ * identically on both surfaces. Returns null when the id does not resolve to
+ * a real entry with a document, or the file could not be read. */
+export function readHistoryDoc(id: string, root: string = historyRoot()): HistoryDocPayload | null {
+  const entry = resolveHistoryEntry(id, root);
+  if (!entry || !entry.doc) return null;
+  let text: string;
+  try {
+    const buf = fs.readFileSync(entry.doc);
+    text = (buf.length > MAX_HISTORY_DOC_BYTES ? buf.subarray(0, MAX_HISTORY_DOC_BYTES) : buf).toString("utf8");
+  } catch {
+    return null;
+  }
+  const { date, title } = historyEntryLabel(entry.dir);
+  return { title, date, text };
 }
 
 export function loadRecent(file = recentPath()): RecentEntry[] {
@@ -802,6 +854,13 @@ export class LongRecorder {
   private headerStr = "";
   private marks: number[] = [];
   private lastError = "";
+  // U4 (review, major): how long the capture actually ran, frozen the moment it
+  // ends. state() used to report 0 as soon as `active` went false, so the
+  // biggest number on the Record page fell to 00:00:00 the instant Stop was
+  // pressed - for the whole of a finalization that can take minutes, and after
+  // it. The duration a recording reached is a FACT about it; it does not
+  // disappear because the transcription is still running.
+  private elapsedMs = 0;
   // Current (open) segment + its start offset in samples since recording start.
   private cur: Int16Array[] = [];
   private curLen = 0;
@@ -924,6 +983,7 @@ export class LongRecorder {
     // Count what is about to be lost BEFORE tearing the state down, so the note
     // in the document can be specific: the queued segments plus the open one.
     const pending = this.queue.length + (this.curLen > 0 ? 1 : 0);
+    if (this.active) this.elapsedMs = Math.max(0, Date.now() - this.startedAt); // freeze before active drops
     this.active = false;
     this.quitting = true; // a finalize() still in flight must not file this twice
     try {
@@ -934,7 +994,7 @@ export class LongRecorder {
       // Only a recording still parked in staging needs relocating; one recorded
       // straight into the user's own folder is already where they want it.
       if (this.staged && this.underStaging(this.transcriptPath)) this.fileIntoHistory();
-      saveRecent(
+      this.writeRecent(
         pushRecent(loadRecent(this.deps.recentPathOverride), {
           title: this.title,
           startedIso: this.startedIso,
@@ -943,10 +1003,9 @@ export class LongRecorder {
           audioPath: this.audioPath,
           // Wall clock, not `consumed`: the capture ran until this very moment,
           // while `consumed` only counts segments that were CLOSED in time.
-          durationMs: Math.max(0, Date.now() - this.startedAt),
+          durationMs: this.elapsedMs,
           staged: this.staged,
         }),
-        this.deps.recentPathOverride,
       );
       this.deps.log?.(`[long] rescued on quit -> ${this.transcriptPath}`);
       return true;
@@ -1033,7 +1092,7 @@ export class LongRecorder {
       const list = loadRecent(this.deps.recentPathOverride);
       const headMs = list[0] ? Date.parse(list[0].startedIso || "") : NaN;
       if (!list[0] || Number.isNaN(headMs) || bestMs >= headMs) {
-        saveRecent(pushRecent(list, best), this.deps.recentPathOverride);
+        this.writeRecent(pushRecent(list, best));
       }
     }
     return rescued;
@@ -1112,6 +1171,7 @@ export class LongRecorder {
     }
     this.startedAt = Date.now();
     this.startedIso = now.toISOString();
+    this.elapsedMs = 0; // a new recording: the previous one's length is no longer the answer
     this.marks = [];
     this.cur = [];
     this.curLen = 0;
@@ -1252,6 +1312,9 @@ export class LongRecorder {
    * the background (state shows finalizing until done). */
   stop(): LongStopResult {
     if (!this.active) return { ok: false, docPath: "" };
+    // Freeze the length the capture reached BEFORE `active` drops: from here on
+    // it is what state() reports, all through finalizing and after (U4 review).
+    this.elapsedMs = Math.max(0, Date.now() - this.startedAt);
     this.active = false;
     this.finalizing = true;
     const joined = this.joinCurrent();
@@ -1338,7 +1401,9 @@ export class LongRecorder {
     }
     const stagedFrom = entry.dir;
     const updated: RecentEntry = { ...entry, dir: subDir, docPath: newDoc, audioPath: newAudio, staged: false };
-    saveRecent(pushRecent(list.slice(1), updated), this.deps.recentPathOverride);
+    // U4 (review, major): through writeRecent, so the state() cache cannot go on
+    // advertising the staging path this call is about to delete.
+    this.writeRecent(pushRecent(list.slice(1), updated));
     // Keep the live snapshot consistent if it still points at the saved doc.
     if (this.transcriptPath === entry.docPath) {
       this.transcriptPath = newDoc;
@@ -1423,7 +1488,13 @@ export class LongRecorder {
       active: this.active,
       finalizing: this.finalizing,
       startedIso: this.startedIso,
-      durationMs: this.active ? Date.now() - this.startedAt : 0,
+      // Live while capturing, then the length it reached - through finalizing
+      // and after it, until the next start() opens a new recording. Callers
+      // that need "is something running" read `active`/`finalizing`, which have
+      // always been the honest answer to that question (GET /long/state carries
+      // both, so the AGR Pilot client is unaffected by this field no longer
+      // collapsing to 0).
+      durationMs: this.active ? Date.now() - this.startedAt : this.elapsedMs,
       segments: this.segments,
       pending: this.queue.length,
       marks: this.marks.length,
@@ -1441,17 +1512,34 @@ export class LongRecorder {
    *
    * U4a piege 1: cached for RECENT_STATE_CACHE_MS so a caller polling state()
    * at 1 Hz (GET /long/state, UI_LONG_STATE) does not re-read recent.json and
-   * re-stat its entry's docPath on every single tick. RECENT_MAX is 1, so
-   * staleness only ever means "the very last completed capture might lag a
-   * few seconds behind a save/finalize that just happened" - never wrong,
-   * just briefly behind, for a field every current caller treats as
-   * informational. */
+   * re-stat its entry's docPath on every single tick.
+   *
+   * U4 (review, major): the original note here claimed the cache could only
+   * ever be "briefly behind, never wrong". That was false, and save() was the
+   * proof: it MOVES the document and deletes the staging original, so for up to
+   * three seconds afterwards state() went on advertising a path that no longer
+   * exists - not late, wrong. Every write of recent.json made from inside this
+   * class therefore drops the cache (writeRecent), which leaves the cache
+   * absorbing only what it was built for: repeated reads between two writes. A
+   * write by ANOTHER process is still picked up on the ordinary expiry, which
+   * is the only staleness this class cannot see coming. */
   private cachedRecent(): RecentEntry[] {
     const now = Date.now();
     if (now - this.recentStateCache.at > RECENT_STATE_CACHE_MS) {
       this.recentStateCache = { at: now, value: existingRecent(loadRecent(this.deps.recentPathOverride)) };
     }
     return this.recentStateCache.value;
+  }
+
+  /** The ONE way this class writes recent.json: persist, then drop the state()
+   * cache so the very next snapshot reflects what was just written. Every
+   * writer goes through here - finalize(), save(), the quit rescue and the boot
+   * rescan - because a cache invalidated on three paths out of four is a cache
+   * that lies on the fourth. */
+  private writeRecent(list: RecentEntry[]): void {
+    saveRecent(list, this.deps.recentPathOverride);
+    // `at: 0` is not a reachable timestamp, so the next cachedRecent() re-reads.
+    this.recentStateCache = { at: 0, value: [] };
   }
 
   /** Capture died under us (mic error): keep what we have, stop cleanly. */
@@ -1595,7 +1683,7 @@ export class LongRecorder {
       // below points at the history location straight away. staged stays true:
       // the user still hasn't filed it into a folder of their own choosing.
       if (this.staged) this.fileIntoHistory();
-      saveRecent(
+      this.writeRecent(
         pushRecent(loadRecent(this.deps.recentPathOverride), {
           title: this.title,
           startedIso: this.startedIso,
@@ -1605,7 +1693,6 @@ export class LongRecorder {
           durationMs: Math.round((this.consumed / SAMPLE_RATE) * 1000),
           staged: this.staged, // v6 c7: needs a "Save to..." step until filed
         }),
-        this.deps.recentPathOverride,
       );
       this.deps.log?.(`[long] done: ${this.transcriptPath}${summary ? " (with summary)" : ""}`);
     } catch (err) {

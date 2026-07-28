@@ -8,6 +8,7 @@ import { Diagnostics } from "./pages/Diagnostics";
 import { SettingsPage } from "./pages/Settings";
 import { SnippetsPage } from "./pages/Snippets";
 import { Record } from "./pages/Record";
+import { Notes } from "./pages/Notes";
 
 // Flow main window shell (wave U1). State discipline unchanged since A1/A2:
 // the window renders ONE snapshot pushed by the engine (UiStatePayload),
@@ -25,20 +26,6 @@ const COMING: Partial<Record<Section, { title: string; blurb: string; missing: s
     blurb: "Drop audio files, get notes. Phone memos, downloaded recordings, any common format.",
     missing: "Long files need a chunked decode pipeline (a 2 h memo decoded whole would exhaust memory), so this is an engine wave, not a page skin.",
     wave: "Planned after the design campaign.",
-  },
-  // TODO(U5): when this stub becomes the real Notes page, it is the page that
-  // must carry the legacy-folder pointer. It lists the FIXED history folder
-  // only, so a user who had chosen their own folder before U2a sees an archive
-  // that looks empty while their meetings sit untouched elsewhere. Render
-  // s.legacyHistory (dir + exists, already in the snapshot) as a line at the
-  // top of the list - same honesty rule as Settings > Storage: claim the files
-  // are there only when exists is true, and no Open button when it is false.
-  // Until then the pointer lives in Settings > Storage plus a startup log line.
-  notes: {
-    title: "Notes",
-    blurb: "Every capture Flow has produced, searchable and readable in place.",
-    missing: "The recordings archive already exists on disk; the browser, reader and audio player are what is left to build.",
-    wave: "Planned as wave U5 of the design campaign.",
   },
   stats: {
     title: "Statistics",
@@ -99,6 +86,7 @@ export function App() {
               {section === "home" ? <Home s={s} go={setSection} /> : null}
               {section === "diagnostics" ? <Diagnostics s={s} /> : null}
               {section === "record" ? <Record s={s} /> : null}
+              {section === "notes" ? <Notes s={s} /> : null}
               {section === "snippets" ? <SnippetsPage /> : null}
               {section === "settings" ? <SettingsPage s={s} patch={patch} /> : null}
               {coming ? <Coming {...coming} /> : null}

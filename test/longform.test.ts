@@ -472,3 +472,118 @@ test("notesSplice: a stale docPath (save moved the capture) answers movedTo inst
   assert.equal(rec.notesSplice(res.movedTo!, "notes").ok, true);
   fs.rmSync(work, { recursive: true, force: true });
 });
+
+// ---- U4 (review): the two ways state() told the truth late, or not at all ----
+
+test("U4: the duration stays at what the recording reached, through finalizing and after", async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-duration-"));
+  const staging = path.join(work, "staging");
+  const history = path.join(work, "history");
+  // A sidecar that answers slowly: finalize() stays busy long enough to observe
+  // the state the Record page shows for minutes on a real meeting.
+  const slow = {
+    transcribe: () => new Promise<{ text: string; ms: number }>((r) => setTimeout(() => r({ text: "Bonjour.", ms: 5 }), 400)),
+  } as unknown as WhisperSidecar;
+  const rec = new LongRecorder({
+    getSidecar: () => slow,
+    recentPathOverride: path.join(work, "recent.json"),
+    stagingRootOverride: staging,
+    historyRootOverride: history,
+  });
+
+  const started = rec.start({ title: "Duration", keepAudio: false });
+  assert.equal(started.ok, true, started.error ?? "expected ok");
+  await new Promise((r) => setTimeout(r, 120)); // let the wall clock actually move
+  rec.onChunk(concat(speechy(4000), silence(1500)));
+  const live = rec.state().durationMs;
+  assert.ok(live >= 100, `a running recording reports its elapsed time (got ${live})`);
+
+  rec.stop();
+  const whileFinalizing = rec.state();
+  assert.equal(whileFinalizing.finalizing, true, "the recorder is still finishing the transcript");
+  assert.ok(
+    whileFinalizing.durationMs >= live,
+    `the biggest number on the page must not fall to 00:00:00 the instant Stop is pressed (got ${whileFinalizing.durationMs})`,
+  );
+
+  for (let i = 0; i < 200 && rec.isBusy; i++) await new Promise((r) => setTimeout(r, 25));
+  assert.equal(rec.isBusy, false, "finalize must complete");
+  const idle = rec.state();
+  assert.equal(idle.active, false);
+  assert.equal(idle.finalizing, false);
+  assert.equal(idle.durationMs, whileFinalizing.durationMs, "and it stays that length once idle: it is a fact about the recording");
+
+  // A new recording is the only thing that resets it.
+  const again = rec.start({ title: "Second", keepAudio: false });
+  assert.equal(again.ok, true, again.error ?? "expected ok");
+  assert.ok(rec.state().durationMs < 1000, "a fresh recording starts from zero, not from the previous one's length");
+  rec.stop();
+  for (let i = 0; i < 200 && rec.isBusy; i++) await new Promise((r) => setTimeout(r, 25));
+
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+test("U4: every write of recent.json made HERE drops the state() cache (save no longer advertises a deleted path)", async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-cache-invalidate-"));
+  const staging = path.join(work, "staging");
+  const history = path.join(work, "history");
+  const dest = path.join(work, "dest");
+  fs.mkdirSync(dest);
+  const mockSidecar = {
+    transcribe: () => Promise.resolve({ text: "Bonjour tout le monde.", ms: 5 }),
+  } as unknown as WhisperSidecar;
+  const rec = new LongRecorder({
+    getSidecar: () => mockSidecar,
+    recentPathOverride: path.join(work, "recent.json"),
+    stagingRootOverride: staging,
+    historyRootOverride: history,
+  });
+
+  // Warm the cache on an EMPTY recent list, then record: finalize's own write
+  // has to be visible immediately, not up to RECENT_STATE_CACHE_MS later.
+  assert.deepEqual(rec.state().recent, []);
+  const started = rec.start({ title: "Cache", keepAudio: false });
+  assert.equal(started.ok, true, started.error ?? "expected ok");
+  rec.onChunk(concat(speechy(4000), silence(1500)));
+  rec.stop();
+  for (let i = 0; i < 200 && rec.isBusy; i++) await new Promise((r) => setTimeout(r, 25));
+  const afterFinalize = rec.state().recent;
+  assert.equal(afterFinalize.length, 1, "finalize's write is visible at once, not three seconds later");
+  const filed = afterFinalize[0].docPath;
+  assert.equal(fs.existsSync(filed), true);
+
+  // The one that used to be plainly WRONG rather than late: save() moves the
+  // document and deletes the original, and state() went on serving the old path.
+  const res = (await rec.save(dest)) as { ok: boolean; error?: string; docPath?: string };
+  assert.equal(res.ok, true, res.error ?? "expected ok");
+  const afterSave = rec.state().recent;
+  assert.equal(afterSave.length, 1);
+  assert.equal(afterSave[0].docPath, res.docPath, "state() names where the recording IS, the instant it moved");
+  assert.notEqual(afterSave[0].docPath, filed, "and never the path save() just deleted");
+  assert.equal(fs.existsSync(afterSave[0].docPath), true);
+
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+test("U4: the boot rescan's own write is visible to state() immediately too", () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-cache-rescue-"));
+  const staging = path.join(work, "staging");
+  const history = path.join(work, "history");
+  const dir = path.join(staging, String(Date.now() - 60_000) + "-cache01");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "orphan.md"),
+    transcriptHeader("Orphan", new Date(Date.now() - 60_000).toISOString()) + "[00:00:00] Bonjour.\n\n",
+  );
+  const rec = new LongRecorder({
+    getSidecar: () => null,
+    recentPathOverride: path.join(work, "recent.json"),
+    stagingRootOverride: staging,
+    historyRootOverride: history,
+  });
+  assert.deepEqual(rec.state().recent, [], "nothing indexed yet - and the cache now holds that");
+  assert.equal(rec.rescueOrphanedStaging(), 1);
+  assert.equal(rec.state().recent.length, 1, "a recovered recording is findable at once, not after the cache expires");
+
+  fs.rmSync(work, { recursive: true, force: true });
+});

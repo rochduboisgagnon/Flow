@@ -1,4 +1,4 @@
-import { ipcMain, shell, dialog, app, BrowserWindow, clipboard } from "electron";
+import { ipcMain, shell, app, clipboard } from "electron";
 import {
   UI_GET_STATE,
   UI_SET_SETTINGS,
@@ -6,7 +6,6 @@ import {
   UI_LIST_MICS,
   UI_OLLAMA_MODELS,
   UI_OPEN_PATH,
-  UI_PICK_FOLDER,
   UI_GET_LOGIN_ITEM,
   UI_SET_LOGIN_ITEM,
   UI_CHECK_UPDATES,
@@ -20,6 +19,10 @@ import {
   UI_LONG_STOP,
   UI_LONG_MARK,
   UI_LONG_TRANSCRIPT,
+  UI_HISTORY_LIST,
+  UI_HISTORY_DOC,
+  UI_DOWNLOAD_DOC,
+  UI_DOWNLOAD_AUDIO,
   type UiStatePayload,
   type UpdateCheckResult,
   type SnippetsResult,
@@ -27,6 +30,9 @@ import {
   type LongStartResult,
   type LongStopResult,
   type LongTranscriptResult,
+  type HistoryItem,
+  type HistoryDocPayload,
+  type DownloadResult,
 } from "../shared/ipcContracts";
 import type { MainWindow } from "./mainWindow";
 import { listSnippets, saveSnippet, deleteSnippet, getSnippet } from "./snippets";
@@ -77,6 +83,23 @@ export interface UiBridgeDeps {
    * a machine that cannot loopback gets one clean, readable refusal instead
    * of a call that would refuse deeper down anyway. */
   canLoopback(): boolean;
+
+  // ---- archive browser (U5a) ----
+  // The SAME functions the HTTP /long/history* routes call (main/api.ts),
+  // identical closures to LocalApi's (index.ts's listHistoryDep &
+  // readHistoryDocDep) - never a second implementation.
+  listHistory(): HistoryItem[];
+  readHistoryDoc(id: string): HistoryDocPayload | null;
+
+  // ---- capture downloads (U5c, Roch's decision) ----
+  // Browser-style, straight into the OS Downloads folder - main-only, no HTTP
+  // equivalent (see main/downloads.ts's module note).
+  downloadDoc(id: string): Promise<DownloadResult>;
+  downloadAudio(id: string): Promise<DownloadResult>;
+  /** The last file THIS session actually wrote (main/downloads.ts), for
+   * UI_OPEN_PATH's "downloaded-file" destination. Never sourced from the
+   * renderer - null means nothing has been downloaded yet, a clean refusal. */
+  lastDownloadedPath(): string | null;
 }
 
 const REPO_URL = "https://github.com/rochduboisgagnon/Flow";
@@ -100,6 +123,11 @@ const SNIPPETS_UNAVAILABLE: SnippetsResult = { ok: false, items: [], error: "una
 // answer so a caller never has to special-case "refused" vs "genuinely empty".
 const LONG_START_UNAVAILABLE: LongStartResult = { ok: false, error: "unavailable" };
 const LONG_STOP_UNAVAILABLE: LongStopResult = { ok: false, docPath: "" };
+
+// U5c: same fallback discipline - what a refused sender gets back for a
+// download, shaped like every real DownloadResult so the page never has to
+// special-case "refused" vs "genuinely failed".
+const DOWNLOAD_UNAVAILABLE: DownloadResult = { ok: false, error: "unavailable" };
 
 export class UiBridge {
   private deps: UiBridgeDeps;
@@ -186,22 +214,14 @@ export class UiBridge {
           const err = await shell.openPath(legacy);
           if (err) this.deps.log?.(`[ui] could not open ${legacy}: ${err}`);
         }
+      } else if (which === "downloaded-file") {
+        // U5c: reveal the LAST file this session's downloads actually wrote -
+        // never a path the renderer supplies, and a clean no-op (logged, not
+        // thrown) when nothing has been downloaded yet.
+        const last = this.deps.lastDownloadedPath();
+        if (!last) this.deps.log?.("[ui] show downloaded file: nothing downloaded yet");
+        else shell.showItemInFolder(last);
       } else if (which === "repo") await shell.openExternal(REPO_URL);
-    });
-
-    // U2a: the recordings folder (history) stopped being user-configurable, so
-    // Settings' "Recordings folder" row no longer calls this - but it is NOT
-    // dead IPC: it is the picker /long/save's own "save a copy" flow will use
-    // (a destination folder is still chosen per-save, just never for history
-    // itself). U5 settles pickFolder's final shape/wiring.
-    this.guarded<[], string | null>(UI_PICK_FOLDER, null, async () => {
-      // Without a parent window, the dialog is app-modal and may open behind the frameless main window.
-      const wc = this.mainWindow.contents();
-      const parent = wc ? BrowserWindow.fromWebContents(wc) : null;
-      const r = parent
-        ? await dialog.showOpenDialog(parent, { properties: ["openDirectory"] })
-        : await dialog.showOpenDialog({ properties: ["openDirectory"] });
-      return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0];
     });
 
     this.guarded<[], boolean>(UI_GET_LOGIN_ITEM, false, () => app.getLoginItemSettings({ args: LOGIN_ARGS }).openAtLogin);
@@ -254,13 +274,32 @@ export class UiBridge {
 
     this.guarded<[], LongStopResult>(UI_LONG_STOP, LONG_STOP_UNAVAILABLE, () => this.deps.longStop());
 
-    this.guarded<[], { ok: boolean }>(UI_LONG_MARK, { ok: false }, () => this.deps.longStop());
+    this.guarded<[], { ok: boolean }>(UI_LONG_MARK, { ok: false }, () => this.deps.longMark());
 
     // `since` is a byte offset (see shared/longform.ts's LongTranscriptResult);
     // anything else from a misbehaving caller is treated as "from the start"
     // rather than thrown - transcriptSince() itself clamps the rest.
     this.guarded<[unknown], LongTranscriptResult>(UI_LONG_TRANSCRIPT, { text: "", nextSince: 0 }, (since) =>
       this.deps.longTranscript(typeof since === "number" ? since : 0),
+    );
+
+    // ---- archive browser (U5a) ----
+    // Deliberately NOT cached (unlike UiStatePayload.recent / LongStateSnapshot.recent):
+    // the Notes page pulls this on demand, not at 1 Hz under the keyboard hook,
+    // and needs the EXACT on-disk state - see ipcContracts.ts's module note.
+    this.guarded<[], HistoryItem[]>(UI_HISTORY_LIST, [], () => this.deps.listHistory());
+    this.guarded<[unknown], HistoryDocPayload | null>(UI_HISTORY_DOC, null, (id) =>
+      this.deps.readHistoryDoc(typeof id === "string" ? id : ""),
+    );
+
+    // ---- capture downloads (U5c, Roch's decision) ----
+    // The renderer only ever passes an id; main resolves it (see
+    // main/downloads.ts) - an unknown/forged id is refused there, never here.
+    this.guarded<[unknown], DownloadResult>(UI_DOWNLOAD_DOC, DOWNLOAD_UNAVAILABLE, (id) =>
+      this.deps.downloadDoc(typeof id === "string" ? id : ""),
+    );
+    this.guarded<[unknown], DownloadResult>(UI_DOWNLOAD_AUDIO, DOWNLOAD_UNAVAILABLE, (id) =>
+      this.deps.downloadAudio(typeof id === "string" ? id : ""),
     );
   }
 

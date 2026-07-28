@@ -9,7 +9,6 @@ import {
   UI_LIST_MICS,
   UI_OLLAMA_MODELS,
   UI_OPEN_PATH,
-  UI_PICK_FOLDER,
   UI_GET_LOGIN_ITEM,
   UI_SET_LOGIN_ITEM,
   UI_CHECK_UPDATES,
@@ -22,6 +21,10 @@ import {
   UI_LONG_STOP,
   UI_LONG_MARK,
   UI_LONG_TRANSCRIPT,
+  UI_HISTORY_LIST,
+  UI_HISTORY_DOC,
+  UI_DOWNLOAD_DOC,
+  UI_DOWNLOAD_AUDIO,
 } from "../src/shared/ipcContracts";
 
 // U3c: uiBridge.ts imports "electron", which outside a real Electron process
@@ -68,7 +71,6 @@ test("every ui:* invoke channel this bridge owns is registered through guarded()
     UI_LIST_MICS,
     UI_OLLAMA_MODELS,
     UI_OPEN_PATH,
-    UI_PICK_FOLDER,
     UI_GET_LOGIN_ITEM,
     UI_SET_LOGIN_ITEM,
     UI_CHECK_UPDATES,
@@ -81,6 +83,10 @@ test("every ui:* invoke channel this bridge owns is registered through guarded()
     UI_LONG_STOP,
     UI_LONG_MARK,
     UI_LONG_TRANSCRIPT,
+    UI_HISTORY_LIST,
+    UI_HISTORY_DOC,
+    UI_DOWNLOAD_DOC,
+    UI_DOWNLOAD_AUDIO,
   };
 
   assert.deepEqual(

@@ -66,8 +66,10 @@ export const UI_SET_SETTINGS = "ui:set-settings";
 export const UI_RECORD_SHORTCUT = "ui:record-shortcut";
 export const UI_LIST_MICS = "ui:list-mics";
 export const UI_OLLAMA_MODELS = "ui:ollama-models";
-export const UI_OPEN_PATH = "ui:open-path"; // "log" | "data" | "history" | "legacy-history" | "repo"
-export const UI_PICK_FOLDER = "ui:pick-folder";
+// "log" | "data" | "history" | "legacy-history" | "repo" | "downloaded-file"
+// (U5c: "downloaded-file" reveals the LAST file U5c's downloads wrote, tracked
+// in main - never a path the renderer supplies).
+export const UI_OPEN_PATH = "ui:open-path";
 export const UI_GET_LOGIN_ITEM = "ui:get-login-item";
 export const UI_SET_LOGIN_ITEM = "ui:set-login-item";
 export const UI_CHECK_UPDATES = "ui:check-updates";
@@ -199,6 +201,38 @@ export const UI_LONG_MARK = "ui:long-mark";
 export const UI_LONG_TRANSCRIPT = "ui:long-transcript";
 
 export type { LongStateSnapshot, LongStartResult, LongStopResult, LongTranscriptResult } from "./longform";
+
+// ---- archive browser (U5a) ----
+// The Notes page's read surface, on the SAME functions as the HTTP
+// /long/history* routes (main/api.ts) - main/index.ts injects the IDENTICAL
+// closures into both LocalApi and UiBridge, never a parallel implementation
+// (same discipline as the UI_LONG_* deps above). Deliberately NOT cached like
+// UiStatePayload.recent (15 s) or LongStateSnapshot.recent (3 s): those exist
+// to keep synchronous I/O off the keyboard hook's 1 Hz poll, but the archive
+// list/doc are pulled on demand by the Notes page, which needs the EXACT
+// on-disk state - a page showing a capture that was just downloaded/deleted
+// as if it still matched a few seconds ago would be the wrong kind of stale.
+export const UI_HISTORY_LIST = "ui:history-list";
+export const UI_HISTORY_DOC = "ui:history-doc"; // takes an id, answers one entry's transcript or null
+
+export type { HistoryItem, HistoryDocPayload } from "./longform";
+
+// ---- capture downloads (U5c, Roch's decision) ----
+// Browser-style: straight into the OS Downloads folder, no dialog. The
+// renderer only ever passes an id (never a path) - main/downloads.ts resolves
+// it the same way the archive's read routes do, refusing a forged/stale id.
+export const UI_DOWNLOAD_DOC = "ui:download-doc";
+export const UI_DOWNLOAD_AUDIO = "ui:download-audio";
+
+/** Defined HERE, not in main/downloads.ts: ipcContracts.ts is compiled into
+ * the renderer/preload build too (tsconfig.json never lists src/main), so the
+ * type has to live where both builds can see it - main/downloads.ts imports it
+ * back from here, same direction as every other shared shape in this file. */
+export interface DownloadResult {
+  ok: boolean;
+  path?: string; // where it landed - the page's "Show in folder" needs this
+  error?: string; // human-readable, shown as-is by the page
+}
 
 /** The three source choices UI_LONG_START accepts. "system" (the PC's own
  * sound, no microphone) is a real, typed value - see shared/longStart.ts's

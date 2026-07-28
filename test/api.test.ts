@@ -120,6 +120,7 @@ function longDepsStub() {
     },
     listHistory: () => [],
     resolveHistoryEntry: () => null,
+    readHistoryDoc: () => null,
     canLoopback: () => true,
   };
 }
@@ -217,6 +218,61 @@ test("long-form routes reach their deps with parsed arguments", async () => {
     ]);
     // A long recording flips the quiet window (plan 8).
     assert.equal((await get(port, "/update-readiness")).body.ready, false);
+  } finally {
+    api.stop();
+  }
+});
+
+test("U5a: /long/history/doc returns the readHistoryDoc dep's payload as-is, and 404 when it returns null", async () => {
+  const info = path.join(os.tmpdir(), `agrflow-api-histdoc-${process.pid}.json`);
+  const seen: string[] = [];
+  const api = new LocalApi({
+    version: "0.0.0",
+    isListening: () => false,
+    isRecording: () => false,
+    isEngineWarm: () => true,
+    transcribe: () => Promise.resolve({ text: "", ms: 0 }),
+    ...longDepsStub(),
+    readHistoryDoc: (id: string) => {
+      seen.push(id);
+      return id === "good-id" ? { title: "Client Kickoff", date: "2026-07-27", text: "hello" } : null;
+    },
+    infoPathOverride: info,
+  });
+  await api.start();
+  try {
+    const port = (JSON.parse(fs.readFileSync(info, "utf8")) as { port: number }).port;
+    const ok = await get(port, "/long/history/doc?id=good-id");
+    assert.equal(ok.code, 200);
+    assert.deepEqual(ok.body, { title: "Client Kickoff", date: "2026-07-27", text: "hello" });
+
+    const missing = await get(port, "/long/history/doc?id=bad-id");
+    assert.equal(missing.code, 404);
+    assert.deepEqual(seen, ["good-id", "bad-id"], "the route passes the raw id straight through to the dep");
+  } finally {
+    api.stop();
+  }
+});
+
+test("U5a: /long/history returns listHistory()'s items wrapped as { items }", async () => {
+  const info = path.join(os.tmpdir(), `agrflow-api-histlist-${process.pid}.json`);
+  const item = { id: "x", date: "2026-07-27", title: "t", hasAudio: true, audioBytes: 12, docBytes: 34, savedMs: 1 };
+  const api = new LocalApi({
+    version: "0.0.0",
+    isListening: () => false,
+    isRecording: () => false,
+    isEngineWarm: () => true,
+    transcribe: () => Promise.resolve({ text: "", ms: 0 }),
+    ...longDepsStub(),
+    listHistory: () => [item],
+    infoPathOverride: info,
+  });
+  await api.start();
+  try {
+    const port = (JSON.parse(fs.readFileSync(info, "utf8")) as { port: number }).port;
+    const res = await get(port, "/long/history");
+    assert.equal(res.code, 200);
+    assert.deepEqual(res.body, { items: [item] });
   } finally {
     api.stop();
   }
