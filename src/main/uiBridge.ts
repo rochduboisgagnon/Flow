@@ -30,6 +30,7 @@ import {
   UI_HISTORY_DOC,
   UI_DOWNLOAD_DOC,
   UI_DOWNLOAD_AUDIO,
+  UI_REDACT_PASSAGES,
   type UiStatePayload,
   type UpdateCheckResult,
   type SnippetsResult,
@@ -41,6 +42,8 @@ import {
   type HistoryItem,
   type HistoryDocPayload,
   type DownloadResult,
+  type RedactTarget,
+  type RedactResult,
   type HotpathSnapshot,
   type SelfCheckReport,
   type StatsPayload,
@@ -108,6 +111,13 @@ export interface UiBridgeDeps {
   // equivalent (see main/downloads.ts's module note).
   downloadDoc(id: string): Promise<DownloadResult>;
   downloadAudio(id: string): Promise<DownloadResult>;
+
+  // ---- removing a passage (D11) ----
+  // Main-only too, and for a stronger reason than downloads: this one
+  // DESTROYS, irreversibly. The renderer passes an id and passage targets; main
+  // resolves the id with the archive's own containment guarantees and refuses a
+  // target whose index has drifted (see main/redact.ts).
+  redactPassages(id: string, targets: RedactTarget[]): Promise<RedactResult>;
   /** The last file THIS session actually wrote (main/downloads.ts), for
    * UI_OPEN_PATH's "downloaded-file" destination. Never sourced from the
    * renderer - null means nothing has been downloaded yet, a clean refusal. */
@@ -167,6 +177,14 @@ const LONG_STOP_UNAVAILABLE: LongStopResult = { ok: false, docPath: "" };
 // download, shaped like every real DownloadResult so the page never has to
 // special-case "refused" vs "genuinely failed".
 const DOWNLOAD_UNAVAILABLE: DownloadResult = { ok: false, error: "unavailable" };
+
+// D11: same fallback discipline, and the gate behind it is not ceremony here -
+// it is the strictest one in the file. The same preload is loaded by the
+// overlay and the hidden capture window, and this channel permanently destroys
+// part of a recording. `ok: false` with nothing else set is the only honest
+// shape for a request that never reached the redactor: a refused sender must
+// never be able to make a page report that audio was silenced.
+const REDACT_UNAVAILABLE: RedactResult = { ok: false, error: "unavailable" };
 
 // U7: same fallback discipline again. Every counter reads zero and both
 // switches read off, which is the honest thing for an answer that never
@@ -372,6 +390,21 @@ export class UiBridge {
     this.guarded<[unknown], DownloadResult>(UI_DOWNLOAD_AUDIO, DOWNLOAD_UNAVAILABLE, (id) =>
       this.deps.downloadAudio(typeof id === "string" ? id : ""),
     );
+
+    // ---- removing a passage (D11) ----
+    // The targets cross IPC, so the declared type is a promise and not a fact
+    // (same discipline as sanitizeSettings). They are sanitized to plain
+    // {index, startMs} numbers HERE, at the boundary, so nothing shaped like a
+    // getter or a prototype trick reaches the redactor - and anything that does
+    // not survive the filter is DROPPED rather than coerced to 0, which would
+    // aim a permanent deletion at the first passage of the transcript.
+    this.guarded<[unknown, unknown], RedactResult>(UI_REDACT_PASSAGES, REDACT_UNAVAILABLE, (id, targets) => {
+      const clean: RedactTarget[] = (Array.isArray(targets) ? targets : [])
+        .map((t) => (typeof t === "object" && t !== null ? (t as Record<string, unknown>) : {}))
+        .filter((t) => Number.isInteger(t.index) && Number.isFinite(t.startMs))
+        .map((t) => ({ index: t.index as number, startMs: t.startMs as number }));
+      return this.deps.redactPassages(typeof id === "string" ? id : "", clean);
+    });
 
     // ---- activation hot-path diagnostics (V2, B1) ----
     this.guarded<[], HotpathSnapshot | null>(UI_HOTPATH_SNAPSHOT, null, () => this.deps.hotpathSnapshot());

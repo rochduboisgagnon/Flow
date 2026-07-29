@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { UiStatePayload } from "../../../shared/ipcContracts";
 import { MAX_HISTORY_ITEMS, type HistoryItem, type HistoryDocPayload } from "../../../shared/longform";
+import { parseTranscriptPassages, planRedaction, hms, type TranscriptPassage } from "../../../shared/redact";
 
 // Notes (wave U5). The captures in Flow's own recordings folder, readable and
 // listenable in place, and downloadable into the system Downloads folder.
@@ -35,6 +36,14 @@ export function Notes({ s }: { s: UiStatePayload }) {
   const [error, setError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState<"doc" | "audio" | null>(null);
   const [audioError, setAudioError] = useState(false);
+  // D11: the removal mode. `picked` holds passage indices, `confirming` is the
+  // second step - a destroy this permanent never happens on one click, and the
+  // confirmation names the exact text and time ranges rather than asking a bare
+  // "are you sure" (shared/redact.ts, DECISION 4).
+  const [removing, setRemoving] = useState(false);
+  const [picked, setPicked] = useState<number[]>([]);
+  const [confirming, setConfirming] = useState(false);
+  const [working, setWorking] = useState(false);
 
   const refresh = useCallback(async () => {
     const list = await window.flowui.historyList();
@@ -82,6 +91,12 @@ export function Notes({ s }: { s: UiStatePayload }) {
     // A new selection is a new player: whatever the last one failed at is not
     // this one's state (MAJEUR 6).
     setAudioError(false);
+    // D11: and a new selection is a new document. A pick list that survived the
+    // switch would aim indices parsed from capture A at capture B - main would
+    // refuse it (the startMs check), but offering the click at all is the bug.
+    setRemoving(false);
+    setPicked([]);
+    setConfirming(false);
     if (!selected) {
       setDoc(null);
       setDocFor(null);
@@ -118,6 +133,77 @@ export function Notes({ s }: { s: UiStatePayload }) {
   // one loaded, so the page showed A's transcript above B's player and B's
   // download buttons. `docFor` is what makes them one thing again.
   const shownDoc = docFor === selected ? doc : null;
+
+  // D11: the removable passages of the transcript on screen, parsed by the
+  // SAME pure function main will act on (shared/redact.ts). That sharing is the
+  // point: what the confirmation shows and what main destroys are one reading
+  // of one document, not two parsers that can drift.
+  const passages = useMemo(
+    () => (shownDoc ? parseTranscriptPassages(shownDoc.text) : []),
+    [shownDoc],
+  );
+  // Everything above the first timestamped line - the header, and the derived
+  // notes when there are any. Shown as-is above the passage list so the page
+  // never looks like it lost half the document on entering removal mode.
+  const preamble = useMemo(() => {
+    if (!shownDoc) return "";
+    return shownDoc.text.slice(0, passages.length > 0 ? passages[0].from : shownDoc.text.length);
+  }, [shownDoc, passages]);
+  // What the removal WOULD do, computed here so the confirmation can name the
+  // notes block before it disappears. `dateIso` is irrelevant to these two
+  // fields; main stamps the tombstone with its own clock.
+  const plan = useMemo(() => {
+    if (!shownDoc || picked.length === 0) return null;
+    const p = planRedaction(shownDoc.text, picked, {
+      hasAudio: current?.hasAudio === true,
+      dateIso: "",
+    });
+    return "error" in p ? null : p;
+  }, [shownDoc, picked, current?.hasAudio]);
+
+  function togglePassage(index: number) {
+    setConfirming(false); // any change to the selection invalidates the confirmation
+    setPicked((cur) => (cur.includes(index) ? cur.filter((i) => i !== index) : [...cur, index].sort((a, b) => a - b)));
+  }
+
+  function leaveRemoval() {
+    setRemoving(false);
+    setPicked([]);
+    setConfirming(false);
+  }
+
+  async function removePassages() {
+    if (!current || !shownDoc || picked.length === 0 || working) return;
+    setWorking(true);
+    setNote(null);
+    setError(null);
+    try {
+      // The start offset the USER saw travels with each index: if the document
+      // changed under us between this parse and this click, main refuses rather
+      // than destroy a passage nobody looked at (see main/redact.ts).
+      const targets = picked.map((i) => ({ index: i, startMs: passages[i].startMs }));
+      const r = await window.flowui.redactPassages(current.id, targets);
+      if (r.ok) {
+        setNote(
+          "Passage removed." +
+            (r.audioSilenced ? " The matching audio was silenced." : " This capture kept no audio.") +
+            (r.notesDropped ? " The meeting notes were removed with it." : ""),
+        );
+        leaveRemoval();
+        // Re-read from disk rather than patch the copy on screen: after a
+        // destructive write the page must show what the file actually says.
+        const fresh = await window.flowui.historyDoc(current.id);
+        setDoc(fresh);
+        setDocFor(current.id);
+        await refresh();
+      } else {
+        setError(r.error ?? "Flow could not remove that passage.");
+        setConfirming(false);
+      }
+    } finally {
+      setWorking(false);
+    }
+  }
 
   async function download(kind: "doc" | "audio") {
     // Review U5d: no re-entrance guard and no feedback at all during a copy
@@ -259,6 +345,21 @@ export function Notes({ s }: { s: UiStatePayload }) {
                           : `Download audio (${formatBytes(current.audioBytes)})`}
                       </button>
                     ) : null}
+                    {/* D11. Offered only when there is something to remove: a
+                        transcript with no timestamped passage (a rescued
+                        recording that never got one) would put up a control
+                        that opens an empty list. */}
+                    {passages.length > 0 ? (
+                      removing ? (
+                        <button className="btn ghost" disabled={working} onClick={leaveRemoval}>
+                          Done removing
+                        </button>
+                      ) : (
+                        <button className="btn ghost" onClick={() => setRemoving(true)}>
+                          Remove a passage
+                        </button>
+                      )
+                    ) : null}
                   </div>
                 </div>
 
@@ -301,7 +402,23 @@ export function Notes({ s }: { s: UiStatePayload }) {
                   )
                 ) : null}
 
-                <pre className="doc-body">{shownDoc.text}</pre>
+                {removing ? (
+                  <Removal
+                    passages={passages}
+                    preamble={preamble}
+                    picked={picked}
+                    onToggle={togglePassage}
+                    hasAudio={current?.hasAudio === true}
+                    notesWillDrop={plan?.notesDropped === true}
+                    confirming={confirming}
+                    working={working}
+                    onAsk={() => setConfirming(true)}
+                    onCancel={() => setConfirming(false)}
+                    onConfirm={() => void removePassages()}
+                  />
+                ) : (
+                  <pre className="doc-body">{shownDoc.text}</pre>
+                )}
               </>
             )}
           </div>
@@ -315,6 +432,124 @@ export function Notes({ s }: { s: UiStatePayload }) {
         finished name.
       </p>
     </>
+  );
+}
+
+/** D11: the removal view of one transcript. Every claim it makes is one the
+ * engine actually keeps - the audio IS silenced, the notes DO go, and there is
+ * genuinely no copy anywhere (shared/redact.ts's four decisions). Wording that
+ * softened any of those would be the failure mode this whole feature exists to
+ * avoid: a false assurance is worse than no feature. */
+function Removal(props: {
+  passages: TranscriptPassage[];
+  preamble: string;
+  picked: number[];
+  onToggle(index: number): void;
+  hasAudio: boolean;
+  notesWillDrop: boolean;
+  confirming: boolean;
+  working: boolean;
+  onAsk(): void;
+  onCancel(): void;
+  onConfirm(): void;
+}) {
+  const { passages, preamble, picked, hasAudio, notesWillDrop, confirming, working } = props;
+  const chosen = passages.filter((p) => picked.includes(p.index));
+  return (
+    <div className="redact">
+      <p className="sub" style={{ margin: "14px 0 0", maxWidth: "72ch" }}>
+        Pick the passages to remove. The text goes from this transcript
+        {hasAudio
+          ? ", and the matching stretch of the audio is silenced so the words cannot be played back either."
+          : ". This capture kept no audio file, so there is none to silence."}{" "}
+        The timestamps of everything else stay exactly as they are, so the rest of the
+        transcript still lines up with the recording. There is no undo, and Flow keeps no copy.
+      </p>
+
+      {preamble.trim() ? <pre className="doc-body redact-pre">{preamble}</pre> : null}
+
+      <div className="redact-list">
+        {passages.map((p) => {
+          const on = picked.includes(p.index);
+          return (
+            <label key={p.index} className={"redact-row" + (on ? " on" : "")}>
+              <input
+                type="checkbox"
+                checked={on}
+                disabled={working}
+                onChange={() => props.onToggle(p.index)}
+                aria-label={`Remove the passage at ${hms(p.startMs)}`}
+              />
+              <span className="redact-text">{p.text.trim()}</span>
+            </label>
+          );
+        })}
+      </div>
+
+      <div className="redact-foot">
+        <p className="sub" style={{ margin: 0, maxWidth: "62ch" }}>
+          {picked.length === 0 ? (
+            "Nothing selected yet."
+          ) : (
+            <>
+              {chosen.length} passage{chosen.length > 1 ? "s" : ""} selected
+              {hasAudio ? (
+                <>
+                  {" "}
+                  - the audio will be silenced from{" "}
+                  {chosen
+                    .map((p) => `${hms(p.startMs)} to ${p.endMs === null ? "the end of the recording" : hms(p.endMs)}`)
+                    .join(", ")}
+                  {chosen.some((p) => p.endMs === null) ? (
+                    <>
+                      {" "}
+                      <b>
+                        One of them is the last passage of the transcript, which names no end, so the
+                        audio is silenced all the way to the end of the file - including anything after
+                        it that was never transcribed.
+                      </b>
+                    </>
+                  ) : null}
+                </>
+              ) : null}
+              .
+              {notesWillDrop ? (
+                <>
+                  {" "}
+                  <b>
+                    The meeting notes above will be removed too: they were written from this
+                    transcript and could repeat what you are erasing. The transcript keeps everything
+                    you did not select.
+                  </b>
+                </>
+              ) : null}
+              {confirming ? (
+                <>
+                  {" "}
+                  <b>This cannot be undone. Flow keeps no copy of the text or of the audio.</b>
+                </>
+              ) : null}
+            </>
+          )}
+        </p>
+        <div style={{ display: "flex", gap: 8 }}>
+          {confirming ? (
+            <>
+              <button className="btn amber" disabled={working} onClick={props.onConfirm}>
+                {working ? "Removing..." : "Remove permanently"}
+              </button>
+              <button className="btn ghost" disabled={working} onClick={props.onCancel}>
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button className="btn ghost" disabled={picked.length === 0 || working} onClick={props.onAsk}>
+              Remove selected
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 

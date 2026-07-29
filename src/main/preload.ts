@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { ResolvedTheme } from "../shared/theme";
 import {
   CAPTURE_START,
@@ -15,6 +15,19 @@ import {
   NATIVE_ERROR,
   NATIVE_READY,
   NATIVE_DONE,
+  DECODE_BYTES,
+  DECODE_PROBE,
+  DECODE_RUN,
+  DECODE_CANCEL,
+  DECODE_FLOW,
+  DECODE_META,
+  DECODE_PCM,
+  DECODE_DONE,
+  DECODE_ERROR,
+  UI_IMPORT_STATE,
+  UI_IMPORT_START,
+  UI_IMPORT_CANCEL,
+  UI_IMPORT_PICK,
   UI_GET_STATE,
   UI_SET_SETTINGS,
   UI_RECORD_SHORTCUT,
@@ -45,10 +58,20 @@ import {
   UI_HISTORY_DOC,
   UI_DOWNLOAD_DOC,
   UI_DOWNLOAD_AUDIO,
+  UI_REDACT_PASSAGES,
   type CaptureStartPayload,
   type CaptureWarmPayload,
   type CaptureTimingPayload,
   type NativeStartPayload,
+  type DecodeBytesPayload,
+  type DecodeTokenPayload,
+  type DecodeFlowPayload,
+  type DecodeMetaPayload,
+  type DecodePcmPayload,
+  type DecodeDonePayload,
+  type DecodeErrorPayload,
+  type ImportQueueSnapshot,
+  type ImportStartResult,
   type UiStatePayload,
   type UpdateCheckResult,
   type SnippetInput,
@@ -63,6 +86,8 @@ import {
   type HistoryItem,
   type HistoryDocPayload,
   type DownloadResult,
+  type RedactTarget,
+  type RedactResult,
   type HotpathSnapshot,
   type SelfCheckReport,
   type StatsPayload,
@@ -118,6 +143,34 @@ const api = {
   },
   sendNativeError(message: string) {
     ipcRenderer.send(NATIVE_ERROR, message);
+  },
+  // V4 D1: the hidden decode window's bridge. ONE callback for the four
+  // main->window commands, same reasoning as onCaptureWarm above: the renderer
+  // has a single place that decides what to do with a job, so two commands can
+  // never end up handled by two subtly different pieces of code.
+  onDecodeCommand(
+    cb: (
+      cmd: "bytes" | "probe" | "run" | "cancel" | "flow",
+      payload: DecodeBytesPayload | DecodeTokenPayload | DecodeFlowPayload,
+    ) => void,
+  ) {
+    ipcRenderer.on(DECODE_BYTES, (_e, p: DecodeBytesPayload) => cb("bytes", p));
+    ipcRenderer.on(DECODE_PROBE, (_e, p: DecodeTokenPayload) => cb("probe", p));
+    ipcRenderer.on(DECODE_RUN, (_e, p: DecodeTokenPayload) => cb("run", p));
+    ipcRenderer.on(DECODE_CANCEL, (_e, p: DecodeTokenPayload) => cb("cancel", p));
+    ipcRenderer.on(DECODE_FLOW, (_e, p: DecodeFlowPayload) => cb("flow", p));
+  },
+  sendDecodeMeta(p: DecodeMetaPayload) {
+    ipcRenderer.send(DECODE_META, p);
+  },
+  sendDecodePcm(p: DecodePcmPayload) {
+    ipcRenderer.send(DECODE_PCM, p);
+  },
+  sendDecodeDone(p: DecodeDonePayload) {
+    ipcRenderer.send(DECODE_DONE, p);
+  },
+  sendDecodeError(p: DecodeErrorPayload) {
+    ipcRenderer.send(DECODE_ERROR, p);
   },
 };
 
@@ -181,6 +234,33 @@ const ui = {
   // writes straight into the OS Downloads folder, no dialog.
   downloadDoc: (id: string): Promise<DownloadResult> => ipcRenderer.invoke(UI_DOWNLOAD_DOC, id),
   downloadAudio: (id: string): Promise<DownloadResult> => ipcRenderer.invoke(UI_DOWNLOAD_AUDIO, id),
+  // ---- audio file import (V4, D1/D2): PULL, at the page's own cadence. An
+  // import runs for minutes; polling importState is how a page follows it
+  // without the engine pushing a growing object once a second.
+  importState: (): Promise<ImportQueueSnapshot | null> => ipcRenderer.invoke(UI_IMPORT_STATE),
+  importStart: (req: { paths: string[]; keepAudio?: boolean; notes?: boolean }): Promise<ImportStartResult> =>
+    ipcRenderer.invoke(UI_IMPORT_START, req),
+  importCancel: (id: string): Promise<{ ok: boolean }> => ipcRenderer.invoke(UI_IMPORT_CANCEL, id),
+  /** The native picker, opened by MAIN: the safest possible source of paths, and
+   * the only way in for a user who does not drag files. */
+  importPick: (): Promise<string[]> => ipcRenderer.invoke(UI_IMPORT_PICK),
+  /** The path behind a dropped File. Electron removed File.path (32+), so a
+   * drag-and-drop page cannot obtain it on its own - webUtils lives in the
+   * preload precisely for this. Returns "" rather than throwing for anything
+   * that is not a real file (a dragged selection of text, a browser URL), so a
+   * page can filter without a try/catch. */
+  pathForFile: (file: File): string => {
+    try {
+      return webUtils.getPathForFile(file);
+    } catch {
+      return "";
+    }
+  },
+  // ---- removing a passage (D11): id + passage targets in, never a path and
+  // never the text. IRREVERSIBLE - the page must have confirmed against the
+  // exact text and ranges before this is ever called (see ipcContracts.ts).
+  redactPassages: (id: string, targets: RedactTarget[]): Promise<RedactResult> =>
+    ipcRenderer.invoke(UI_REDACT_PASSAGES, id, targets),
   onState(cb: (s: UiStatePayload) => void): () => void {
     const handler = (_e: Electron.IpcRendererEvent, s: UiStatePayload) => cb(s);
     ipcRenderer.on(UI_STATE_PUSH, handler);

@@ -16,6 +16,7 @@ import {
   UI_SELF_CHECK,
   UI_STATS_READ,
   UI_STATS_CLEAR,
+  UI_REDACT_PASSAGES,
   UI_SNIPPET_LIST,
   UI_SNIPPET_SAVE,
   UI_SNIPPET_DELETE,
@@ -107,6 +108,10 @@ test("every ui:* invoke channel this bridge owns is registered through guarded()
     // enumeration exists to keep behind the fromMain() gate.
     UI_STATS_READ,
     UI_STATS_CLEAR,
+    // D11: ui:redact-passages DESTROYS part of a transcript on purpose, and it
+    // is the user's only recourse for a sentence someone else regrets saying.
+    // It belongs behind the same gate for the same reason as ui:stats-clear.
+    UI_REDACT_PASSAGES,
   };
 
   assert.deepEqual(

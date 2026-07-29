@@ -465,6 +465,43 @@ textarea.snip-src:focus { outline: 2px solid var(--amber); outline-offset: 1px; 
 }
 .note-search { display: flex; gap: 8px; align-items: center; }
 
+/* ---- Removing a passage (D11) ---- */
+.redact-pre { max-height: 180px; }
+.redact-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 14px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+.redact-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--ink2);
+}
+.redact-row:hover { border-color: var(--line2); }
+/* The selected state is the amber pair the archive list already uses for
+   "this is the one you are acting on" - a passage about to be destroyed is
+   not a different kind of selection, and a second colour would read as a
+   second meaning. */
+.redact-row.on { border-color: var(--amber-deep); background: var(--amber-soft); color: var(--ink); }
+.redact-row input { margin-top: 3px; flex: 0 0 auto; }
+.redact-text { white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+.redact-foot {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+
 /* ---- Dictionary (wave U6) ---- */
 .dict-add { display: flex; gap: 9px; margin-bottom: 14px; }
 .dict-add input { flex: 1; min-width: 0; }

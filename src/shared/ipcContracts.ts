@@ -40,6 +40,72 @@ export interface NativeStartPayload {
   captureSystem: boolean; // also mix in the PC's own sound (loopback)
 }
 
+// ---- V4 D1: the hidden DECODE window (importing an audio file) ----
+//
+// decodeAudioData and OfflineAudioContext only exist in a renderer, so decoding
+// an imported file needs a window - a THIRD hidden one, deliberately not the
+// capture window: decoding is the one operation in Flow that can genuinely
+// exhaust memory (see shared/audioImport.ts's measured budget), and the process
+// that may die must not be the one holding a live microphone.
+//
+// The renderer never learns WHERE the file is. Main opens it read-only, streams
+// it over in 8 MB slices, and the window only ever sees bytes - so no path the
+// renderer could act on ever crosses this boundary. main -> decode window:
+export const DECODE_BYTES = "decode:bytes"; // one slice of the source, in order
+export const DECODE_PROBE = "decode:probe"; // duration BEFORE any decode (plan §5.1.3)
+export const DECODE_RUN = "decode:run"; // now decode what you were given
+export const DECODE_CANCEL = "decode:cancel"; // drop everything, free the bytes
+export const DECODE_FLOW = "decode:flow"; // backpressure: pause/resume the PCM stream
+// decode window -> main:
+export const DECODE_META = "decode:meta"; // the probed duration
+export const DECODE_PCM = "decode:pcm"; // one Int16 mono 16 kHz slice
+export const DECODE_DONE = "decode:done";
+export const DECODE_ERROR = "decode:error";
+
+export interface DecodeBytesPayload {
+  token: number; // the job these bytes belong to; a stale token is dropped
+  bytes: Uint8Array;
+}
+
+export interface DecodeTokenPayload {
+  token: number;
+}
+
+export interface DecodeFlowPayload {
+  token: number;
+  paused: boolean;
+}
+
+export interface DecodeMetaPayload {
+  token: number;
+  /** 0 when the container carries no usable duration - the caller then treats
+   * the length as unknown rather than as zero. */
+  durationMs: number;
+}
+
+export interface DecodePcmPayload {
+  token: number;
+  pcm: ArrayBuffer; // Int16, mono, 16 kHz - ready for the ASR as-is
+}
+
+export interface DecodeDonePayload {
+  token: number;
+  frames: number; // 16 kHz mono frames actually produced
+  channels: number; // what the source turned out to hold, for the memory projection
+}
+
+/** Why a decode ended without audio. Kept coarse on purpose: the human sentence
+ * is composed in main (shared/audioImport.ts), where the file NAME is known -
+ * the renderer knows nothing but bytes. "memory" covers both the honest
+ * rejection and the window dying outright. */
+export type DecodeFailure = "format" | "memory" | "cancelled" | "internal";
+
+export interface DecodeErrorPayload {
+  token: number;
+  reason: DecodeFailure;
+  detail: string;
+}
+
 export interface CaptureStartPayload {
   // Per-capture config so the overlay never holds stale settings.
   sounds: boolean; // audible start/stop cues
@@ -388,6 +454,48 @@ export interface DownloadResult {
   error?: string; // human-readable, shown as-is by the page
 }
 
+// ---- removing a passage from a capture (D11) ----
+// Main-process only, with NO HTTP equivalent, for a stronger version of the
+// reason downloads has none: the local API answers a remote PWA over the
+// network, and a phone has no business DESTROYING part of a recording on this
+// machine. The renderer passes an id and passage indices - never a path, never
+// a character offset, never the text itself.
+//
+// The channel is `ui:redact-passages` and it is IRREVERSIBLE by design (see
+// shared/redact.ts's DECISION 4): nothing is kept anywhere, so the confirmation
+// that precedes it has to name the exact text and time ranges. The page builds
+// that confirmation from the SAME pure functions main acts on
+// (shared/redact.ts's parseTranscriptPassages / planRedaction), which is what
+// makes "what the user was shown" and "what main removes" one thing.
+export const UI_REDACT_PASSAGES = "ui:redact-passages";
+
+/** One passage the caller means to remove, named by its index AND by the start
+ * offset the caller SAW there. Main refuses the whole request if any index no
+ * longer starts at that offset: between the page's parse and the human's click,
+ * a notes regeneration or a startup rescue can rewrite the document and move
+ * every index, and acting on a stale one would irreversibly destroy a passage
+ * nobody looked at. */
+export interface RedactTarget {
+  index: number;
+  startMs: number;
+}
+
+export interface RedactResult {
+  ok: boolean;
+  /** True when the derived notes/summary block was dropped along with the
+   * passage (shared/redact.ts's DECISION 2). The page has to be able to say it
+   * happened: losing the meeting notes surprises more than losing the passage
+   * the user aimed at. */
+  notesDropped?: boolean;
+  /** True when the matching range of the recording's audio was silenced. False
+   * means the recording kept no audio at all - never "the audio was left
+   * playable", which this operation refuses to do silently. */
+  audioSilenced?: boolean;
+  error?: string; // human-readable, shown as-is by the page
+}
+
+export type { TranscriptPassage, RedactionRange, RedactionPlan } from "./redact";
+
 /** The three source choices UI_LONG_START accepts. "system" (the PC's own
  * sound, no microphone) is a real, typed value - see shared/longStart.ts's
  * module note for why the handler currently refuses it rather than silently
@@ -400,3 +508,34 @@ export interface UiLongStartRequest {
   title?: string;
   keepAudio?: boolean; // v3 chantier 4 parity: keep the listenable .wav (default off)
 }
+
+// ---- audio file import (V4, D1/D2) ----
+//
+// Four channels, no more: start an import, follow it, cancel it, and (because a
+// drag-and-drop is not the only way in) ask main for a file picker. The queue
+// snapshot carries BOTH the progress of what is running and the state of what is
+// waiting, so a page never has to stitch two polls together to know where it
+// stands - the same "one coherent snapshot" rule as UI_LONG_STATE.
+//
+// PULL, at the page's own cadence, like every other channel that is not the 1 Hz
+// heartbeat: an import runs for minutes and nothing about it belongs in
+// UiStatePayload.
+//
+// UI_IMPORT_START is the only channel in this whole surface that accepts a PATH
+// from the renderer, and that is unavoidable: a dropped file IS a path. What
+// makes it safe is what main does with it and nothing else - it is opened
+// read-only, and refused unless it is an existing regular file with a supported
+// audio extension. An import never writes, renames, moves or deletes the file it
+// was pointed at, on any path, including cancellation and failure (plan §5.1.1).
+export const UI_IMPORT_STATE = "ui:import-state";
+export const UI_IMPORT_START = "ui:import-start";
+export const UI_IMPORT_CANCEL = "ui:import-cancel"; // takes an item id
+export const UI_IMPORT_PICK = "ui:import-pick"; // native open dialog, answers paths
+
+export type {
+  ImportItem,
+  ImportPhase,
+  ImportQueueSnapshot,
+  ImportRequest,
+  ImportStartResult,
+} from "./audioImport";

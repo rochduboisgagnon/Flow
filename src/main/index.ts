@@ -22,6 +22,7 @@ import { listOllamaModels } from "./llm/ollama";
 import { LocalApi } from "./api";
 import { LongRecorder, historyRoot, listHistory, resolveHistoryEntry, readHistoryDoc } from "./longform";
 import { DownloadManager } from "./downloads";
+import { Redactor } from "./redact";
 import { StatsStore } from "./stats";
 import { countWords } from "../shared/wordCount";
 import { primeDictionary, dictationPrompt, applyDictionaryReplacements } from "./dictionary";
@@ -479,6 +480,9 @@ if (!app.requestSingleInstanceLock()) {
         downloadDoc: (id) => downloads.downloadDoc(id),
         downloadAudio: (id) => downloads.downloadAudio(id),
         lastDownloadedPath: () => downloads.lastDownloadedPath(),
+        // D11: main-only for a stronger reason than the downloads above - this
+        // one destroys, irreversibly. Deliberately NOT given to LocalApi.
+        redactPassages: (id, targets) => redactor.remove(id, targets),
         // B1: identical closure to LocalApi's above (hotpathSnapshotDep,
         // defined once, just above) - the Diagnostics panel and a
         // `bench:hotpath` run must never disagree on what is currently open/completed.
@@ -1021,6 +1025,16 @@ const longRec = new LongRecorder({
 const downloads = new DownloadManager({
   historyRoot: () => historyRoot(),
   downloadsDir: () => app.getPath("downloads"),
+  log: flowLog,
+});
+
+// D11: removing a sensitive passage from an archived capture - the transcript
+// AND the matching range of the audio. Same lazy historyRoot() closure as
+// `downloads` just above (nothing may resolve a path at module load), and the
+// same containment: it can only ever write inside a folder Flow itself
+// established as a history root.
+const redactor = new Redactor({
+  historyRoot: () => historyRoot(),
   log: flowLog,
 });
 

@@ -376,7 +376,7 @@ function historyDateFolder(startedMs: number, now = Date.now()): string {
   return ymd(new Date(now));
 }
 
-interface FiledRecording {
+export interface FiledRecording {
   dir: string;
   docPath: string;
   audioPath: string; // "" when no audio was kept

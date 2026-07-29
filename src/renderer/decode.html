@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Flow decode</title>
+  </head>
+  <body>
+    <!-- V4 D1: hidden window. No UI - it only decodes an imported audio file into
+         16 kHz mono PCM and streams it to the engine over IPC. Kept separate from
+         the capture window on purpose: this is the one renderer that can run out
+         of memory, and it must not be the one holding a live microphone. -->
+    <script type="module" src="/decode.tsx"></script>
+  </body>
+</html>
