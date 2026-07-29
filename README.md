@@ -169,6 +169,14 @@ The real-engine tests (TTS through the full pipeline) run automatically when
 the speech model is present locally and skip on CI. `npx tsx
 scripts/bench-latency.ts` measures warm dictation latency.
 
+`npm run bench:wer` measures French transcription quality (word error rate) over
+a 24-utterance corpus. The repository versions the corpus TEXT only; the audio
+is git-ignored, so give it a voice first with either `npm run bench:wer --
+--synthesize` (Windows speech, reproducible in a minute, measures the processing
+chain and *not* real speech) or `npm run bench:wer -- --record` (your own voice,
+the only real baseline). Real recordings win automatically, utterance by
+utterance, and every table states which source it measured.
+
 ## Credits
 
 The architecture is informed by studying [OpenWhispr](https://github.com/OpenWhispr/openwhispr)

@@ -17,6 +17,7 @@
     "test": "tsx --test --test-concurrency=1 test/*.test.ts",
     "bench:hotpath": "tsx scripts/bench-hotpath.ts",
     "bench:audio": "tsx scripts/bench-audio-block.ts",
+    "bench:wer": "tsx scripts/bench-wer.ts",
     "dist": "npm run build && electron-builder --win",
     "postinstall": "node scripts/ensure-keyspy.cjs",
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.json --noEmit"

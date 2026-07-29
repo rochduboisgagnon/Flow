@@ -1,0 +1,173 @@
+{
+  "version": 1,
+  "language": "fr",
+  "notes": [
+    "C8 - corpus de reference du banc WER francais. Les TEXTES sont ici; l'AUDIO n'y est pas.",
+    "L'audio se depose dans ./audio/ et ce dossier est dans .gitignore: ce depot est PUBLIC, et la voix de Roch n'a rien a y faire. Le corpus reste donc reproductible en texte et prive en son.",
+    "DEUX sources audio, et elles ne mesurent PAS la meme chose. (a) SYNTHESE: npm run bench:wer -- --synthesize, depose ./audio/synth/<id>.wav, une minute, reproductible; mesure la CHAINE (modele, amorce, dictionnaire, normalisation) et PAS de la vraie parole - ni accent quebecois, ni hesitation, ni bruit de piece, ni micro. (b) VRAIE VOIX: npm run bench:wer -- --record, depose ./audio/<id>.wav, vingt minutes une seule fois, et c'est la seule vraie ligne de base.",
+    "Le banc PREFERE automatiquement l'enregistrement reel, enonce par enonce, des qu'il en trouve un: on peut donc enregistrer en plusieurs fois. Chaque tableau qu'il imprime porte sa source dans une colonne.",
+    "Format attendu pour un enregistrement fait a la main: WAV PCM 16 bits, nomme exactement <id>.wav (u01.wav a u24.wav), depose dans ./audio/. 16 kHz mono est ideal, mais 44,1 et 48 kHz, mono ou stereo, sont acceptes et ramenes par le banc.",
+    "Pour mesurer: npm run bench:wer.",
+    "Chaque enonce est ecrit tel qu'il doit etre DIT. Lire la phrase telle quelle, d'une traite, au rythme d'une vraie dictee: ni articulation de studio, ni lecture appliquee. Un banc lu trop proprement flatte le moteur.",
+    "Les nombres peuvent etre ecrits en chiffres: la normalisation du banc (src/shared/wer.ts) les lit en mots avant de comparer, donc << 25 >> et << vingt-cinq >> sont le meme mot dit.",
+    "Le protocole complet, ses limites et ce que le banc ne prouve PAS: docs/plan-standalone-2026-07-27.md, section 4.2."
+  ],
+  "dictionary": [
+    { "term": "Claude", "kind": "vocabulary", "starred": true, "aliases": [] },
+    { "term": "Claude Code", "kind": "replacement", "starred": true, "aliases": ["cloud code"] },
+    { "term": "AGR Labs", "kind": "replacement", "starred": true, "aliases": ["agile air", "a g r labs"] },
+    { "term": "AGR Pilot", "kind": "replacement", "starred": true, "aliases": ["agile air pilote"] },
+    { "term": "whisper.cpp", "kind": "vocabulary", "starred": true, "aliases": [] },
+    { "term": "Loi 25", "kind": "replacement", "starred": false, "aliases": ["loi vingt-cinq"] },
+    { "term": "keyspy", "kind": "vocabulary", "starred": true, "aliases": [] },
+    { "term": "Tailscale", "kind": "vocabulary", "starred": true, "aliases": ["tail scale"] },
+    { "term": "BlackProgram", "kind": "replacement", "starred": true, "aliases": ["black program"] },
+    { "term": "Flow", "kind": "vocabulary", "starred": false, "aliases": [] }
+  ],
+  "utterances": [
+    {
+      "id": "u01",
+      "categories": ["court"],
+      "text": "Ouvre le dépôt.",
+      "terms": []
+    },
+    {
+      "id": "u02",
+      "categories": ["court"],
+      "text": "Non, annule ça.",
+      "terms": []
+    },
+    {
+      "id": "u03",
+      "categories": ["court"],
+      "text": "Lance le banc.",
+      "terms": []
+    },
+    {
+      "id": "u04",
+      "categories": ["court", "noms-propres"],
+      "text": "Redémarre Flow.",
+      "terms": ["Flow"]
+    },
+    {
+      "id": "u05",
+      "categories": ["court", "chiffres"],
+      "text": "Rappelle-moi à quatorze heures.",
+      "terms": []
+    },
+    {
+      "id": "u06",
+      "categories": ["noms-propres", "jargon"],
+      "text": "Ajoute Tailscale au dictionnaire d'AGR Labs.",
+      "terms": ["Tailscale", "AGR Labs"]
+    },
+    {
+      "id": "u07",
+      "categories": ["jargon"],
+      "text": "Le sidecar whisper.cpp écoute en local et rien ne sort de la machine.",
+      "terms": ["whisper.cpp"]
+    },
+    {
+      "id": "u08",
+      "categories": ["noms-propres", "jargon"],
+      "text": "Claude Code a corrigé le chemin chaud de Flow hier soir.",
+      "terms": ["Claude Code", "Flow"]
+    },
+    {
+      "id": "u09",
+      "categories": ["noms-propres", "jargon"],
+      "text": "Le serveur brain indexe toutes les notes du dépôt BlackProgram.",
+      "terms": ["BlackProgram"]
+    },
+    {
+      "id": "u10",
+      "categories": ["jargon"],
+      "text": "keyspy capte la touche même quand la fenêtre n'a pas le focus.",
+      "terms": ["keyspy"]
+    },
+    {
+      "id": "u11",
+      "categories": ["noms-propres", "jargon"],
+      "text": "AGR Pilot passe par Tailscale pour joindre le poste de travail.",
+      "terms": ["AGR Pilot", "Tailscale"]
+    },
+    {
+      "id": "u12",
+      "categories": ["noms-propres", "chiffres"],
+      "text": "La Loi 25 impose un registre des incidents de confidentialité.",
+      "terms": ["Loi 25"]
+    },
+    {
+      "id": "u13",
+      "categories": ["jargon", "chiffres"],
+      "text": "Le modèle turbo pèse 574 mégaoctets sur le disque dur.",
+      "terms": []
+    },
+    {
+      "id": "u14",
+      "categories": ["chiffres", "jargon"],
+      "text": "On vise moins de 200 millisecondes entre la touche et l'apparition de la pastille.",
+      "terms": []
+    },
+    {
+      "id": "u15",
+      "categories": ["chiffres"],
+      "text": "Il reste 25 énoncés à relire avant vendredi.",
+      "terms": []
+    },
+    {
+      "id": "u16",
+      "categories": ["chiffres"],
+      "text": "La sauvegarde tourne à cinq heures du matin, tous les jours, sans exception.",
+      "terms": []
+    },
+    {
+      "id": "u17",
+      "categories": ["chiffres", "jargon"],
+      "text": "En 2026, le dépôt compte 835 tests automatisés.",
+      "terms": []
+    },
+    {
+      "id": "u18",
+      "categories": ["accents"],
+      "text": "Il a réévalué la procédure après l'entrée en vigueur du décret.",
+      "terms": []
+    },
+    {
+      "id": "u19",
+      "categories": ["accents"],
+      "text": "Le café était déjà prêt à côté de la fenêtre entrouverte.",
+      "terms": []
+    },
+    {
+      "id": "u20",
+      "categories": ["accents", "jargon"],
+      "text": "Les données précédentes sont désuètes et devront être réécrites au complet.",
+      "terms": []
+    },
+    {
+      "id": "u21",
+      "categories": ["long", "jargon"],
+      "text": "Quand je relâche la touche, le texte doit apparaître au curseur sans que j'aie à toucher au presse-papiers, et si l'application refuse le collage, Flow bascule en frappe clavier.",
+      "terms": ["Flow"]
+    },
+    {
+      "id": "u22",
+      "categories": ["long"],
+      "text": "L'idée du banc, c'est de mesurer avant d'annoncer : tant qu'on n'a pas de chiffre, une amélioration de la transcription n'est qu'une opinion, et cette campagne interdit les opinions déguisées en résultats.",
+      "terms": []
+    },
+    {
+      "id": "u23",
+      "categories": ["long", "jargon"],
+      "text": "Le dictionnaire agit en deux étages : le premier oriente le décodeur avec une amorce française, le second garantit l'orthographe d'un terme après coup, sans jamais couper un mot légitime.",
+      "terms": []
+    },
+    {
+      "id": "u24",
+      "categories": ["long", "jargon"],
+      "text": "Pendant une réunion d'une heure, le mode longue durée découpe l'audio en segments, les transcrit au fil de l'eau et écrit les notes dans un seul document.",
+      "terms": []
+    }
+  ]
+}

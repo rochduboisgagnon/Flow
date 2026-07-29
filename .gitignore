@@ -6,3 +6,9 @@ resources/bin/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# C8 : les enregistrements du banc WER. Le banc PROMET a l'utilisateur que sa
+# voix ne quitte pas la machine, et ce depot est public : la promesse tient par
+# cette ligne, pas par la bonne volonte. Les TEXTES du corpus (corpus.json) sont
+# versionnes, eux, parce qu'ils sont la reference commune de toutes les mesures.
+test/fixtures/wer-corpus/audio/
