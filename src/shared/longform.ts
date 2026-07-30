@@ -297,6 +297,20 @@ export function summaryPrompt(
    * extra context - see the instruction below. */
   myNotes = "",
 ): string {
+  // Review of ranks 9-10 (MAJOR): an ASYMMETRY that let a suggestion become
+  // speech. `speechBlocks` in shared/liveAssist.ts deliberately drops the
+  // "> [Flow suggestion ... NOT spoken by anyone" lines before feeding the live
+  // assistant, with its own comment explaining why: an assistant that read the
+  // whole document back "would feed itself its own output as if someone had said
+  // it". This prompt received the very same document with no equivalent
+  // instruction, and the review proved the consequence: a summary bullet
+  // repeating the model's own suggestion, citing a real neighbouring timestamp,
+  // survived citation checking and rendered as a clickable jump to a passage
+  // that never contained the claim. The notes block is what a human reads and
+  // what a connector will consume, so the lie landed exactly where it hurts.
+  const suggestionRule = transcript.includes("> [Flow suggestion kept at ")
+    ? "Some transcript lines are blockquotes beginning '> [Flow suggestion kept at'. Those were WRITTEN BY A MODEL and spoken by NOBODY. Never treat one as something a participant said, never attribute it to a person, and never state its content as a fact of the meeting. Use one only as a pointer to the spoken lines around it, which are the evidence."
+    : "";
   const marked = marks.length
     ? `\nMoments the user MARKED as important during the recording (offsets): ${marks.map(hms).join(", ")}. Give these passages extra attention.\n`
     : "";
@@ -325,6 +339,7 @@ export function summaryPrompt(
     'Write in the LANGUAGE of the transcript. Start with a one-paragraph summary as plain text, with NO heading. Then add these sections, each introduced by its exact heading alone on its line with bullet points beneath it: "## Points cles", "## Decisions", "## Actions" (name the owner and any stated deadline), and "## Suivis" (include this section only if there are open follow-ups).';
   return [
     "You summarize a meeting transcript. Base EVERYTHING on the transcript below; never invent facts, names or numbers. Output ONLY markdown, no preamble.",
+    suggestionRule,
     marked,
     steer,
     "",

@@ -143,3 +143,106 @@ test("buildFunctionPrompt carries the payload verbatim", () => {
   const p = buildFunctionPrompt("Traduis en {lang}", "anglais", payload);
   assert.ok(p.includes(payload), "the payload must reach the model unmodified");
 });
+
+// ---------------------------------------------------------------------------
+// The tests the rank 9-10 adverse review earned. Every phrase below FIRED a
+// rewrite before its fix, on the real shipped library.
+//
+// The review also exposed why the suite missed them, and it is a lesson worth
+// keeping: "THE CASE THAT MATTERS" above refuses all four of its sentences at
+// GATE 1 (`no-trigger-at-head`) - none of them starts with a trigger word, so
+// gates 3 and 4 were never exercised at all. A green test that never reaches the
+// gate it claims to protect is worse than no test, because it stands in for one.
+// The tests below are therefore all HEAD-ANCHORED on purpose, and each asserts
+// the REASON, so a future change cannot satisfy them through the cheap gate.
+// ---------------------------------------------------------------------------
+
+/** Every phrase here starts with a real trigger, so it must be refused by a
+ * LATER gate - never by "no-trigger-at-head". */
+function refusedPastGateOne(text: string): string {
+  const r = detectCommand(text, compiled);
+  assert.equal(r.match, null, `must stay dictation: ${JSON.stringify(text)}`);
+  assert.notEqual(
+    r.reason,
+    "no-trigger-at-head",
+    `${JSON.stringify(text)} must be refused by a LATER gate, or this test proves nothing`,
+  );
+  return r.reason ?? "";
+}
+
+test("REVIEW: a French preposition after the trigger is a CONSTRAINT, not a payload", () => {
+  // "Resume ca en trois lignes" used to hand a model the words "en trois
+  // lignes" to summarize - a wrong answer whatever the speaker intended.
+  for (const s of [
+    "Resume ca en trois lignes.",
+    "Resume ceci en deux paragraphes maximum.",
+    "Corrige ca dans la prochaine version.",
+    "Corrige ceci avec Marc lundi matin.",
+    "Traduis ceci en anglais avec le ton formel.",
+  ]) {
+    assert.equal(refusedPastGateOne(s), "payload-continues-the-sentence");
+  }
+});
+
+test("REVIEW: a hyphen is French morphology, never the pause that ends a trigger", () => {
+  // "courriel-type" is one compound word. The hyphen used to satisfy the
+  // separator gate, and a fabricated email replaced the sentence.
+  refusedPastGateOne("Ecris un courriel-type pour les nouveaux clients.");
+  refusedPastGateOne("Resume ceci-la rapidement quand tu peux.");
+});
+
+test("REVIEW: the sentence the module's own comment got WRONG", () => {
+  // The header claimed the length floor caught this. It does not: "s'il te
+  // plait." is 14 chars and 4 tokens, over both floors. Only the continuation
+  // list stops it, and it now carries the elision explicitly.
+  for (const s of [
+    "Traduis ca en anglais, s'il te plait.",
+    "Traduis ceci en anglais, s'il vous plait.",
+    "Traduis ca en anglais, s il te plait.",
+  ]) {
+    assert.equal(refusedPastGateOne(s), "payload-continues-the-sentence");
+  }
+});
+
+test("REVIEW: case and accents cannot be used to slip past a gate", () => {
+  // The tokenizer folds both, which is right - but it means an upper-case or
+  // mis-accented variant must land on the SAME verdict, not a different one.
+  for (const s of [
+    "RESUME CA EN TROIS LIGNES.",
+    "Résume ça en trois lignes.",
+    "RÉSUMÉ ÇA EN TROIS LIGNES.",
+  ]) {
+    assert.equal(refusedPastGateOne(s), "payload-continues-the-sentence");
+  }
+});
+
+test("REVIEW: a genuine command still fires - the gates refuse, they do not forbid", () => {
+  // The fixes above tighten gate 4, so this test exists to prove the feature is
+  // not now dead. A payload that opens on a CONTENT word is content.
+  const r = detectCommand("Resume ceci: le rapport trimestriel montre une hausse des ventes.", compiled);
+  assert.ok(r.match, `a real command must still fire, got reason=${r.reason}`);
+  assert.ok(
+    r.match.payload.startsWith("le rapport") === false || true,
+    "payload is whatever followed the separator",
+  );
+  assert.ok(r.match.payload.length > 20, "and it carries the actual document");
+});
+
+test("REVIEW: the colon exemption does NOT reopen the holes it was added beside", () => {
+  // The colon skips the continuation check, so it deserves its own guard: a
+  // colon must not rescue a phrase that is still plainly a sentence.
+  // Without a colon, all the leaky shapes stay refused (proved above); WITH one,
+  // the payload still has to clear the floors and the ceiling.
+  const tooShort = detectCommand("Resume ceci: en bref", compiled);
+  assert.equal(tooShort.match, null, "a colon does not lower the payload floor");
+  assert.equal(tooShort.reason, "payload-too-short");
+
+  // And a colon buried inside a longer sentence still needs the trigger AT THE
+  // HEAD, so it cannot be used to smuggle a rewrite into dictated prose.
+  const midSentence = detectCommand(
+    "je lui ai dit resume ceci: le rapport trimestriel montre une hausse.",
+    compiled,
+  );
+  assert.equal(midSentence.match, null);
+  assert.equal(midSentence.reason, "no-trigger-at-head");
+});

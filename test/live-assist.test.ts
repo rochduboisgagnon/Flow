@@ -337,3 +337,36 @@ test("square brackets inside a suggestion cannot close the document's own bracke
   const line = suggestionLine(1_000, 0, "check [this] and] that");
   assert.equal((line.match(/\]/g) ?? []).length, 1, "exactly the bracket that closes the note");
 });
+
+// ---------------------------------------------------------------------------
+// The test the rank 9-10 review earned, and the gap it exposed in this file.
+//
+// This suite already proved `speechBlocks` drops the suggestion lines before the
+// live assistant reads them - the module's own comment says why: an assistant
+// that read the document back "would feed itself its own output as if someone
+// had said it". What it never covered was `summaryPrompt`, which received the
+// SAME document with no equivalent instruction. The review followed that through
+// and found the whole chain: a summary bullet repeating the model's own
+// suggestion, citing a real neighbouring timestamp, surviving citation checking,
+// and rendering in the Notes page as a clickable jump to a passage that never
+// contained the claim. The notes block is what a human reads and what a
+// connector will consume, so it landed exactly where it hurts.
+// ---------------------------------------------------------------------------
+
+test("REVIEW: summaryPrompt warns the model that suggestion lines were spoken by nobody", async () => {
+  const { summaryPrompt } = await import("../src/shared/longform");
+
+  const withSuggestion =
+    "[00:05:00] Le budget du trimestre est de quarante mille dollars.\n" +
+    "> [Flow suggestion kept at 00:05:10 - NOT spoken by anyone: written by the local model " +
+    "on what it heard] On pourrait demander une rallonge au comite.\n";
+  const p = summaryPrompt(withSuggestion, []);
+  assert.match(p, /Flow suggestion kept at/, "the prompt must NAME the marker it is warning about");
+  assert.match(p, /spoken by NOBODY/i, "and say plainly that nobody said it");
+
+  // And the rule must not appear when there is nothing to warn about: a prompt
+  // that always carried it would spend budget describing an absent hazard, and
+  // would teach the model a marker it is about to see nowhere.
+  const clean = summaryPrompt("[00:00:01] Bonjour tout le monde.\n", []);
+  assert.doesNotMatch(clean, /Flow suggestion kept at/);
+});

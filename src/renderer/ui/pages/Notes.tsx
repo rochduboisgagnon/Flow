@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { UiStatePayload } from "../../../shared/ipcContracts";
 import { MAX_HISTORY_ITEMS, type HistoryItem, type HistoryDocPayload } from "../../../shared/longform";
 import { parseTranscriptPassages, planRedaction, hms, type TranscriptPassage } from "../../../shared/redact";
-import { MY_NOTES_HEADING } from "../../../shared/longform";
 
 // Notes (wave U5). The captures in Flow's own recordings folder, readable and
 // listenable in place, and downloadable into the system Downloads folder.

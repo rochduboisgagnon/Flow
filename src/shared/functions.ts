@@ -38,10 +38,15 @@
 //     fire; "Ecris un courriel : Marc, le contrat est signe" does.
 //  4. A PAYLOAD THAT IS CONTENT. At least MIN_PAYLOAD_WORDS words and
 //     MIN_PAYLOAD_CHARS characters after the trigger, and the first word must
-//     not be a CONTINUATION word ("et", "puis", "and", "please", "s'il te
-//     plait"...). "Traduis ca en anglais, s'il te plait." is a sentence
-//     someone dictates INTO a message; it is not a command, and both the
-//     continuation list and the length floor catch it.
+//     not be a CONTINUATION word - a preposition, an article, a determiner, an
+//     elision or a politeness formula. "Traduis ca en anglais, s'il te plait."
+//     is a sentence someone dictates INTO a message, not a command.
+//     CORRECTED after the rank 9-10 review: this comment used to claim the
+//     LENGTH FLOOR caught that sentence. It does not - "s'il te plait." is 14
+//     characters and 4 tokens, over both floors - and the review fired the
+//     command to prove it. Only the continuation list stops it, which is why
+//     that list now carries the elisions and the prepositions explicitly
+//     instead of trusting a floor that was never doing the work.
 //  5. OPT-IN. A function only participates when the user enabled it, and the
 //     seven shipped ones (defaultFunctions) ship OFF. See the note there.
 //
@@ -199,25 +204,53 @@ export function tokenize(text: string): Token[] {
 /** Characters that mean "the order stopped here and the content starts". A
  * spoken pause is what produces them - whisper punctuates a real break, which
  * is precisely the acoustic event that distinguishes an order from a clause. */
-const SEPARATORS = new Set([":", ",", ".", ";", "!", "?", "-", "–", "—", "\n", "\r", "…"]);
+// Review of ranks 9-10 (BLOCKING): the hyphen and both dashes used to be in
+// here, and that alone fired a rewrite on "ecris un courriel-type pour les
+// nouveaux clients". A hyphen in French is MORPHOLOGY, not a pause - it lives
+// inside compound words (courriel-type, peut-etre, rendez-vous, c'est-a-dire)
+// and whisper emits it with no spoken break at all, the exact opposite of the
+// acoustic event this set is documented to detect.
+const SEPARATORS = new Set([":", ",", ".", ";", "!", "?", "\n", "\r", "…"]);
 
 /** Trigger endings that are self-delimiting: the phrase POINTS at what follows,
  * so it cannot be read as the start of an ordinary sentence. Kept short and
  * literal - this is the one list that LOOSENS a gate, so it earns no guesses. */
 const DEICTIC_ENDINGS = new Set(["ceci", "cela", "ca", "this", "that", "it", "suivant", "following"]);
 
-/** Words that mean the trigger phrase was part of a longer sentence rather
- * than an order: a payload starting with one of these is text.
- * "Traduis ca en anglais, s'il te plait." -> payload "s il te plait" -> "s"
- * is not here, but the length floor catches it; "Traduis ca en anglais et
- * envoie-le a Marc" -> payload starts with "et" -> refused here. */
+/** Words that mean the trigger phrase was part of a longer sentence rather than
+ * an order: a payload starting with one of these is text, not content to act on.
+ *
+ * The rule: content starts on a CONTENT word. A payload opening on a function
+ * word (preposition, article, determiner, elision, politeness formula) is a
+ * continuation. This refuses some real commands, and that is the intended trade:
+ * per this wave's asymmetry, a command that fails to fire is an inconvenience
+ * the user repeats, while text rewritten unasked is a loss they may never
+ * notice. */
 const CONTINUATION_WORDS = new Set([
-  // French
-  "et", "puis", "ensuite", "aussi", "mais", "donc", "car", "pour", "afin",
-  "avant", "apres", "quand", "si", "svp", "stp", "merci",
+  // French conjunctions and adverbs of sequence
+  "et", "puis", "ensuite", "aussi", "mais", "donc", "car", "afin",
+  "avant", "apres", "quand", "si", "svp", "stp", "merci", "sinon", "ni",
+  // French PREPOSITIONS. This is the class the review broke us on: French
+  // introduces a CONSTRAINT with a preposition, so "resume ca en trois lignes"
+  // handed a model the phrase "en trois lignes" to summarize - wrong whatever
+  // the speaker meant. Same hole fired on "corrige ca dans la prochaine
+  // version" and "ecris un courriel pour les nouveaux clients".
+  "en", "dans", "avec", "sans", "sur", "sous", "pour", "par", "de", "du",
+  "des", "au", "aux", "vers", "chez", "entre", "selon", "depuis",
+  "pendant", "jusqu", "contre", "malgre",
+  // French articles and determiners: a spoken command rarely opens its payload
+  // on a bare article, an ordinary sentence very often does.
+  "le", "la", "les", "un", "une", "ce", "cet", "cette", "ces", "mon", "ma",
+  "mes", "son", "sa", "ses", "notre", "nos", "leur", "leurs", "que", "qui",
+  // The elision in "s'il te plait" tokenizes to a bare "s". The module used to
+  // claim the length floor caught that sentence; the review PROVED it does not
+  // (14 chars, 4 tokens, both over the floors), so the elisions are listed
+  // rather than assumed.
+  "s", "t", "l", "d", "n", "j", "c", "m", "qu",
   // English
   "and", "then", "also", "but", "so", "because", "before", "after", "when",
-  "if", "please", "thanks", "thank",
+  "if", "please", "thanks", "thank", "in", "into", "with", "without", "on",
+  "for", "by", "of", "the", "an", "to", "from", "at",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -454,13 +487,31 @@ export function detectCommand(text: string, functions: readonly CompiledFunction
     return { match: null, reason: "not-separated" };
   }
 
+  // A COLON is not just any separator, and the distinction is what keeps this
+  // feature alive after the rank 9-10 review tightened gate 4.
+  //
+  // Widening the continuation list to the French prepositions and articles was
+  // necessary - it is what stops "resume ca en trois lignes" from asking a model
+  // to summarize the phrase "en trois lignes". But it also refused every real
+  // command whose object happens to start with an article, which is most of
+  // them: "resume ceci: LE rapport trimestriel...". A test in
+  // test/functions.test.ts caught that the fix had made the feature dead.
+  //
+  // The colon resolves it because French does not produce one mid-flow the way
+  // it produces a preposition. Saying it out loud is a deliberate act - the
+  // speaker is announcing "what follows is the object" - and whisper only writes
+  // one where it heard that shape. So a colon in the gap means gate 4b's
+  // continuation check has nothing left to protect against, and is skipped.
+  // Everything else in gate 4 (the floors, the ceiling) still applies.
+  const explicitObject = gap.includes(":");
+
   // Gate 4b: a payload that is content.
   const payloadTokens = tokens.length - best.hit.next;
   const payload = text.slice(tokens[best.hit.next].start).trim();
   if (payloadTokens < MIN_PAYLOAD_WORDS || payload.length < MIN_PAYLOAD_CHARS) {
     return { match: null, reason: "payload-too-short" };
   }
-  if (CONTINUATION_WORDS.has(tokens[best.hit.next].n)) {
+  if (!explicitObject && CONTINUATION_WORDS.has(tokens[best.hit.next].n)) {
     return { match: null, reason: "payload-continues-the-sentence" };
   }
   if (payload.length > MAX_PAYLOAD_CHARS) return { match: null, reason: "payload-too-long" };
