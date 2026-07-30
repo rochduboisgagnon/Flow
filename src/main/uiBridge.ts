@@ -31,6 +31,12 @@ import {
   UI_DOWNLOAD_DOC,
   UI_DOWNLOAD_AUDIO,
   UI_REDACT_PASSAGES,
+  UI_IMPORT_STATE,
+  UI_IMPORT_START,
+  UI_IMPORT_CANCEL,
+  UI_IMPORT_PICK,
+  type ImportQueueSnapshot,
+  type ImportStartResult,
   type UiStatePayload,
   type UpdateCheckResult,
   type SnippetsResult,
@@ -123,6 +129,19 @@ export interface UiBridgeDeps {
    * renderer - null means nothing has been downloaded yet, a clean refusal. */
   lastDownloadedPath(): string | null;
 
+  // ---- audio file import (V4, D2) ----
+  // Main-only, no HTTP equivalent, and that is a decision rather than an
+  // omission: UI_IMPORT_START is the one channel in this whole surface that
+  // accepts a filesystem PATH, and a remote PWA answering over the network has
+  // no business naming files on this machine for the engine to read. The
+  // renderer's paths come from a drag-and-drop or from main's own picker.
+  importState(): ImportQueueSnapshot;
+  importStart(req: unknown): ImportStartResult;
+  importCancel(id: string): { ok: boolean };
+  /** The native open dialog, opened BY MAIN: the safest possible source of
+   * paths, and the only way in for a user who does not drag files. */
+  importPick(): Promise<string[]>;
+
   // ---- activation hot-path diagnostics (V2, B1) ----
   // The SAME closure the HTTP /diagnostics/hotpath route calls (main/api.ts) -
   // see index.ts's hotpathSnapshotDep, never a second implementation.
@@ -185,6 +204,18 @@ const DOWNLOAD_UNAVAILABLE: DownloadResult = { ok: false, error: "unavailable" }
 // shape for a request that never reached the redactor: a refused sender must
 // never be able to make a page report that audio was silenced.
 const REDACT_UNAVAILABLE: RedactResult = { ok: false, error: "unavailable" };
+
+// D2: same fallback discipline for the import queue. An empty, idle queue is
+// the honest shape for an answer that never reached it, and the start channel
+// answers `ok: false` with nothing accepted - a refused sender must never be
+// able to make a page believe an import is under way.
+const IMPORT_STATE_UNAVAILABLE: ImportQueueSnapshot = { items: [], activeId: "", busy: false };
+const IMPORT_START_UNAVAILABLE: ImportStartResult = {
+  ok: false,
+  accepted: [],
+  rejected: [],
+  error: "unavailable",
+};
 
 // U7: same fallback discipline again. Every counter reads zero and both
 // switches read off, which is the honest thing for an answer that never
@@ -405,6 +436,30 @@ export class UiBridge {
         .map((t) => ({ index: t.index as number, startMs: t.startMs as number }));
       return this.deps.redactPassages(typeof id === "string" ? id : "", clean);
     });
+
+    // ---- audio file import (V4, D2) ----
+    // The gate matters as much here as on ui:stats-clear, for a different
+    // reason: ui:import-start hands the engine a PATH TO READ, and the same
+    // preload is loaded by the overlay and the hidden capture window. Behind the
+    // gate, main still trusts nothing - the queue itself refuses anything that
+    // is not an existing regular file with a supported audio extension, and an
+    // import never writes to, moves or deletes the file it was pointed at.
+    this.guarded<[], ImportQueueSnapshot>(UI_IMPORT_STATE, IMPORT_STATE_UNAVAILABLE, () =>
+      this.deps.importState(),
+    );
+    // The request crosses IPC, so its shape is a claim, not a fact: it is
+    // sanitized by shared/audioImport.ts's sanitizeImportRequest inside the
+    // queue (pure, unit-tested), exactly as UI_LONG_START defers to
+    // shared/longStart.ts rather than validating here.
+    this.guarded<[unknown], ImportStartResult>(UI_IMPORT_START, IMPORT_START_UNAVAILABLE, (req) =>
+      this.deps.importStart(req),
+    );
+    this.guarded<[unknown], { ok: boolean }>(UI_IMPORT_CANCEL, { ok: false }, (id) =>
+      this.deps.importCancel(typeof id === "string" ? id : ""),
+    );
+    // An empty list is what "the user pressed Cancel" looks like too, so the
+    // page treats both identically and never has to tell them apart.
+    this.guarded<[], string[]>(UI_IMPORT_PICK, [], () => this.deps.importPick());
 
     // ---- activation hot-path diagnostics (V2, B1) ----
     this.guarded<[], HotpathSnapshot | null>(UI_HOTPATH_SNAPSHOT, null, () => this.deps.hotpathSnapshot());

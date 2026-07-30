@@ -430,12 +430,23 @@ export function importedHeader(title: string, source: ImportSource): string {
 /** What a document says when it does NOT cover the whole file (plan §5.1.4: a
  * cancellation leaves either a complete document or nothing, and work kept has to
  * say how far it goes). Written right under the header, like the recorder's own
- * interruption note, so a reader learns it before scrolling. */
-export function partialImportNote(kind: "cancelled" | "interrupted", coveredMs: number, totalMs: number): string {
+ * interruption note, so a reader learns it before scrolling.
+ *
+ * D2 added the third kind. A decode that breaks at 55 minutes of an hour-long
+ * file leaves exactly the same shape of document as a cancellation - real work,
+ * covering part of the audio - and it has to say so in the same one place, or a
+ * second wording of "this document is partial" grows somewhere else and drifts. */
+export function partialImportNote(
+  kind: "cancelled" | "interrupted" | "failed",
+  coveredMs: number,
+  totalMs: number,
+): string {
   const how =
     kind === "cancelled"
       ? "You cancelled this import."
-      : "Flow closed before this import finished.";
+      : kind === "failed"
+        ? "Flow could not read the whole file."
+        : "Flow closed before this import finished.";
   const extent =
     totalMs > 0
       ? `Only the first ${hms(coveredMs)} of ${hms(totalMs)} was transcribed`
@@ -511,6 +522,11 @@ export interface ImportItem {
   historyId?: string;
   /** Cancelled or interrupted with work kept: the document says so itself. */
   partial?: boolean;
+  /** D2: the import is standing aside because the user's own voice has the
+   * engine (plan §5.1.4: the dictation always wins). Present ONLY while it is
+   * true, and it is a fact the page must show: an import that stops advancing
+   * for twenty minutes of a live meeting looks broken unless it says why. */
+  waitingFor?: "dictation" | "recording";
 }
 
 export interface ImportQueueSnapshot {

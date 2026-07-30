@@ -280,7 +280,8 @@ table.diag td:first-child { color: var(--ink2); white-space: nowrap; width: 180p
 /* The shell is non-selectable; FACTS must be copyable. Extend this allowlist
    with every new readable surface (.transcript, .doc, .rich, .snip pre when
    their waves land) - forgetting it makes pages uncopyable. */
-table.diag, .mono, .row .l span, .card .sub, .rich, .snip pre, .tl-raw, .doc-body { user-select: text; }
+table.diag, .mono, .row .l span, .card .sub, .rich, .snip pre, .tl-raw, .doc-body,
+.qitem .nm, .qitem .meta { user-select: text; }
 
 @media (max-width: 960px) {
   .home-grid { grid-template-columns: 1fr; }
@@ -405,6 +406,52 @@ textarea.snip-src:focus { outline: 2px solid var(--amber); outline-offset: 1px; 
   max-width: 68ch;
 }
 @media (max-width: 960px) { .rec-wrap { grid-template-columns: 1fr; } }
+
+/* ---- Import (V4 D3) ----
+   Ported from the validated mockup: a dashed drop target, then one card per
+   queued file with a real progress rail. The hover/over accent is the same
+   amber pair every other "you are acting on this" state uses; --amber-soft
+   replaces the mockup's hard-coded rgba so it holds on the light ground too. */
+.drop {
+  border: 1.5px dashed var(--line2);
+  border-radius: var(--r);
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--ink2);
+  transition: border-color 0.15s, background 0.15s;
+}
+.drop:hover { border-color: var(--amber-deep); background: var(--amber-soft); }
+/* Dragging a file over it: the SAME amber, held rather than hovered - the page
+   has to answer the gesture before the drop, or the user cannot tell whether
+   the window will take the file. */
+.drop.over { border-color: var(--amber); background: var(--amber-soft); }
+.drop svg { width: 26px; height: 26px; stroke: var(--ink3); stroke-width: 1.6; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.drop .hint { margin-top: 9px; font-weight: 600; color: var(--ink); }
+.drop .fmts { font-size: 12px; margin-top: 3px; }
+/* A link-shaped button: the mockup drew this as amber text, and it must still
+   be a real <button> for the keyboard and the screen reader. */
+.linkish {
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: var(--amber-text);
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.linkish:hover { color: var(--ink); }
+.import-opts { display: flex; gap: 22px; flex-wrap: wrap; margin: 14px 0 0; }
+.queue { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+.qitem { display: flex; align-items: center; gap: 14px; padding: 12px 16px; }
+.qitem .nm { font-weight: 600; overflow-wrap: anywhere; }
+.qitem .meta { color: var(--ink2); font-size: 11.5px; }
+/* The waiting state is amber, not grey: an import standing aside for a
+   dictation is not idle, and the page has to say which of the two it is. */
+.qitem .meta.waiting { color: var(--amber-text); }
+.qbar { height: 4px; border-radius: 999px; background: var(--panel2); overflow: hidden; margin-top: 7px; }
+.qbar i { display: block; height: 100%; background: var(--amber); border-radius: 999px; transition: width 0.3s linear; }
+.qacts { display: flex; gap: 8px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
 
 /* ---- Notes (wave U5) ---- */
 .notes-grid { display: grid; grid-template-columns: 300px 1fr; gap: 14px; align-items: start; }

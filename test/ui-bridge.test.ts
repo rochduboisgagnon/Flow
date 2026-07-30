@@ -33,6 +33,10 @@ import {
   UI_HISTORY_DOC,
   UI_DOWNLOAD_DOC,
   UI_DOWNLOAD_AUDIO,
+  UI_IMPORT_STATE,
+  UI_IMPORT_START,
+  UI_IMPORT_CANCEL,
+  UI_IMPORT_PICK,
 } from "../src/shared/ipcContracts";
 
 // U3c: uiBridge.ts imports "electron", which outside a real Electron process
@@ -112,6 +116,15 @@ test("every ui:* invoke channel this bridge owns is registered through guarded()
     // is the user's only recourse for a sentence someone else regrets saying.
     // It belongs behind the same gate for the same reason as ui:stats-clear.
     UI_REDACT_PASSAGES,
+    // D2: ui:import-start is the ONLY channel of this surface that hands main a
+    // filesystem path to open, and ui:import-pick opens a native dialog. Both
+    // are decisions a page the user is looking at gets to make, and neither is
+    // something the overlay or the hidden capture window has any business
+    // reaching through the shared preload.
+    UI_IMPORT_STATE,
+    UI_IMPORT_START,
+    UI_IMPORT_CANCEL,
+    UI_IMPORT_PICK,
   };
 
   assert.deepEqual(

@@ -383,10 +383,10 @@ export interface FiledRecording {
 }
 
 /** File a finished recording into `<historyRoot>/<date>/<name>/`. ONE
- * implementation behind the three ways a recording reaches the archive -
- * finalize()'s normal staged landing, the synchronous quit rescue and the
- * startup rescan of orphaned staging folders - so a guardrail cannot hold on
- * one path and quietly not on another.
+ * implementation behind the FOUR ways a recording reaches the archive -
+ * finalize()'s normal staged landing, the synchronous quit rescue, the startup
+ * rescan of orphaned staging folders, and (V4 D2) an audio file import - so a
+ * guardrail cannot hold on one path and quietly not on another.
  *
  * Order of operations, and why it is that order:
  *  - the DOCUMENT moves first and alone. If that fails, nothing was touched:
@@ -401,7 +401,7 @@ export interface FiledRecording {
  *    user explicitly unchecked "Keep the audio file". The recording itself
  *    (the document) is never deleted by Flow, on any path.
  * Returns null when nothing was filed. Never throws. */
-function fileRecordingIntoHistory(opts: {
+export function fileRecordingIntoHistory(opts: {
   historyRoot: string;
   docPath: string;
   audioPath: string;
@@ -511,8 +511,14 @@ function readStagedSession(
  * bottom. Best effort and never destructive - a document that cannot be
  * rewritten gets the note appended instead, and if THAT fails too the recording
  * is still filed (a missing note is a disappointment; a lost meeting is the bug
- * being fixed here). */
-function noteInterruption(docPath: string, note: string, log?: (msg: string) => void): void {
+ * being fixed here).
+ *
+ * V4 D2 reuses it for the partial-import note, which needs the identical
+ * treatment for the identical reason: whoever opens the document has to learn
+ * that it covers only part of the audio without scrolling to the bottom. The
+ * name says "interruption" because that is what it was written for; what it
+ * DOES is "put this note right under the header, atomically, best effort". */
+export function noteInterruption(docPath: string, note: string, log?: (msg: string) => void): void {
   try {
     const doc = fs.readFileSync(docPath, "utf8");
     const at = doc.indexOf(ENGINE_LINE);
@@ -637,7 +643,7 @@ export function listHistory(root: string = historyRoot(), log?: (msg: string) =>
           }
         }
         dayItems.push({
-          id: Buffer.from(`${dateName}/${sub.name}`, "utf8").toString("base64url"),
+          id: historyEntryId(folderDir),
           date: dateName,
           title: sub.name,
           hasAudio,
@@ -754,6 +760,17 @@ export function resolveHistoryEntry(
   }
   if (!doc) return null;
   return { dir: resolvedDir, doc, audio };
+}
+
+/** The opaque id of a filed recording, derived from its own folder: base64url
+ * of "<date>/<title>", the exact string resolveHistoryEntry decodes. The ONE
+ * encoder, because there are now two callers - listHistory's walk, and the V4
+ * D2 import pipeline, which files a document and then has to hand the window a
+ * way to open the note it just produced. Two encoders would be two chances to
+ * disagree with the single decoder. */
+export function historyEntryId(dir: string): string {
+  const { date, title } = historyEntryLabel(dir);
+  return Buffer.from(`${date}/${title}`, "utf8").toString("base64url");
 }
 
 /** date/title derived from a RESOLVED entry's own folder (root/date/folder,

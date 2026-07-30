@@ -1,4 +1,4 @@
-import { app, session, ipcMain, nativeTheme, BrowserWindow, powerMonitor } from "electron";
+import { app, session, ipcMain, nativeTheme, BrowserWindow, powerMonitor, dialog } from "electron";
 import path from "node:path";
 import fs from "node:fs";
 import { HotkeyAdapter } from "./hotkey";
@@ -18,9 +18,12 @@ import { runMigration } from "./migrate";
 import { analyzeSpeech, hasSpeech, trimToSpeech } from "../shared/vad";
 import { gateTranscript } from "../shared/textGate";
 import { pcmFromWav, encodeWav } from "../shared/wav";
-import { listOllamaModels } from "./llm/ollama";
+import { listOllamaModels, summarize } from "./llm/ollama";
 import { LocalApi } from "./api";
-import { LongRecorder, historyRoot, listHistory, resolveHistoryEntry, readHistoryDoc } from "./longform";
+import { LongRecorder, historyRoot, stagingRoot, listHistory, resolveHistoryEntry, readHistoryDoc } from "./longform";
+import { AudioDecodeWindow } from "./audioDecode";
+import { ImportQueue } from "./audioImport";
+import { SUPPORTED_AUDIO_EXTENSIONS } from "../shared/audioImport";
 import { DownloadManager } from "./downloads";
 import { Redactor } from "./redact";
 import { StatsStore } from "./stats";
@@ -483,6 +486,14 @@ if (!app.requestSingleInstanceLock()) {
         // D11: main-only for a stronger reason than the downloads above - this
         // one destroys, irreversibly. Deliberately NOT given to LocalApi.
         redactPassages: (id, targets) => redactor.remove(id, targets),
+        // D2: main-only too. ui:import-start hands the engine a path to READ,
+        // and a phone answering the local API over the network has no business
+        // naming files on this machine. The queue itself refuses anything that
+        // is not an existing regular file with a supported audio extension.
+        importState: () => importQueue.snapshot(),
+        importStart: (req) => importQueue.start(req),
+        importCancel: (id) => importQueue.cancel(id),
+        importPick: () => pickAudioFiles(),
         // B1: identical closure to LocalApi's above (hotpathSnapshotDep,
         // defined once, just above) - the Diagnostics panel and a
         // `bench:hotpath` run must never disagree on what is currently open/completed.
@@ -787,6 +798,14 @@ let nativeActive = false; // a native (engine-side) capture is feeding the long 
 // microphone); the finished WAV comes back once per utterance and is handed to
 // the ASR sidecar, then every reference is dropped.
 let listening = false; // dictation capture in flight (drives /update-readiness)
+// D2: utterances currently inside processUtterance - the tail AFTER the key is
+// released, where the model decode and the insertion happen. `listening` alone
+// covers press-to-release and drops the moment the key comes up, which is
+// precisely when the engine gets busy: an import that only watched `listening`
+// would step back in and contend for the GPU with the dictation it was standing
+// aside for. Counted, not a boolean: the local /transcribe endpoint can overlap
+// a local press.
+let utterancesInFlight = 0;
 
 // ---- the ONE definition of "busy" (review A10) ----
 // Everything that must hold an update back: a capture, a long recording, or a
@@ -803,7 +822,10 @@ function markActivity(): void {
   lastActivityAt = Date.now();
 }
 function engineBusy(): boolean {
-  return listening || longRec.isBusy || modelTransfers > 0;
+  // D2: an import counts. It runs for minutes on the speech engine, and an
+  // update that restarted the app in the middle of one would leave a partial
+  // document to be rescued at the next boot instead of a finished note.
+  return listening || longRec.isBusy || importQueue.isBusy || modelTransfers > 0;
 }
 
 // B11: the event-loop lag sampler - the measurement B1 never had (plan §3.6.2)
@@ -1038,6 +1060,48 @@ const redactor = new Redactor({
   log: flowLog,
 });
 
+// ---- V4 D1/D2: importing an audio file ----
+// The hidden decode window (Chromium's own codecs, no ffmpeg) and the pipeline
+// that turns its PCM into a document in the archive. Same lazy-path discipline
+// as `downloads` and `redactor` above: every folder is a closure, nothing
+// resolves at module load.
+const audioDecode = new AudioDecodeWindow(flowLog);
+const importQueue = new ImportQueue({
+  // The decode window is built on the FIRST import, not at boot: a hidden
+  // renderer nobody has asked for should not cost a session's memory. create()
+  // is idempotent, so this stays one line rather than a lifecycle.
+  decode: (call) => {
+    audioDecode.create(DEV);
+    return audioDecode.decode(call);
+  },
+  // The SAME warm sidecar dictation uses, with the long recorder's
+  // allowEmptyDemote:false - an imported meeting legitimately contains music and
+  // ambience, and demoting a healthy GPU over an empty segment would slow the
+  // whole app down silently (see ImportDeps.transcribe).
+  transcribe: async (wav) => {
+    const sc = sidecar;
+    if (!sc) throw new Error("the speech engine is not ready yet");
+    return await sc.transcribe(wav, { allowEmptyDemote: false });
+  },
+  // THE DICTATION ALWAYS WINS (plan §5.1.4, master invariant 2). The import
+  // reads this before every segment and stands aside; the dictation path reads
+  // NOTHING of the import's, holds no lock and acquires nothing, so a press can
+  // never end up queued behind an import. `utterancesInFlight` is what makes
+  // this cover the decode-and-insert tail after the key comes back up.
+  userEngineClaim: () =>
+    listening || utterancesInFlight > 0 ? "dictation" : longRec.isBusy ? "recording" : null,
+  historyRoot: () => historyRoot(),
+  // The SAME app-owned staging root a live capture uses, so the boot rescan
+  // (longRec.rescueOrphanedStaging) already covers an import the app died inside
+  // of - one implementation, and exactly what plan §5.1.4 promises about a
+  // restart: an interrupted import is visible as interrupted, never gone.
+  stagingRoot: () => stagingRoot(),
+  summaryModel: () => settings.summaryModel,
+  ollamaModels: () => listOllamaModels(),
+  summarize: (model, prompt) => summarize(model, prompt),
+  log: flowLog,
+});
+
 // U7 (Roch's privacy policy, plan §10 - read shared/stats.ts's module note):
 // the AGGREGATED dictation counters. Every dep is a closure for the same reason
 // as `downloads` just above: dataDir() caches the POST-migration folder on its
@@ -1168,6 +1232,11 @@ async function processUtterance(
   // The whole decode counts as activity (A10): entry AND exit are stamped so
   // the updater's quiet window can never open in the middle of a transcription.
   markActivity();
+  // D2: and the import queue stands aside for exactly this window - the model
+  // decode plus the insertion, which is where a dictation actually needs the
+  // engine. Incremented BEFORE the first await, released in the finally, so
+  // there is no instant where an utterance is running and nothing says so.
+  utterancesInFlight++;
   try {
     if (!sidecar) throw new Error("speech engine not ready");
     const pcm = pcmFromWav(wav);
@@ -1198,6 +1267,7 @@ async function processUtterance(
     // the keyboard hook, so that bound is a requirement, not a nicety.
     return { text: applyDictionaryReplacements(clean), ms };
   } finally {
+    utterancesInFlight--;
     markActivity();
   }
 }
@@ -1480,6 +1550,34 @@ async function recordShortcutAndApply(): Promise<{ combo: string[] | null; combo
   return { combo: null };
 }
 
+/** D2/D3: the native open dialog for an import, opened by MAIN. The renderer
+ * never enumerates the filesystem and never gets a path it did not already have;
+ * everything this returns went through the OS picker with the user's own hands
+ * on it. Modal to the main window when it exists (a picker floating loose behind
+ * the app is how a dialog gets lost), and an empty list for a cancel - which is
+ * also what a refused sender gets, so the page treats the two identically. */
+async function pickAudioFiles(): Promise<string[]> {
+  const contents = mainWindow.contents();
+  const parent = contents ? BrowserWindow.fromWebContents(contents) : null;
+  const options: Electron.OpenDialogOptions = {
+    title: "Import audio",
+    // multiSelections: a queue exists precisely so several files can be dropped
+    // (or picked) at once. openFile only: a folder would be an unbounded walk.
+    properties: ["openFile", "multiSelections", "dontAddToRecent"],
+    filters: [
+      { name: "Audio", extensions: SUPPORTED_AUDIO_EXTENSIONS.map((e) => e.slice(1)) },
+      { name: "All files", extensions: ["*"] },
+    ],
+  };
+  try {
+    const r = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options);
+    return r.canceled ? [] : r.filePaths;
+  } catch (err) {
+    flowLog(`[import] the file picker failed: ${err}`);
+    return [];
+  }
+}
+
 app.on("before-quit", () => {
   mainWindow.setQuitting(true);
   // U3e: quitting inside the ~250 ms restore window would kill the timer that
@@ -1510,6 +1608,12 @@ app.on("before-quit", () => {
   // header (file looks empty). Patch it synchronously so the kept audio is
   // valid. A no-op after a rescue, which flushes the stream itself first.
   longRec.flushNativeAudioSync();
+  // D2: the same synchronous discipline for an import in flight. Whatever it had
+  // already transcribed is filed WITH the note saying how far it got; an import
+  // that had produced nothing leaves nothing behind. Before the decode window is
+  // destroyed, so nothing races the teardown.
+  importQueue.rescueOnQuit();
+  audioDecode.destroy();
   nativeCapture.destroy();
   asrWarm = false;
   sidecar?.stop();

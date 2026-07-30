@@ -11,6 +11,7 @@ import { Record } from "./pages/Record";
 import { Notes } from "./pages/Notes";
 import { Dictionary } from "./pages/Dictionary";
 import { Statistics } from "./pages/Statistics";
+import { Import } from "./pages/Import";
 
 // Flow main window shell (wave U1). State discipline unchanged since A1/A2:
 // the window renders ONE snapshot pushed by the engine (UiStatePayload),
@@ -22,13 +23,9 @@ import { Statistics } from "./pages/Statistics";
 // The honest not-yet pages (plan rule: never a dead control that looks
 // alive). Intro sentences come from the validated mockup; each names what is
 // missing and the wave that builds it.
+// V4 D3: `import` left this list - the decode pipeline the note pointed at
+// (D1/D2) exists, so the page is the real thing now.
 const COMING: Partial<Record<Section, { title: string; blurb: string; missing: string; wave: string }>> = {
-  import: {
-    title: "Import",
-    blurb: "Drop audio files, get notes. Phone memos, downloaded recordings, any common format.",
-    missing: "Long files need a chunked decode pipeline (a 2 h memo decoded whole would exhaust memory), so this is an engine wave, not a page skin.",
-    wave: "Planned after the design campaign.",
-  },
   functions: {
     title: "Functions",
     blurb: "Say a trigger at the start of an utterance and Flow transforms everything after it.",
@@ -76,6 +73,7 @@ export function App() {
               {section === "home" ? <Home s={s} go={setSection} /> : null}
               {section === "diagnostics" ? <Diagnostics s={s} /> : null}
               {section === "record" ? <Record s={s} /> : null}
+              {section === "import" ? <Import go={setSection} /> : null}
               {section === "notes" ? <Notes s={s} /> : null}
               {section === "stats" ? <Statistics s={s} patch={patch} /> : null}
               {section === "dictionary" ? <Dictionary /> : null}
