@@ -23,10 +23,13 @@
 //   reaches the ASR. But TWO quick taps within doubleTapMs = hands-free
 //   toggle (plan 5.8): capture keeps running after the second tap's release,
 //   and a new double-tap stops it.
-// - While holding to talk, any keydown OUTSIDE the combo cancels the capture:
-//   the user is invoking an OS shortcut (Ctrl+Win+arrow switches virtual
-//   desktops), not dictating. In toggle mode other keys are ignored - being
-//   hands-free is the point.
+// - While holding to talk, a keydown OUTSIDE the combo ends the capture - but
+//   HOW depends on when it arrives. Within STRAY_KEY_STOPS_AFTER_MS it is
+//   cancelled (the user is invoking an OS shortcut like Ctrl+Win+arrow, and
+//   that must not insert text); after it, the capture is STOPPED and what was
+//   already said is delivered, because by then the user was dictating and
+//   discarding their words is the only unrecoverable outcome. In toggle mode
+//   other keys are ignored entirely - being hands-free is the point.
 // - THE STALE-HOLD NET (see dropStaleKeys): key state is only as good as the
 //   events that built it, and Windows can take events away without telling
 //   anyone. shared/systemResilience.ts covers the transitions Electron reports
@@ -37,6 +40,8 @@
 //   can survive as "Ctrl is down" and let the next lone Win press start a
 //   dictation nobody asked for. The net closes that door from inside the hook,
 //   depending on no notification at all - the same stance as B4's watchdog.
+
+import { STRAY_KEY_STOPS_AFTER_MS } from "./constants";
 
 export type PttAction = "start" | "stop" | "cancel" | "none";
 
@@ -137,6 +142,7 @@ export function createComboMatcher(
     minHoldMs?: number;
     doubleTapMs?: number;
     staleHoldMs?: number;
+    strayKeyStopsAfterMs?: number;
     /** Called when the net drops keys, with their physical names. Kept as a
      * callback rather than a log line because this file is pure - and because
      * the caller runs inside the hook callback Windows is timing, so it is the
@@ -147,6 +153,7 @@ export function createComboMatcher(
   const minHoldMs = opts?.minHoldMs ?? 200;
   const doubleTapMs = opts?.doubleTapMs ?? 400;
   const staleHoldMs = opts?.staleHoldMs ?? STALE_HOLD_MS;
+  const strayKeyStopsAfterMs = opts?.strayKeyStopsAfterMs ?? STRAY_KEY_STOPS_AFTER_MS;
 
   let combo = [...initialCombo];
   const down = new Set<string>(); // physical keys currently held (event-tracked)
@@ -321,10 +328,23 @@ export function createComboMatcher(
     }
 
     if (capturing && !toggledOn && !isComboKey(key)) {
-      // Extra key while holding to talk = an OS shortcut, not dictation.
+      // A key outside the combo, while holding to talk. Two very different
+      // things look identical here, and WHEN it arrives is what tells them
+      // apart (see STRAY_KEY_STOPS_AFTER_MS for the human report behind this).
+      //
+      // Early: the user is invoking an OS shortcut - Ctrl+Win+Arrow switches
+      // virtual desktops - and inserting a dictation into that would be wrong.
+      // Cancel, nothing reaches the engine.
+      //
+      // Late: the user has been SPEAKING for seconds. Whatever that keystroke
+      // was - a stray press, another application, a media key - it is not the
+      // start of a shortcut, and throwing away what was already said is the one
+      // outcome they cannot undo. Stop, and deliver it.
+      const heldMs = pressedAt === null ? 0 : now - pressedAt;
       capturing = false;
       pressedAt = null;
       lastTapUpAt = null;
+      if (heldMs >= strayKeyStopsAfterMs) return { action: "stop", swallow: false };
       return { action: "cancel", swallow: false };
     }
     return { action: "none", swallow: false };

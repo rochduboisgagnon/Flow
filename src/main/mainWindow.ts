@@ -1,8 +1,11 @@
-import { BrowserWindow, shell } from "electron";
+import { BrowserWindow, screen, shell } from "electron";
+import fs from "node:fs";
 import path from "node:path";
 import { THEME_BG, THEME_TITLEBAR, type ResolvedTheme } from "../shared/theme";
 import { TITLEBAR_H } from "../shared/constants";
 import { decideExternalOpen } from "../shared/externalNav";
+import { restoreBounds, sanitizeBounds, MIN_HEIGHT, MIN_WIDTH } from "../shared/windowBounds";
+import { dataDir } from "./settings";
 
 // The main window (plan V1, A1): Flow's own face, now that the Manager no
 // longer hosts the settings. Three rules, all engine-protecting:
@@ -30,6 +33,43 @@ export class MainWindow {
   // one - the same shape as UiBridgeDeps.log?.
   private log: (msg: string) => void;
 
+  private boundsTimer: NodeJS.Timeout | undefined;
+
+  /** Where the remembered bounds live. Its own small file rather than a field in
+   * settings.json: this is written on every drag, and settings.json is a file
+   * the user may be editing by hand. */
+  private boundsFile(): string {
+    return path.join(dataDir(), "window.json");
+  }
+
+  private readBounds(): unknown {
+    try {
+      return JSON.parse(fs.readFileSync(this.boundsFile(), "utf8"));
+    } catch {
+      // Missing or unreadable is not an error worth a log line: it means "first
+      // run", which is the overwhelmingly common case for this file.
+      return null;
+    }
+  }
+
+  /** Never records a MAXIMIZED or minimized window: restoring one of those as a
+   * normal window would open something the size of a screen the user may no
+   * longer have, and Electron's own maximize flag is the right way to express
+   * "big". getNormalBounds gives the size it would return to. */
+  private writeBounds(): void {
+    const w = this.win;
+    if (!w || w.isDestroyed() || w.isMinimized() || w.isMaximized() || w.isFullScreen()) return;
+    const b = sanitizeBounds(w.getNormalBounds());
+    if (!b) return;
+    try {
+      fs.mkdirSync(path.dirname(this.boundsFile()), { recursive: true });
+      fs.writeFileSync(this.boundsFile(), JSON.stringify(b), "utf8");
+    } catch {
+      // A window position is the least important thing on this disk. Failing to
+      // save it must never surface anywhere, let alone stop the app.
+    }
+  }
+
   constructor(log: (msg: string) => void = () => {}) {
     this.log = log;
   }
@@ -46,11 +86,18 @@ export class MainWindow {
       this.win.focus();
       return;
     }
+    // 2026-07-30: the size and position the user last chose, when they still
+    // land on a screen that exists. See shared/windowBounds.ts for why that
+    // condition is the whole feature and not a detail.
+    const stored = this.readBounds();
+    const bounds = restoreBounds(
+      stored,
+      screen.getAllDisplays().map((d) => d.workArea),
+    );
     this.win = new BrowserWindow({
-      width: 1100,
-      height: 740,
-      minWidth: 900,
-      minHeight: 600,
+      ...bounds,
+      minWidth: MIN_WIDTH,
+      minHeight: MIN_HEIGHT,
       show: false, // shown on ready-to-show: no white flash
       autoHideMenuBar: true,
       // What Chromium paints during resize/maximize, before the page itself
@@ -106,8 +153,19 @@ export class MainWindow {
       this.openExternalIfAllowed(url);
       return { action: "deny" }; // Flow never opens a second Electron window this way
     });
+    // Remember where the user put it. On MOVE and RESIZE rather than on close,
+    // and debounced: a window is dragged in dozens of events, and "close" is
+    // not reached at all when the machine shuts down under the app.
+    const remember = () => {
+      if (this.boundsTimer) clearTimeout(this.boundsTimer);
+      this.boundsTimer = setTimeout(() => this.writeBounds(), 400);
+      this.boundsTimer.unref?.();
+    };
+    this.win.on("resize", remember);
+    this.win.on("move", remember);
     this.win.on("close", (e) => {
       // Closing hides; the engine keeps running (tray keeps the app reachable).
+      this.writeBounds();
       if (!this.quitting) {
         e.preventDefault();
         this.win?.hide();

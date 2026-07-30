@@ -403,7 +403,11 @@ test("stale-hold net: it NEVER runs while a capture is live", () => {
   m.handle({ key: "LEFT META", state: "DOWN" }, 1_200); // dictating
   // Half a minute of total silence: a real push-to-talk hold, thinking.
   const d = m.handle({ key: "A", state: "DOWN" }, 31_000);
-  assert.equal(d.action, "cancel", "the capture was intact - an emptied matcher could not have cancelled it");
+  // "stop" since 2026-07-30 (a stray key late in a hold DELIVERS what was said
+  // instead of discarding it). The proof this test needs is unchanged: an
+  // emptied matcher could not have produced either verdict, because it would
+  // have had no live capture to end.
+  assert.equal(d.action, "stop", "the capture was intact - an emptied matcher could not have ended it");
   assert.deepEqual(drops, [], "nothing may be second-guessed under a live microphone");
 });
 
@@ -452,4 +456,63 @@ test("stale-hold net: a dropped WIN cannot leave Windows with a modifier stuck d
   // genuine Win press must behave like any first press.
   assert.equal(m.handle({ key: "LEFT META", state: "DOWN" }, 6_000).swallow, false, "this DOWN reaches the OS");
   assert.equal(m.handle({ key: "LEFT META", state: "UP" }, 6_100).swallow, false, "so its UP must reach it too");
+});
+
+// ---------------------------------------------------------------------------
+// 2026-07-30, from a human report: "sometimes the transcript stops in the middle
+// without me releasing the shortcut, so I don't get to finish speaking."
+//
+// The cause was one line: ANY keydown outside the combo CANCELLED a capture in
+// progress - and cancel means the words are thrown away, with no sound, no
+// message and nothing to recover. The intent behind it was real (Ctrl+Win then
+// Arrow is a virtual-desktop switch, not dictation), but it ignored the one
+// thing that separates the two cases: somebody invoking a shortcut presses the
+// third key almost immediately, somebody dictating has been speaking for
+// seconds.
+// ---------------------------------------------------------------------------
+
+test("REPORT: a stray key LATE in a hold delivers what was said instead of discarding it", () => {
+  const m = createComboMatcher(["CTRL", "WIN"]);
+  m.handle({ key: "CTRL", state: "DOWN" }, 0);
+  m.handle({ key: "WIN", state: "DOWN" }, 10);
+  // ...nine seconds of speech...
+  const d = m.handle({ key: "A", state: "DOWN" }, 9_000);
+  assert.equal(d.action, "stop", "nine seconds of dictation must not be thrown away by one keystroke");
+});
+
+test("but EARLY it is still cancelled - an OS shortcut must never insert text", () => {
+  const m = createComboMatcher(["CTRL", "WIN"]);
+  m.handle({ key: "CTRL", state: "DOWN" }, 0);
+  m.handle({ key: "WIN", state: "DOWN" }, 10);
+  // Ctrl+Win+Right: the user is switching virtual desktops, 120 ms in.
+  const d = m.handle({ key: "RIGHT", state: "DOWN" }, 130);
+  assert.equal(d.action, "cancel");
+});
+
+test("the boundary is the constant, and it is checked on both sides of itself", () => {
+  const at = (t: number) => {
+    const m = createComboMatcher(["CTRL", "WIN"], { strayKeyStopsAfterMs: 1_500 });
+    m.handle({ key: "CTRL", state: "DOWN" }, 0);
+    m.handle({ key: "WIN", state: "DOWN" }, 0);
+    return m.handle({ key: "X", state: "DOWN" }, t).action;
+  };
+  assert.equal(at(1_499), "cancel");
+  assert.equal(at(1_500), "stop", "at the threshold it delivers - the safe direction is keeping words");
+});
+
+test("hands-free is untouched: in toggle mode a stray key does nothing at all", () => {
+  const m = createComboMatcher(["CTRL", "WIN"], { doubleTapMs: 400, minHoldMs: 200 });
+  // Two quick taps to toggle hands-free on.
+  m.handle({ key: "CTRL", state: "DOWN" }, 0);
+  m.handle({ key: "WIN", state: "DOWN" }, 0);
+  m.handle({ key: "WIN", state: "UP" }, 50);
+  m.handle({ key: "CTRL", state: "UP" }, 60);
+  m.handle({ key: "CTRL", state: "DOWN" }, 100);
+  m.handle({ key: "WIN", state: "DOWN" }, 100);
+  m.handle({ key: "WIN", state: "UP" }, 150);
+  m.handle({ key: "CTRL", state: "UP" }, 160);
+  // Hands-free exists so you can type while dictating; a keystroke here must
+  // neither stop nor cancel.
+  const d = m.handle({ key: "A", state: "DOWN" }, 5_000);
+  assert.equal(d.action, "none");
 });

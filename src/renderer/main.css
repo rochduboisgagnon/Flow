@@ -148,7 +148,7 @@ html, body, #root {
 @media (prefers-reduced-motion: reduce) { .page { animation: none; } }
 
 h2 { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 3px; }
-.sub { color: var(--ink2); font-size: 12.5px; margin: 0 0 20px; max-width: 62ch; }
+.sub { color: var(--ink2); font-size: 12.5px; margin: 0 0 20px; max-width: 86ch; line-height: 1.55; }
 .lbl { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.09em; color: var(--ink2); }
 
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 16px 18px; }
@@ -243,7 +243,7 @@ select:focus, input:focus, button:focus-visible { outline: 2px solid var(--amber
 .progress > div { height: 100%; background: var(--amber); }
 
 /* ---- Diagnostics ---- */
-table.diag { border-collapse: collapse; width: 100%; max-width: 640px; }
+table.diag { border-collapse: collapse; width: 100%; }
 table.diag td { padding: 9px 14px 9px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
 table.diag tr:last-child td { border-bottom: 0; }
 table.diag td:first-child { color: var(--ink2); white-space: nowrap; width: 180px; }
@@ -263,17 +263,26 @@ table.diag td:first-child { color: var(--ink2); white-space: nowrap; width: 180p
 }
 .tabs button:hover { color: var(--ink); }
 .tabs button.on { color: var(--ink); font-weight: 600; border-bottom-color: var(--amber); }
-.rows { max-width: 620px; }
-.row { display: flex; align-items: center; justify-content: space-between; gap: 22px; padding: 13px 2px; border-bottom: 1px solid var(--line); }
+/* 2026-07-30, from a human check: the help text under every setting was capped
+   at 360px, so a paragraph explaining WHY a setting exists rendered as a tall
+   ribbon in a 300px column while two thirds of the window sat empty. The whole
+   value of those paragraphs is that they get read.
+   The cap is now a READABILITY bound (~86 characters, past which the eye loses
+   the line on the way back) rather than an arbitrary pixel count, and it only
+   binds on a wide window. `align-items: start` goes with it: a two-line label
+   beside a five-line paragraph should top-align, not float in the middle. */
+.rows { max-width: 100%; }
+.row { display: flex; align-items: start; justify-content: space-between; gap: 28px; padding: 15px 2px; border-bottom: 1px solid var(--line); }
 .row:last-child { border-bottom: 0; }
+.row .l { min-width: 0; flex: 1 1 auto; }
 .row .l b { display: block; font-weight: 600; }
-.row .l span { color: var(--ink2); font-size: 12.5px; max-width: 360px; display: block; margin-top: 2px; }
-.row .c { flex: none; display: flex; align-items: center; gap: 8px; }
+.row .l span { color: var(--ink2); font-size: 12.5px; max-width: 86ch; display: block; margin-top: 3px; line-height: 1.55; }
+.row .c { flex: none; display: flex; align-items: center; gap: 8px; padding-top: 2px; }
 .note-amber { color: var(--amber-text); font-size: 12.5px; }
 .note-err { color: var(--err); font-size: 12.5px; }
 
 /* ---- honest not-yet state (pages whose engine work is a later wave) ---- */
-.coming { border: 1.5px dashed var(--line2); border-radius: var(--r); padding: 30px 32px; color: var(--ink2); max-width: 560px; }
+.coming { border: 1.5px dashed var(--line2); border-radius: var(--r); padding: 30px 32px; color: var(--ink2); max-width: 86ch; }
 .coming .soon { display: inline-block; font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--amber-text); margin-bottom: 8px; }
 .coming .wave { margin-top: 10px; font-size: 11.5px; color: var(--ink2); }
 
@@ -694,3 +703,23 @@ html.light .heat i.l2 { background: #cf9d55; }
    job is to be read. It stays reachable by keyboard at all times. */
 .hcopy { opacity: 0; transition: opacity 120ms ease; }
 .hrow:hover .hcopy, .hcopy:focus-visible { opacity: 1; }
+
+
+/* ---- The scrollbar is invisible (2026-07-30) ----
+   Asked for directly: you can scroll, you never see a bar. Applied to the
+   scrolling containers rather than to `*`, so a future overflow:auto somewhere
+   unexpected still shows one - a scrollable area nobody can tell is scrollable
+   is a real usability cost, and it should be a deliberate choice each time.
+   Both syntaxes: Firefox honours scrollbar-width, Chromium (which is what
+   Electron is) honours the pseudo-element. */
+.content, .hist, .doc-body, .rail {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.content::-webkit-scrollbar,
+.hist::-webkit-scrollbar,
+.doc-body::-webkit-scrollbar,
+.rail::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
