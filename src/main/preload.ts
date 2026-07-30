@@ -42,6 +42,10 @@ import {
   UI_SELF_CHECK,
   UI_STATS_READ,
   UI_STATS_CLEAR,
+  UI_ASSIST_POLL,
+  UI_ASSIST_ASK,
+  UI_ASSIST_KEEP,
+  UI_ASSIST_DISMISS,
   UI_SNIPPET_LIST,
   UI_SNIPPET_SAVE,
   UI_SNIPPET_DELETE,
@@ -54,11 +58,22 @@ import {
   UI_LONG_STOP,
   UI_LONG_MARK,
   UI_LONG_TRANSCRIPT,
+  UI_LIVE_NOTES_LIST,
+  UI_LIVE_NOTES_ADD,
+  UI_LIVE_NOTES_EDIT,
+  UI_LIVE_NOTES_DELETE,
   UI_HISTORY_LIST,
   UI_HISTORY_DOC,
   UI_DOWNLOAD_DOC,
   UI_DOWNLOAD_AUDIO,
   UI_REDACT_PASSAGES,
+  UI_FUNC_LIST,
+  UI_FUNC_SAVE,
+  UI_FUNC_DELETE,
+  UI_FUNC_TEST,
+  type VoiceFunctionInput,
+  type VoiceFunctionsResult,
+  type FunctionTestResult,
   type CaptureStartPayload,
   type CaptureWarmPayload,
   type CaptureTimingPayload,
@@ -83,6 +98,7 @@ import {
   type LongStartResult,
   type LongStopResult,
   type LongTranscriptResult,
+  type LiveNotesResult,
   type HistoryItem,
   type HistoryDocPayload,
   type DownloadResult,
@@ -91,6 +107,7 @@ import {
   type HotpathSnapshot,
   type SelfCheckReport,
   type StatsPayload,
+  type AssistSnapshot,
 } from "../shared/ipcContracts";
 
 export type CaptureCommand = "start" | "stop" | "cancel";
@@ -214,6 +231,15 @@ const ui = {
   // ---- dictionary (U6): PULL-only, and all three answer with the WHOLE
   // dictionary - including dictDelete - so the page replaces its list with what
   // comes back rather than mutating its own copy and drifting from disk.
+  // ---- voice functions (V5): PULL-only, and all three writes answer with the
+  // WHOLE library - same contract as the dictionary above, so the page replaces
+  // its list with what comes back rather than mutating its own copy.
+  funcList: (): Promise<VoiceFunctionsResult> => ipcRenderer.invoke(UI_FUNC_LIST),
+  funcSave: (input: VoiceFunctionInput): Promise<VoiceFunctionsResult> => ipcRenderer.invoke(UI_FUNC_SAVE, input),
+  funcDelete: (id: string): Promise<VoiceFunctionsResult> => ipcRenderer.invoke(UI_FUNC_DELETE, id),
+  /** The dry run: what a dictation of this exact text would produce. SLOW by
+   * nature - it calls the local model - and it inserts nothing anywhere. */
+  funcTest: (text: string): Promise<FunctionTestResult> => ipcRenderer.invoke(UI_FUNC_TEST, text),
   dictList: (): Promise<DictResult> => ipcRenderer.invoke(UI_DICT_LIST),
   dictSave: (input: DictInput): Promise<DictResult> => ipcRenderer.invoke(UI_DICT_SAVE, input),
   dictDelete: (id: string): Promise<DictResult> => ipcRenderer.invoke(UI_DICT_DELETE, id),
@@ -225,6 +251,18 @@ const ui = {
   longStop: (): Promise<LongStopResult> => ipcRenderer.invoke(UI_LONG_STOP),
   longMark: (): Promise<{ ok: boolean }> => ipcRenderer.invoke(UI_LONG_MARK),
   longTranscript: (since: number): Promise<LongTranscriptResult> => ipcRenderer.invoke(UI_LONG_TRANSCRIPT, since),
+  // ---- live notes (D7): PULL, and every channel answers with the WHOLE list
+  // plus the recording it belongs to (see ipcContracts.ts). `startedIso` is
+  // passed on every call, never remembered on this side: the page states which
+  // recording it believes it is annotating and main refuses a mismatch, which is
+  // what stops a note from landing on the next meeting.
+  liveNotesList: (): Promise<LiveNotesResult> => ipcRenderer.invoke(UI_LIVE_NOTES_LIST),
+  liveNoteAdd: (startedIso: string, text: string): Promise<LiveNotesResult> =>
+    ipcRenderer.invoke(UI_LIVE_NOTES_ADD, startedIso, text),
+  liveNoteEdit: (startedIso: string, id: string, text: string): Promise<LiveNotesResult> =>
+    ipcRenderer.invoke(UI_LIVE_NOTES_EDIT, startedIso, id, text),
+  liveNoteDelete: (startedIso: string, id: string): Promise<LiveNotesResult> =>
+    ipcRenderer.invoke(UI_LIVE_NOTES_DELETE, startedIso, id),
   // ---- archive browser (U5a): PULL, on demand - never cached like state's
   // `recent` field (see ipcContracts.ts's module note), so the Notes page
   // always sees the exact on-disk archive.
@@ -279,6 +317,16 @@ const ui = {
   // back instead of assuming what "cleared" looks like (see ipcContracts.ts).
   statsRead: (): Promise<StatsPayload> => ipcRenderer.invoke(UI_STATS_READ),
   statsClear: (): Promise<StatsPayload> => ipcRenderer.invoke(UI_STATS_CLEAR),
+  // ---- live assistance during a recording (U8) ----
+  // assistPoll is the panel's heartbeat AND the only thing that can start a
+  // round: main owns no timer, so a page that stops polling stops the feature
+  // (see ipcContracts.ts and main/liveAssist.ts). The other three are all human
+  // presses. Every one answers with the WHOLE snapshot, so the panel replaces
+  // its state with what comes back instead of mutating its own copy.
+  assistPoll: (): Promise<AssistSnapshot> => ipcRenderer.invoke(UI_ASSIST_POLL),
+  assistAsk: (): Promise<AssistSnapshot> => ipcRenderer.invoke(UI_ASSIST_ASK),
+  assistKeep: (id: string): Promise<AssistSnapshot> => ipcRenderer.invoke(UI_ASSIST_KEEP, id),
+  assistDismiss: (id: string): Promise<AssistSnapshot> => ipcRenderer.invoke(UI_ASSIST_DISMISS, id),
 };
 
 export type FlowUiApi = typeof ui;

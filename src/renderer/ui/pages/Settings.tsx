@@ -176,6 +176,17 @@ function TabEngine({ s, patch }: { s: UiStatePayload; patch: Patch }) {
   );
 }
 
+// U8: the wording of the most intrusive switch in Flow, written to the same rule
+// as PREWARM_HELP above - the COST comes before the benefit, because a privacy
+// trade the user cannot read is a privacy trade they did not make. Three things
+// it must say and does: whose speech is being read, that nothing leaves the
+// machine, and that Flow does not embed a model of its own yet.
+const LIVE_ASSIST_HELP =
+  "Off by default. While a meeting is being recorded, a model running on this machine reads the last few minutes of the transcript and proposes notes, questions or replies in the Record page. " +
+  "The cost first: this is the one feature of Flow that reads what OTHER PEOPLE say - they never installed Flow and never agreed to anything - and a panel proposing replies pulls your eyes off the person talking at the moment they are talking. It also asks the same GPU that is transcribing the meeting to write a few lines every 45 seconds. " +
+  "What it does not cost: nothing is sent anywhere, the model answers on this computer. Nothing new is stored: suggestions live in memory only, and one you choose to keep goes into that recording's own document on a line that says it was not spoken by anyone. The recording always wins - suggestions stop while you dictate and while the transcription is catching up. " +
+  "It needs a local model, and Flow does not embed one yet: it uses the Ollama model chosen above. Without Ollama the panel produces nothing and says so, rather than pretending.";
+
 function TabLocalAi({ s, patch }: { s: UiStatePayload; patch: Patch }) {
   const [models, setModels] = useState<string[] | null | "loading">("loading");
   useEffect(() => { void window.flowui.ollamaModels().then((m) => setModels(m)); }, []);
@@ -191,6 +202,17 @@ function TabLocalAi({ s, patch }: { s: UiStatePayload; patch: Patch }) {
               {opts.map((m) => <option key={m} value={m}>{m}</option>)}
             </select>
           )}
+      </Row>
+      {/* U8: the most intrusive switch in the app, so it follows PREWARM_HELP's
+          rule to the letter - the COST is stated before the benefit, and the
+          missing piece (Flow embeds no model of its own yet) is named rather
+          than glossed. */}
+      <Row label="Live suggestions while recording" help={LIVE_ASSIST_HELP}>
+        <Toggle
+          label="Live suggestions while recording"
+          on={s.settings.liveAssist}
+          onChange={(v) => void patch({ liveAssist: v })}
+        />
       </Row>
     </div>
   );

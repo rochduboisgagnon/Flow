@@ -85,6 +85,17 @@ export const SILENT_FAILURE = {
   // others do - the dictation was lost and no surface said so - and because
   // this is the tally the user is already reading in Diagnostics.
   micDroppedMidDictation: "mic-dropped-mid-dictation",
+  // src/main/index.ts - wireCapture()'s CAPTURE_DONE handler, via
+  // main/functions.ts's applyVoiceCommands (plan V5, E3).
+  //
+  // A voice function fired but produced nothing usable: Ollama not running, no
+  // model installed, the model timed out, or its answer came back empty or
+  // runaway. The dictation is NOT lost - the raw transcript is inserted instead,
+  // which is the E3 contract - so nothing breaks; what would otherwise be
+  // invisible is that the transformation the user asked for never happened. From
+  // his side the symptom is "my function did nothing", and this counter plus the
+  // named line in flow.log are the only two places that can say why.
+  voiceFunctionFailed: "voice-function-failed",
 } as const;
 
 export type SilentFailureName = (typeof SILENT_FAILURE)[keyof typeof SILENT_FAILURE];

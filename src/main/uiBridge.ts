@@ -14,6 +14,10 @@ import {
   UI_SELF_CHECK,
   UI_STATS_READ,
   UI_STATS_CLEAR,
+  UI_ASSIST_POLL,
+  UI_ASSIST_ASK,
+  UI_ASSIST_KEEP,
+  UI_ASSIST_DISMISS,
   UI_SNIPPET_LIST,
   UI_SNIPPET_SAVE,
   UI_SNIPPET_DELETE,
@@ -26,6 +30,10 @@ import {
   UI_LONG_STOP,
   UI_LONG_MARK,
   UI_LONG_TRANSCRIPT,
+  UI_LIVE_NOTES_LIST,
+  UI_LIVE_NOTES_ADD,
+  UI_LIVE_NOTES_EDIT,
+  UI_LIVE_NOTES_DELETE,
   UI_HISTORY_LIST,
   UI_HISTORY_DOC,
   UI_DOWNLOAD_DOC,
@@ -35,6 +43,12 @@ import {
   UI_IMPORT_START,
   UI_IMPORT_CANCEL,
   UI_IMPORT_PICK,
+  UI_FUNC_LIST,
+  UI_FUNC_SAVE,
+  UI_FUNC_DELETE,
+  UI_FUNC_TEST,
+  type VoiceFunctionsResult,
+  type FunctionTestResult,
   type ImportQueueSnapshot,
   type ImportStartResult,
   type UiStatePayload,
@@ -45,6 +59,7 @@ import {
   type LongStartResult,
   type LongStopResult,
   type LongTranscriptResult,
+  type LiveNotesResult,
   type HistoryItem,
   type HistoryDocPayload,
   type DownloadResult,
@@ -53,10 +68,13 @@ import {
   type HotpathSnapshot,
   type SelfCheckReport,
   type StatsPayload,
+  type AssistSnapshot,
 } from "../shared/ipcContracts";
+import { ASSIST_UNAVAILABLE } from "../shared/liveAssist";
 import type { MainWindow } from "./mainWindow";
 import { listSnippets, saveSnippet, deleteSnippet, getSnippet } from "./snippets";
 import { listDictionary, saveDictEntry, deleteDictEntry } from "./dictionary";
+import { listFunctions, saveFunction, deleteFunction } from "./functions";
 import { cancelPendingRestore } from "./insert";
 import { decideLongStart } from "../shared/longStart";
 
@@ -99,6 +117,24 @@ export interface UiBridgeDeps {
   longStop(): LongStopResult;
   longMark(): { ok: boolean };
   longTranscript(since: number): LongTranscriptResult;
+
+  // ---- live notes typed during a recording (V4, D7) ----
+  // Main-only, NO HTTP equivalent - see ipcContracts.ts on why the one part of a
+  // capture that cannot be regenerated is not exposed to a remote client. The
+  // store owns persistence and the recording-identity check (main/liveNotes.ts);
+  // this bridge only gates the sender, and the gate is not ceremony: the same
+  // preload is loaded by the overlay and the hidden capture window, and these
+  // channels WRITE the user's own irreplaceable words.
+  //
+  // `startedIso` is supplied by the CALLER on every write and checked by the
+  // store, never remembered here: the page states which recording it believes it
+  // is annotating, and a note aimed at a recording that has already been filed
+  // is refused rather than landing on the next one.
+  liveNotesList(): LiveNotesResult;
+  liveNoteAdd(startedIso: string, text: string): LiveNotesResult;
+  liveNoteEdit(startedIso: string, id: string, text: string): LiveNotesResult;
+  liveNoteDelete(startedIso: string, id: string): LiveNotesResult;
+
   /** NativeCapture.available() (Windows-only "this is a PC" gate). Validated
    * by shared/longStart.ts BEFORE this bridge ever calls longStartNative, so
    * a machine that cannot loopback gets one clean, readable refusal instead
@@ -158,10 +194,34 @@ export interface UiBridgeDeps {
   // describe the owner of this machine, and the local API answers a remote PWA
   // over the network. The store (main/stats.ts) owns the file; this bridge only
   // gates the sender.
+  // ---- voice functions (V5, E5) ----
+  /** The dry run. Main-process only, with NO HTTP equivalent, and that is a
+   * decision: this hands a language model a block of text on this machine, and
+   * a remote PWA answering over the network has no business spending the GPU
+   * dictation needs. It is the SAME closure the dictation path uses
+   * (index.ts's voiceCommandsDep) - a dry run that could disagree with the
+   * spoken path would be a lie about the engine, which is exactly the class of
+   * defect this campaign counts as blocking. */
+  functionTest(text: string): Promise<FunctionTestResult>;
+
   statsRead(): StatsPayload;
   /** U7d: erases ~/.flow/stats.json on the spot and answers with the (now
    * empty) payload, so the page repaints from the same call. */
   statsClear(): StatsPayload;
+
+  // ---- live assistance during a recording (U8) ----
+  // Main-process only, NO HTTP equivalent, and for the same class of reason as
+  // the statistics above but sharper: assistPoll is what lets a local model read
+  // what is being said in this room, and the local API answers a remote PWA over
+  // the network. A phone has no business switching that on.
+  //
+  // All four answer with the WHOLE snapshot (AssistSnapshot), like the snippet
+  // and dictionary channels: the panel replaces its state with what comes back
+  // and can never hold a stale list after a write it did not make.
+  assistPoll(): AssistSnapshot;
+  assistAsk(): AssistSnapshot;
+  assistKeep(id: string): AssistSnapshot;
+  assistDismiss(id: string): AssistSnapshot;
 }
 
 const REPO_URL = "https://github.com/rochduboisgagnon/Flow";
@@ -185,6 +245,17 @@ const SNIPPETS_UNAVAILABLE: SnippetsResult = { ok: false, items: [], error: "una
 // dictionary is genuinely empty" - two states that look identical in a naive
 // `items.length === 0` check and mean opposite things.
 const DICT_UNAVAILABLE: DictResult = { ok: false, items: [], error: "unavailable" };
+
+// D7: same fallback discipline again, with one field that matters. An empty
+// `startedIso` means "these notes belong to no recording", which is exactly what
+// the Record page needs to see in order to render nothing: a refused sender must
+// never be able to make a page display, or write into, another capture's notes.
+const LIVE_NOTES_UNAVAILABLE: LiveNotesResult = {
+  ok: false,
+  startedIso: "",
+  notes: [],
+  error: "unavailable",
+};
 
 // U4a: same fallback discipline as SNIPPETS_UNAVAILABLE - what a refused
 // sender (guarded()'s fromMain() gate) gets back, shaped like every real
@@ -214,6 +285,21 @@ const IMPORT_START_UNAVAILABLE: ImportStartResult = {
   ok: false,
   accepted: [],
   rejected: [],
+  error: "unavailable",
+};
+
+// V5 (E2/E5): the same fallback discipline for the function library. An empty
+// library with ok:false is the honest shape for an answer that never reached the
+// store - a refused sender must never be able to make a page report that a
+// function was saved, or that none exist.
+const FUNCS_UNAVAILABLE: VoiceFunctionsResult = { ok: false, items: [], error: "unavailable" };
+// And for the dry run: `transformed: false` with an empty text is the only
+// honest shape for a request that never ran. A refused sender must not be able
+// to make a page display a transformation that never happened.
+const FUNC_TEST_UNAVAILABLE: FunctionTestResult = {
+  ok: false,
+  transformed: false,
+  text: "",
   error: "unavailable",
 };
 
@@ -403,6 +489,31 @@ export class UiBridge {
       this.deps.longTranscript(typeof since === "number" ? since : 0),
     );
 
+    // ---- live notes typed during a recording (D7) ----
+    // The store owns persistence, the bounds, the one-line rule and the
+    // recording-identity check (main/liveNotes.ts + shared/liveNotes.ts); this
+    // only gates the sender and coerces the arguments at the boundary. Coerced
+    // rather than trusted for the usual reason: the declared types cross IPC, so
+    // they are a claim and not a fact - a non-string id or text becomes "", which
+    // the store refuses cleanly instead of stringifying into a note.
+    this.guarded<[], LiveNotesResult>(UI_LIVE_NOTES_LIST, LIVE_NOTES_UNAVAILABLE, () => this.deps.liveNotesList());
+    this.guarded<[unknown, unknown], LiveNotesResult>(UI_LIVE_NOTES_ADD, LIVE_NOTES_UNAVAILABLE, (iso, text) =>
+      this.deps.liveNoteAdd(typeof iso === "string" ? iso : "", typeof text === "string" ? text : ""),
+    );
+    this.guarded<[unknown, unknown, unknown], LiveNotesResult>(
+      UI_LIVE_NOTES_EDIT,
+      LIVE_NOTES_UNAVAILABLE,
+      (iso, id, text) =>
+        this.deps.liveNoteEdit(
+          typeof iso === "string" ? iso : "",
+          typeof id === "string" ? id : "",
+          typeof text === "string" ? text : "",
+        ),
+    );
+    this.guarded<[unknown, unknown], LiveNotesResult>(UI_LIVE_NOTES_DELETE, LIVE_NOTES_UNAVAILABLE, (iso, id) =>
+      this.deps.liveNoteDelete(typeof iso === "string" ? iso : "", typeof id === "string" ? id : ""),
+    );
+
     // ---- archive browser (U5a) ----
     // Deliberately NOT cached (unlike UiStatePayload.recent / LongStateSnapshot.recent):
     // the Notes page pulls this on demand, not at 1 Hz under the keyboard hook,
@@ -461,6 +572,26 @@ export class UiBridge {
     // page treats both identically and never has to tell them apart.
     this.guarded<[], string[]>(UI_IMPORT_PICK, [], () => this.deps.importPick());
 
+    // ---- voice functions (V5, E2/E5): the store owns persistence and the
+    // runtime cache (main/functions.ts); this class only gates the sender. The
+    // gate matters as much here as on ui:dict-save and for a longer reach:
+    // ui:function-save changes what every FUTURE dictation may be REWRITTEN
+    // into, and by which model - and the same preload is loaded by the overlay
+    // and the hidden capture window.
+    //
+    // Every channel answers with the WHOLE library, and none of it is ever in
+    // UiStatePayload (see ipcContracts.ts).
+    this.guarded<[], VoiceFunctionsResult>(UI_FUNC_LIST, FUNCS_UNAVAILABLE, () => listFunctions());
+    this.guarded<[unknown], VoiceFunctionsResult>(UI_FUNC_SAVE, FUNCS_UNAVAILABLE, (input) => saveFunction(input));
+    this.guarded<[unknown], VoiceFunctionsResult>(UI_FUNC_DELETE, FUNCS_UNAVAILABLE, (id) => deleteFunction(id));
+    // The dry run calls a model, so it can take seconds - the page treats it as
+    // slow. It goes through the SAME dep the dictation path uses (index.ts's
+    // voiceCommandsDep), never a second implementation: a dry run that could
+    // disagree with the spoken path would be worse than no dry run at all.
+    this.guarded<[unknown], FunctionTestResult>(UI_FUNC_TEST, FUNC_TEST_UNAVAILABLE, (text) =>
+      this.deps.functionTest(typeof text === "string" ? text : ""),
+    );
+
     // ---- activation hot-path diagnostics (V2, B1) ----
     this.guarded<[], HotpathSnapshot | null>(UI_HOTPATH_SNAPSHOT, null, () => this.deps.hotpathSnapshot());
 
@@ -473,6 +604,25 @@ export class UiBridge {
     // the overlay and the hidden capture window.
     this.guarded<[], StatsPayload>(UI_STATS_READ, STATS_UNAVAILABLE, () => this.deps.statsRead());
     this.guarded<[], StatsPayload>(UI_STATS_CLEAR, STATS_UNAVAILABLE, () => this.deps.statsClear());
+
+    // ---- live assistance during a recording (U8) ----
+    // The gate earns its place here more than on any other channel of this file:
+    // the same preload is loaded by the overlay AND by the hidden window that
+    // holds the microphone, and ui:assist-poll is the ONE call that can start a
+    // local model reading the transcript of a meeting. ASSIST_UNAVAILABLE
+    // answers a refused sender with "off, no model, no suggestions" - the only
+    // honest shape, and the safe direction for a switch like this one.
+    //
+    // ui:assist-keep is the only WRITE of the four, and it appends to the
+    // recording's document - through the recorder, never from the bridge.
+    this.guarded<[], AssistSnapshot>(UI_ASSIST_POLL, ASSIST_UNAVAILABLE, () => this.deps.assistPoll());
+    this.guarded<[], AssistSnapshot>(UI_ASSIST_ASK, ASSIST_UNAVAILABLE, () => this.deps.assistAsk());
+    this.guarded<[unknown], AssistSnapshot>(UI_ASSIST_KEEP, ASSIST_UNAVAILABLE, (id) =>
+      this.deps.assistKeep(typeof id === "string" ? id : ""),
+    );
+    this.guarded<[unknown], AssistSnapshot>(UI_ASSIST_DISMISS, ASSIST_UNAVAILABLE, (id) =>
+      this.deps.assistDismiss(typeof id === "string" ? id : ""),
+    );
   }
 
   /** U3c: copy is not paste. No Ctrl+V, no clipboard snapshot/restore dance -

@@ -371,6 +371,12 @@ export interface UiStatePayload {
      * Two booleans ride the 1 Hz push because they are settings a tab renders;
      * the counters themselves are pulled (see UI_STATS_READ above). */
     statsPerApp: boolean;
+    /** U8: a local model may read the last few minutes of a recording in
+     * progress and propose notes (default FALSE). One boolean, on the push, for
+     * the same reason as the two above: a Settings tab renders it. The
+     * suggestions themselves are PULLED (see UI_ASSIST_POLL) and never ride the
+     * heartbeat. */
+    liveAssist: boolean;
   };
   // U0: settings.theme is the PREFERENCE (what the Settings tab shows/edits);
   // resolvedTheme is what to actually PAINT right now. They diverge exactly
@@ -421,6 +427,57 @@ export const UI_LONG_MARK = "ui:long-mark";
 export const UI_LONG_TRANSCRIPT = "ui:long-transcript";
 
 export type { LongStateSnapshot, LongStartResult, LongStopResult, LongTranscriptResult } from "./longform";
+
+// ---- live notes typed during a recording (V4, D7) ----
+//
+// Main-process only, with NO HTTP equivalent, and that is a decision. The local
+// API answers AGR Pilot over the network, and these notes are the one part of a
+// capture nothing can regenerate: exposing a write for them to a remote client
+// would put the irreplaceable half of the document behind the surface with the
+// widest reach, for a gesture (typing during YOUR meeting, on the PC that is
+// recording it) that has no remote use case. The transcript and the recorder
+// controls stay reachable from the phone exactly as before.
+//
+// PULL-only, never in UiStatePayload - the same reason as snippets and the
+// dictionary: that snapshot is re-serialized and pushed EVERY SECOND while the
+// window is visible, and it is built on the process that carries the keyboard
+// hook. Notes are read when the Record page mounts and after every write, which
+// is when they can actually have changed.
+//
+// Every channel answers with a LiveNotesResult - the WHOLE list plus WHICH
+// recording it belongs to - so a page can never render one capture's notes over
+// another's, and never holds a stale list after a write it did not itself make.
+// A note is COMMITTED, one gesture at a time; nothing is written while the user
+// types (shared/liveNotes.ts DECISION 1, and campaign invariant 1).
+export const UI_LIVE_NOTES_LIST = "ui:live-notes-list";
+export const UI_LIVE_NOTES_ADD = "ui:live-notes-add";
+export const UI_LIVE_NOTES_EDIT = "ui:live-notes-edit"; // text only: the stamp never moves
+export const UI_LIVE_NOTES_DELETE = "ui:live-notes-delete";
+
+export type { LiveNote, LiveNotesResult } from "./liveNotes";
+
+// ---- live assistance during a recording (U8) ----
+//
+// PULL, at the panel's own cadence, and the pull is the ENGINE of the feature:
+// main/liveAssist.ts owns no timer at all, so a round can only ever be
+// considered while the Record page's panel is mounted and polling. Leaving the
+// page - or closing the window - stops a local model from reading the meeting,
+// by construction rather than by a cleanup someone has to remember to write.
+//
+// Nothing about this rides UiStatePayload, which is re-serialized every second
+// while the window is visible: suggestions are model-written text of unbounded
+// size, exactly the kind of payload that turns a heartbeat into a data bus (the
+// same rule as snippets, the dictionary and the statistics).
+//
+// Main-process only, with NO HTTP equivalent, and that is a decision: the local
+// API answers a remote PWA over the network, and there is no reason for a phone
+// to be able to switch on a model that reads what is being said in this room.
+export const UI_ASSIST_POLL = "ui:assist-poll";
+export const UI_ASSIST_ASK = "ui:assist-ask"; // "suggest now", from a human press
+export const UI_ASSIST_KEEP = "ui:assist-keep"; // put ONE suggestion in the document
+export const UI_ASSIST_DISMISS = "ui:assist-dismiss"; // drop it from the panel
+
+export type { AssistSnapshot, AssistSuggestion, AssistWait } from "./liveAssist";
 
 // ---- archive browser (U5a) ----
 // The Notes page's read surface, on the SAME functions as the HTTP
@@ -539,3 +596,59 @@ export type {
   ImportRequest,
   ImportStartResult,
 } from "./audioImport";
+
+// ---- voice functions (V5, E1/E2/E3/E5) ----
+//
+// PULL-only, for the SAME reason as snippets and the dictionary: the library is
+// user content of unbounded size (a function carries a whole instruction
+// paragraph) and UiStatePayload is re-serialized every second while the window
+// is visible. Nothing about the library belongs in that heartbeat - not the
+// items, not a count.
+//
+// The sender gate on ui:function-save is not ceremony: the same preload is
+// loaded by the overlay and the hidden capture window, and this write changes
+// what every FUTURE dictation may be transformed into, and by which model. It
+// has the same reach as ui:dict-save, one storey higher.
+export const UI_FUNC_LIST = "ui:function-list";
+export const UI_FUNC_SAVE = "ui:function-save"; // create when id is absent/empty, else update
+export const UI_FUNC_DELETE = "ui:function-delete";
+/** E5's dry run: paste text, see EXACTLY what a dictation of it would produce -
+ * same detection, same prompt, same model, same fallback as the spoken path. It
+ * is the one channel here that can take seconds (it calls the model), so a page
+ * must treat it as slow; and it inserts nothing anywhere. */
+export const UI_FUNC_TEST = "ui:function-test";
+
+export type {
+  VoiceFunction,
+  VoiceFunctionInput,
+  VoiceFunctionsResult,
+  NoMatchReason,
+} from "./functions";
+
+/** What a dry run answers. Deliberately shaped so the HONEST outcome is the
+ * default reading: `transformed: false` with `text` equal to the input means
+ * "this would have been inserted exactly as dictated", which is what the
+ * overwhelming majority of texts must produce. */
+export interface FunctionTestResult {
+  ok: boolean;
+  /** True only when a model actually rewrote the text. */
+  transformed: boolean;
+  /** What would land at the cursor. */
+  text: string;
+  /** Present when a trigger fired: which function, which trigger form, the
+   * captured language, and the payload the trigger was stripped from. */
+  matched?: {
+    functionId: string;
+    functionName: string;
+    trigger: string;
+    param: string;
+    payload: string;
+  };
+  /** Why nothing was transformed - either no trigger fired (the gate that
+   * refused is named) or the model did not answer. Always a sentence the engine
+   * can back up, never a guess. */
+  reason?: string;
+  /** How long the model took, when one was called. */
+  ms?: number;
+  error?: string; // human-readable, shown as-is by the page
+}

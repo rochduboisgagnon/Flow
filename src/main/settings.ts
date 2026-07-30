@@ -59,6 +59,17 @@ export interface FlowSettings {
    * Turning it back off ERASES what was collected (mergeDays strips the field
    * from every day it writes), it does not merely pause the collection. */
   statsPerApp: boolean;
+  /** U8: while a meeting is being recorded, let a LOCAL model read the last few
+   * minutes of the transcript and propose notes or replies in the Record page.
+   *
+   * OFF at install, and it is the most deliberate default in this file: this is
+   * the one feature of Flow that reads the speech of people who never installed
+   * it and never agreed to anything. Nothing leaves the machine either way (the
+   * model answers on loopback), and nothing new is written unless the user keeps
+   * a suggestion by hand - but "nothing leaves" is not the same as "no model is
+   * reading", and only an explicit switch can say the second. See
+   * shared/liveAssist.ts for the policy and the wording. */
+  liveAssist: boolean;
   /** U2c: the 90-day retention purge is SUSPENDED on this machine. Set once,
    * together with the field above, when we learn the (now fixed) history folder
    * is not the one Flow was actually filing into: its dated folders are then a
@@ -93,6 +104,9 @@ export const SETTINGS_DEFAULTS: FlowSettings = {
   // and it is the same one a fresh install takes.
   stats: true,
   statsPerApp: false,
+  // U8: off, and an upgrade never turns it on - a settings.json written before
+  // this wave carries no such field, so the tolerant merge leaves it here.
+  liveAssist: false,
 };
 
 // A5: the folder is ~/.flow since 1.0.0, but a machine coming from an AGR
@@ -172,6 +186,10 @@ export function sanitizeSettings(raw: unknown): FlowSettings {
   // the one where a malformed file never turns attribution on.
   if (typeof r.stats === "boolean") out.stats = r.stats;
   if (typeof r.statsPerApp === "boolean") out.statsPerApp = r.statsPerApp;
+  // U8: a literal boolean only, for the same reason as statsPerApp above and
+  // more so - the safe direction for a switch that lets a model read a meeting
+  // is the one where a malformed file can never turn it on.
+  if (typeof r.liveAssist === "boolean") out.liveAssist = r.liveAssist;
   return out;
 }
 

@@ -1,7 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { UiStatePayload } from "../../../shared/ipcContracts";
 import type { LongStateSnapshot } from "../../../shared/longform";
+import { hms } from "../../../shared/longform";
+import { MAX_NOTE_CHARS, type LiveNote } from "../../../shared/liveNotes";
 import { Ribbon } from "../Ribbon";
+import { LiveAssistPanel } from "../LiveAssist";
 
 // Record (wave U4). Drive a long-form recording from the app instead of from
 // the phone: pick the source, watch the transcript grow, mark a moment, stop.
@@ -31,6 +34,16 @@ export function Record({ s }: { s: UiStatePayload }) {
   const [error, setError] = useState<string | null>(null);
   const sinceRef = useRef(0);
   const tailRef = useRef<HTMLDivElement | null>(null);
+  // D7: the notes the user types during the recording. `notesFor` is which
+  // recording the list belongs to, straight from the engine's answer - the page
+  // renders nothing unless it matches the capture on screen, so notes from the
+  // previous meeting can never appear under this one (shared/liveNotes.ts's
+  // LiveNotesResult).
+  const [notes, setNotes] = useState<LiveNote[]>([]);
+  const [notesFor, setNotesFor] = useState("");
+  const [draft, setDraft] = useState("");
+  const [noteError, setNoteError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
 
   // One tick: the state snapshot, plus the transcript increment while a
   // recording is ACTIVE. Both are cheap; neither touches the disk in a loop.
@@ -59,6 +72,19 @@ export function Record({ s }: { s: UiStatePayload }) {
   // capture and, unlike docPath, does not change when finalize() files the
   // document into the archive mid-flight.
   const recordingRef = useRef("");
+  // D7: PULLED, and deliberately NOT on the 1 Hz tick. Reading the slot is a
+  // synchronous JSON read in the main process - the process that carries the
+  // keyboard hook - so it happens when the list can actually have changed: on
+  // mount, when the recording identity changes, and as the answer to every write
+  // (each channel returns the whole list, so the page never patches its own copy
+  // and drifts from disk).
+  const refreshNotes = useCallback(async () => {
+    const r = await window.flowui.liveNotesList();
+    setNotes(r.notes);
+    setNotesFor(r.startedIso);
+    setNoteError(r.ok ? null : (r.error ?? null));
+  }, []);
+
   const tick = useCallback(async () => {
     if (inFlight.current) return;
     inFlight.current = true;
@@ -73,6 +99,14 @@ export function Record({ s }: { s: UiStatePayload }) {
         sinceRef.current = 0;
         setTranscript("");
         wasRunning.current = false;
+        // D7: a different capture is a different set of notes. Same single
+        // mechanism as the transcript offset above, and for the same reason a
+        // whole review finding was spent on it: a recording started from the
+        // tray or the local API must reset this page's idea of what it is
+        // annotating, not only one started by this page's own button.
+        setDraft("");
+        setEditing(null);
+        await refreshNotes();
       }
       if (st.active) {
         const inc = await window.flowui.longTranscript(sinceRef.current);
@@ -92,7 +126,7 @@ export function Record({ s }: { s: UiStatePayload }) {
     } finally {
       inFlight.current = false;
     }
-  }, []);
+  }, [refreshNotes]);
 
   useEffect(() => {
     void tick();
@@ -156,6 +190,37 @@ export function Record({ s }: { s: UiStatePayload }) {
   async function mark() {
     await window.flowui.longMark();
     await tick();
+  }
+
+  // ---- D7: the note panel's three gestures ----
+  // Each one names the recording it is aimed at (`snap.startedIso`) and takes the
+  // WHOLE list back. Nothing is written while the user types - a note reaches the
+  // disk when it is committed, and only then (shared/liveNotes.ts DECISION 1).
+
+  function absorb(r: { ok: boolean; startedIso: string; notes: LiveNote[]; error?: string }) {
+    setNotes(r.notes);
+    setNotesFor(r.startedIso);
+    setNoteError(r.ok ? null : (r.error ?? "Flow could not record that note."));
+    return r.ok;
+  }
+
+  async function commitNote() {
+    const text = draft.trim();
+    if (!text || !snap?.active) return;
+    if (absorb(await window.flowui.liveNoteAdd(snap.startedIso, text))) setDraft("");
+  }
+
+  async function saveEdit() {
+    if (!editing || !snap) return;
+    const text = editing.text.trim();
+    if (!text) return;
+    if (absorb(await window.flowui.liveNoteEdit(snap.startedIso, editing.id, text))) setEditing(null);
+  }
+
+  async function deleteNote(id: string) {
+    if (!snap) return;
+    absorb(await window.flowui.liveNoteDelete(snap.startedIso, id));
+    if (editing?.id === id) setEditing(null);
   }
 
   return (
@@ -265,27 +330,202 @@ export function Record({ s }: { s: UiStatePayload }) {
           </div>
         </div>
 
-        <div className="card">
-          <span className="lbl">Live transcript</span>
-          <div className="transcript" style={{ marginTop: 12 }}>
-            {transcript ? (
-              <>
-                <pre className="tl-raw">{transcript}</pre>
-                <div ref={tailRef} />
-              </>
-            ) : active ? (
-              <p className="sub" style={{ margin: 0 }}>Listening. The first lines appear once a segment is transcribed.</p>
-            ) : (
-              <p className="sub" style={{ margin: 0 }}>
-                Start a recording and the transcript appears here, line by line, as the engine
-                works through it. It is written to disk at the same time, so nothing depends on
-                this window staying open.
-              </p>
-            )}
+        <div className="rec-main">
+          {/* D7: the notes the USER writes, beside the transcript the machine
+              writes. Placed FIRST, above the transcript, for the same reason
+              they come first in the finished document (shared/longform.ts's
+              MY_NOTES_HEADING): the point of the panel is that what the human
+              judged important outranks what the machine heard. */}
+          <LiveNotesPanel
+            active={active}
+            finalizing={finalizing}
+            mine={notesFor && snap && notesFor === snap.startedIso ? notes : []}
+            error={noteError}
+            draft={draft}
+            setDraft={setDraft}
+            editing={editing}
+            setEditing={setEditing}
+            onCommit={() => void commitNote()}
+            onSaveEdit={() => void saveEdit()}
+            onDelete={(id) => void deleteNote(id)}
+          />
+
+          <div className="card">
+            <span className="lbl">Live transcript</span>
+            <div className="transcript" style={{ marginTop: 12 }}>
+              {transcript ? (
+                <>
+                  <pre className="tl-raw">{transcript}</pre>
+                  <div ref={tailRef} />
+                </>
+              ) : active ? (
+                <p className="sub" style={{ margin: 0 }}>Listening. The first lines appear once a segment is transcribed.</p>
+              ) : (
+                <p className="sub" style={{ margin: 0 }}>
+                  Start a recording and the transcript appears here, line by line, as the engine
+                  works through it. It is written to disk at the same time, so nothing depends on
+                  this window staying open.
+                </p>
+              )}
+            </div>
           </div>
         </div>
       </div>
+
+      {/* U8: live suggestions. A separate card BELOW the grid, never inside the
+          transcript one - what a model proposed and what was actually said must
+          not share a frame. The whole feature lives in that component (state,
+          poll, controls, wording); this page only places it, and it costs the
+          engine nothing while the panel is unmounted (see ui/LiveAssist.tsx). */}
+      <div style={{ marginTop: 14 }}>
+        <LiveAssistPanel />
+      </div>
     </>
+  );
+}
+
+/** D7: the raw-notes panel.
+ *
+ * Every claim it makes is one the engine keeps. Two in particular:
+ *
+ *  - "written down the moment you press Enter". True, and it is why the panel is
+ *    built around a commit rather than around a textarea that saves itself: one
+ *    gesture, one small atomic write, nothing at all on disk while you type
+ *    (shared/liveNotes.ts DECISION 1). The corollary is stated rather than
+ *    hidden - the line still in the box is the one thing a crash can take.
+ *  - "your words, as you typed them". True: the verbatim block in the document is
+ *    never rewritten, and the model is told to fix the spelling only in ITS text
+ *    (shared/longform.ts's renderMyNotes).
+ *
+ * The controls are live only while a recording is ACTIVE. Once it stops the notes
+ * are in the document and the slot is gone, so an editable list would be a dead
+ * control wearing the costume of a live one - the panel says where they went
+ * instead. */
+function LiveNotesPanel(props: {
+  active: boolean;
+  finalizing: boolean;
+  mine: LiveNote[];
+  error: string | null;
+  draft: string;
+  setDraft: (s: string) => void;
+  editing: { id: string; text: string } | null;
+  setEditing: (e: { id: string; text: string } | null) => void;
+  onCommit: () => void;
+  onSaveEdit: () => void;
+  onDelete: (id: string) => void;
+}) {
+  const { active, finalizing, mine, error, draft, editing } = props;
+  return (
+    <div className="card">
+      <span className="lbl">Your notes</span>
+      <p className="sub" style={{ margin: "6px 0 0" }}>
+        Type what matters as it happens - short, misspelled, abbreviated, it does not matter.
+        These notes lead the meeting notes Flow writes at the end, and they stay in the document
+        in your own words, exactly as you typed them.
+      </p>
+
+      {error ? <p className="note-err" style={{ margin: "10px 0 0" }}>{error}</p> : null}
+
+      {active ? (
+        <div className="ln-compose">
+          <input
+            type="text"
+            value={draft}
+            maxLength={MAX_NOTE_CHARS}
+            aria-label="Write a note about this moment"
+            placeholder="Marc owns the migration"
+            onChange={(e) => props.setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              // Enter commits. Nothing is written before it: this keystroke is
+              // the only thing in the panel that touches the disk.
+              if (e.key === "Enter") {
+                e.preventDefault();
+                props.onCommit();
+              }
+            }}
+            style={{ minWidth: 0, flex: 1 }}
+          />
+          <button className="btn" disabled={draft.trim().length === 0} onClick={props.onCommit}>
+            Add note
+          </button>
+        </div>
+      ) : null}
+
+      {mine.length === 0 ? (
+        <p className="sub" style={{ margin: "12px 0 0" }}>
+          {active
+            ? "Nothing yet. Each note is stamped with the moment you wrote it, so it points at what was being said right then."
+            : "Start a recording and your notes go here, each stamped with the moment you wrote it."}
+        </p>
+      ) : (
+        <div className="ln-list">
+          {mine.map((n) => (
+            <div key={n.id} className="ln-row">
+              <span className="ln-at num">{hms(n.atMs)}</span>
+              {editing?.id === n.id ? (
+                <>
+                  <input
+                    type="text"
+                    value={editing.text}
+                    maxLength={MAX_NOTE_CHARS}
+                    aria-label="Edit this note"
+                    autoFocus
+                    onChange={(e) => props.setEditing({ id: n.id, text: e.target.value })}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        props.onSaveEdit();
+                      } else if (e.key === "Escape") props.setEditing(null);
+                    }}
+                    style={{ minWidth: 0, flex: 1 }}
+                  />
+                  <button className="btn ghost" onClick={props.onSaveEdit}>Save</button>
+                  <button className="btn ghost" onClick={() => props.setEditing(null)}>Cancel</button>
+                </>
+              ) : (
+                <>
+                  <span className="ln-text">{n.text}</span>
+                  {active ? (
+                    <>
+                      {/* Editing keeps the original stamp: the moment recorded is
+                          when you decided this was worth writing down, and fixing
+                          a typo later does not change that moment. */}
+                      <button
+                        className="btn ghost"
+                        aria-label={`Edit the note at ${hms(n.atMs)}`}
+                        onClick={() => props.setEditing({ id: n.id, text: n.text })}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        className="btn ghost"
+                        aria-label={`Delete the note at ${hms(n.atMs)}`}
+                        onClick={() => props.onDelete(n.id)}
+                      >
+                        Delete
+                      </button>
+                    </>
+                  ) : null}
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {active ? (
+        <p className="sub" style={{ margin: "10px 0 0", fontSize: 11.5 }}>
+          A note is written to disk the moment you add it, so a crash or a power cut keeps every
+          one of them. Only a line still sitting in the box above would be lost.
+        </p>
+      ) : mine.length > 0 ? (
+        <p className="sub" style={{ margin: "10px 0 0", fontSize: 11.5 }}>
+          {finalizing
+            ? "These are going into the document now, above the notes Flow writes from the transcript."
+            : "These are in the document, at the top, above the notes Flow wrote from the transcript. Open it from the Notes page."}
+        </p>
+      ) : null}
+    </div>
   );
 }
 

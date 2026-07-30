@@ -10,7 +10,7 @@ import { WhisperSidecar } from "./asr/sidecar";
 // that silently read the wrong one would report on a file nobody uses.
 import { ensureModel, DEFAULT_MODEL_FILE, AVAILABLE_MODELS, modelPath as modelFilePath } from "./asr/modelStore";
 import { FocusProbe } from "./focus/probe";
-import { insertViaPaste, insertTyped, leaveOnClipboard, flushPendingRestore } from "./insert";
+import { insertViaPaste, insertRichViaPaste, insertTyped, leaveOnClipboard, flushPendingRestore } from "./insert";
 import { decideRoute } from "../shared/route";
 import { comboLabel } from "../shared/combo";
 import { loadSettings, saveSettings, sanitizeSettings, dataDir, type FlowSettings } from "./settings";
@@ -18,9 +18,11 @@ import { runMigration } from "./migrate";
 import { analyzeSpeech, hasSpeech, trimToSpeech } from "../shared/vad";
 import { gateTranscript } from "../shared/textGate";
 import { pcmFromWav, encodeWav } from "../shared/wav";
-import { listOllamaModels, summarize } from "./llm/ollama";
+import { listOllamaModels, summarize, generateShort } from "./llm/ollama";
+import { LiveAssistant } from "./liveAssist";
 import { LocalApi } from "./api";
 import { LongRecorder, historyRoot, stagingRoot, listHistory, resolveHistoryEntry, readHistoryDoc } from "./longform";
+import { LiveNotesStore } from "./liveNotes";
 import { AudioDecodeWindow } from "./audioDecode";
 import { ImportQueue } from "./audioImport";
 import { SUPPORTED_AUDIO_EXTENSIONS } from "../shared/audioImport";
@@ -29,6 +31,9 @@ import { Redactor } from "./redact";
 import { StatsStore } from "./stats";
 import { countWords } from "../shared/wordCount";
 import { primeDictionary, dictationPrompt, applyDictionaryReplacements } from "./dictionary";
+import { primeFunctions, applyVoiceCommands, enabledFunctions } from "./functions";
+import { detectCommand, explainNoMatch } from "../shared/functions";
+import type { FunctionTestResult } from "../shared/ipcContracts";
 import type { LongStartResult, LongStopResult } from "../shared/longform";
 import { legacyHistoryInfo, type LegacyHistoryInfo } from "./legacyHistory";
 import { decideLaunchAtLogin } from "../shared/launchAtLogin";
@@ -137,6 +142,12 @@ if (!app.requestSingleInstanceLock()) {
     // same reason everything else is: dataDir() must already be the
     // post-migration folder.
     primeDictionary(flowLog);
+    // V5 E2: the same discipline, one storey up - load the function library ONCE
+    // and seed the shipped seven (all DISABLED, see defaultFunctions) on a
+    // machine that has never had a functions.json. From here on the dictation
+    // path reads a compiled cache, so no utterance ever pays a synchronous read
+    // to find out whether it might be a command.
+    primeFunctions(flowLog);
     hotkey.setCombo(settings.combo); // the adapter was built on the defaults above
     applyTheme(settings.theme);
     // U0: a Windows theme flip while theme="system" must repaint in under a
@@ -441,6 +452,51 @@ if (!app.requestSingleInstanceLock()) {
     updater = flowUpdater; // module-level handle for getUiState() and before-quit
     flowUpdater.start();
 
+    // ---- V5 E5: the dry run ----
+    // The SAME applyVoiceCommands the dictation path calls, with the SAME model
+    // resolution, so what the Functions page shows and what a spoken utterance
+    // produces cannot diverge. The two differences are deliberate and neither
+    // changes the outcome: no hot-path marks (a dry run belongs to no keypress),
+    // and nothing is inserted anywhere.
+    //
+    // detectCommand is then re-run, off the hot path, for one reason only: to
+    // NAME the gate that refused. "Nothing happened" is the answer a user cannot
+    // act on, and the whole point of this page is that he can.
+    const functionTestDep = async (rawText: string): Promise<FunctionTestResult> => {
+      const text = typeof rawText === "string" ? rawText.trim() : "";
+      if (!text) return { ok: false, transformed: false, text: "", error: "Type or paste some text to test." };
+      const out = await applyVoiceCommands(text, { fallbackModel: () => settings.summaryModel });
+      if (out.kind === "snippet") {
+        return {
+          ok: true,
+          transformed: false,
+          text: out.text,
+          reason: "A snippet cue matches this utterance exactly, so the stored block would be inserted. No model is involved.",
+        };
+      }
+      const det = detectCommand(text, enabledFunctions());
+      const matched = det.match
+        ? {
+            functionId: det.match.functionId,
+            functionName: det.match.functionName,
+            trigger: det.match.trigger,
+            param: det.match.param,
+            payload: det.match.payload,
+          }
+        : undefined;
+      if (out.kind === "function") return { ok: true, transformed: true, text: out.text, matched, ms: out.ms };
+      return {
+        ok: true,
+        transformed: false,
+        text: out.text,
+        matched,
+        ms: out.ms,
+        reason: det.match
+          ? `"${det.match.functionName}" fired, but the model did not answer (${out.failure ?? "unknown"}). Your text would be inserted exactly as dictated - that fallback is not optional.`
+          : explainNoMatch(det.reason ?? "no-trigger-at-head"),
+      };
+    };
+
     // ---- main window bridge (V1, A1/A2): SAME functions as the HTTP API ----
     uiBridge = new UiBridge(
       {
@@ -471,6 +527,20 @@ if (!app.requestSingleInstanceLock()) {
         longStop: longStopDep,
         longMark: longMarkDep,
         longTranscript: longTranscriptDep,
+        // D7: main-only, no HTTP twin (see ipcContracts.ts). `startedIso` comes
+        // from the PAGE and is checked by the store against the slot; `atMs` is
+        // computed HERE from the recorder's own snapshot, never from the
+        // renderer, so the note's offset and the transcript's offsets come from
+        // one clock and one start instant. A note arriving while nothing is
+        // recording gets 0 and is refused by the store anyway (no slot matches).
+        liveNotesList: () => liveNotes.list(),
+        liveNoteAdd: (startedIso, text) => {
+          const snap = longStateDep();
+          const atMs = snap.active ? snap.durationMs : 0;
+          return liveNotes.add(startedIso, text, atMs);
+        },
+        liveNoteEdit: (startedIso, id, text) => liveNotes.edit(startedIso, id, text),
+        liveNoteDelete: (startedIso, id) => liveNotes.remove(startedIso, id),
         canLoopback: canLoopbackDep,
         // U5a: identical closures to LocalApi's above (listHistoryDep &
         // readHistoryDocDep, defined once, just above) - the Notes page's
@@ -508,6 +578,18 @@ if (!app.requestSingleInstanceLock()) {
         // read - or erase - them.
         statsRead: () => stats.read(),
         statsClear: () => stats.clear(),
+        // V5 E5: deliberately NOT given to LocalApi, for the same reason as the
+        // counters above and the assistance below - this one can start a local
+        // model on this machine's GPU, and the local API answers a phone.
+        functionTest: functionTestDep,
+        // U8: deliberately NOT given to LocalApi either, and for a sharper
+        // reason than the counters above - assistPoll is what can start a local
+        // model reading the transcript of the meeting happening in this room,
+        // and the local API answers a phone over the network.
+        assistPoll: () => liveAssist.poll(),
+        assistAsk: () => liveAssist.ask(),
+        assistKeep: (id) => liveAssist.keep(id),
+        assistDismiss: (id) => liveAssist.dismiss(id),
       },
       mainWindow,
     );
@@ -589,6 +671,9 @@ function getUiState(): UiStatePayload {
       // (ui:stats-read), never pushed once a second (ipcContracts.ts).
       stats: settings.stats,
       statsPerApp: settings.statsPerApp,
+      // U8: the SWITCH only - the suggestions themselves are PULLED
+      // (ui:assist-poll), never pushed once a second (ipcContracts.ts).
+      liveAssist: settings.liveAssist,
     },
     // U0: what to actually paint right now, separate from the preference above.
     resolvedTheme: nativeTheme.shouldUseDarkColors ? "dark" : "light",
@@ -1028,6 +1113,13 @@ function recentForUi(): UiStatePayload["recent"] {
 // local API by AGR Pilot's PWA page, which ALSO streams the audio from the
 // recording device (/long/chunk). It shares the warm ASR with dictation;
 // while it records, push-to-talk is politely refused.
+// D7: the slot holding the notes the user types DURING a recording. Built before
+// the recorder because the recorder is given it: the recorder is the ONE writer
+// of the document, so the notes reach the document through it and never through a
+// second writer. Nothing here resolves a path at module load - liveNotesPath()
+// is called inside the store, on each operation (main/liveNotes.ts).
+const liveNotes = new LiveNotesStore({ log: flowLog });
+
 const longRec = new LongRecorder({
   getSidecar: () => sidecar,
   summaryModel: () => settings.summaryModel,
@@ -1035,6 +1127,15 @@ const longRec = new LongRecorder({
   // U2c: read lazily, so the Settings button that resumes cleanup takes effect
   // on the very next purge instead of needing a restart.
   historyPurgeSuspended: () => settings.historyPurgeSuspended,
+  // D7: the recorder opens the slot at start() and folds it into the document on
+  // all three of its end paths (normal finalize, quit rescue, boot rescan of an
+  // orphaned staging folder). Narrowed to those three methods on purpose: the
+  // recorder has no business listing or editing notes, which is the page's job.
+  liveNotes: {
+    open: (startedIso) => liveNotes.open(startedIso),
+    read: (startedIso) => liveNotes.read(startedIso),
+    clear: (startedIso) => liveNotes.clear(startedIso),
+  },
   log: flowLog, // R1: long-recording diagnostics visible in a built app too
 });
 
@@ -1099,6 +1200,35 @@ const importQueue = new ImportQueue({
   summaryModel: () => settings.summaryModel,
   ollamaModels: () => listOllamaModels(),
   summarize: (model, prompt) => summarize(model, prompt),
+  log: flowLog,
+});
+
+// ---- U8: live assistance during a recording ----
+// OFF unless the user switched it on (settings.liveAssist, default false), and
+// built here rather than lazily for one reason only: it owns no timer, no socket
+// and no state until a page polls it, so constructing it costs nothing.
+//
+// The two engine-claim closures below are the whole safety property of this
+// feature, and they are read LAZILY, at the instant a round is considered:
+//   - `dictating` covers BOTH the push-to-talk path and the local HTTP endpoint
+//     (utterancesInFlight is incremented for both, see processUtterance);
+//   - `otherEngineWork` covers an audio import and a model download.
+// They are deliberately the same facts `userEngineClaim` (the import queue, just
+// above) reads - one notion of "the user needs the engine", not two that drift.
+// longRec.isBusy is NOT among them: this feature only ever runs DURING a
+// recording, so it would refuse itself forever.
+const liveAssist = new LiveAssistant({
+  enabled: () => settings.liveAssist,
+  // The SAME local model choice the meeting summary uses - not a second setting.
+  preferredModel: () => settings.summaryModel,
+  listModels: () => listOllamaModels(),
+  // The SAME snapshot the Record page and GET /long/state read.
+  longState: () => longRec.state(),
+  dictating: () => listening || utterancesInFlight > 0,
+  otherEngineWork: () => importQueue.isBusy || modelTransfers > 0,
+  generate: (model, prompt, opts) => generateShort(model, prompt, opts),
+  // The recorder writes it: the document has exactly ONE writer.
+  keepInDocument: (text, contextUpToMs) => longRec.keepSuggestion(text, contextUpToMs),
   log: flowLog,
 });
 
@@ -1232,6 +1362,14 @@ async function processUtterance(
   // The whole decode counts as activity (A10): entry AND exit are stamped so
   // the updater's quiet window can never open in the middle of a transcription.
   markActivity();
+  // U8: and a live suggestion in flight is DROPPED here, before the decode, not
+  // merely refused on the next poll. This is the seam that covers both callers -
+  // the push-to-talk path and the HTTP /transcribe endpoint - and it costs one
+  // null check when nothing is in flight, which is why it is safe to put on a
+  // function that runs on the process carrying the keyboard hook. The ordering
+  // gate in shared/liveAssist.ts is the primary protection; this is what handles
+  // the case where the utterance began AFTER a round did.
+  liveAssist.yieldToEngine();
   // D2: and the import queue stands aside for exactly this window - the model
   // decode plus the insertion, which is where a dictation actually needs the
   // engine. Incremented BEFORE the first await, released in the finally, so
@@ -1331,6 +1469,26 @@ function wireCapture() {
           hotpath.abandon(ms === 0 ? HOTPATH_ABANDON_REASON.noSpeech : HOTPATH_ABANDON_REASON.hallucinationGate);
           return;
         }
+        // V5 E3/E6: a snippet cue, a voice command, or plain dictation. The
+        // decision and the model call live in main/functions.ts; this call site
+        // stays four lines because the ONE thing it must guarantee is visible
+        // here: whatever happens, `out.text` is something to insert - a failed
+        // transformation comes back as the raw transcript, never as nothing.
+        //
+        // BEFORE the focus probe on purpose. A transformation takes seconds, and
+        // probing first would hand the router a foreground window the user has
+        // very likely left by the time the text is ready.
+        const out = await applyVoiceCommands(text, {
+          fallbackModel: () => settings.summaryModel,
+          // Bracketed from INSIDE, around the model call itself, so the two
+          // marks exist only when a model was really asked - and for BOTH
+          // outcomes, since a transformation that timed out spent the same
+          // seconds as one that worked (see hotpath.ts's functionStarted).
+          onModelStart: () => hotpath.mark("functionStarted"),
+          onModelEnd: () => hotpath.mark("functionFinished"),
+        });
+        if (out.failure) silentFailures.increment(SILENT_FAILURE.voiceFunctionFailed);
+        if (out.note) flowLog(out.note);
         // Probe the focus WHILE nothing else has stolen it, then route and act.
         const focus = (await probe?.probe()) ?? null;
         hotpath.mark("focusProbed");
@@ -1338,12 +1496,16 @@ function wireCapture() {
         hotpath.mark("routeDecided");
         if (route === "insert") {
           // "type" mode keystrokes the text (paste-hostile apps); default pastes.
-          if (settings.insertMode === "type") await insertTyped(text);
-          else await insertViaPaste(text);
-        } else leaveOnClipboard(text);
-        // B1: textChars is a LENGTH, recorded after `text` has already done its
-        // job - never the text itself (see hotpath.ts's zero-retention note).
-        hotpath.complete(route === "insert" ? "inserted" : "clipboarded", text.length);
+          // A rich snippet pastes as rich text where the target accepts it, and
+          // as its stored plain-text fallback everywhere else - keystrokes
+          // cannot carry formatting, so "type" mode always sends the plain one.
+          if (settings.insertMode === "type") await insertTyped(out.text);
+          else if (out.html !== undefined) await insertRichViaPaste(out.text, out.html);
+          else await insertViaPaste(out.text);
+        } else leaveOnClipboard(out.text);
+        // B1: textChars is a LENGTH, recorded after `out.text` has already done
+        // its job - never the text itself (see hotpath.ts's zero-retention note).
+        hotpath.complete(route === "insert" ? "inserted" : "clipboarded", out.text.length);
         // U7b: the aggregated counters. This is the ONLY thing the statistics
         // feature ever learns about an utterance: a word COUNT, a duration, and
         // - only if the user turned attribution on - the application name the
@@ -1584,6 +1746,10 @@ app.on("before-quit", () => {
   // owes the user their clipboard back. Hand it back first, while we still can.
   flushPendingRestore();
   uiBridge?.stop();
+  // U8: let go of a suggestion request in flight. Nothing of it is persisted, so
+  // there is nothing to save - this only closes the loopback socket instead of
+  // leaving it to the process teardown.
+  liveAssist.stop();
   // Only our polling timers: electron-updater's own autoInstallOnAppQuit hook
   // stays armed, so a downloaded update still lands on this manual quit.
   updater?.stop();

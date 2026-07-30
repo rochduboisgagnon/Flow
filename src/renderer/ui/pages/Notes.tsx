@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { UiStatePayload } from "../../../shared/ipcContracts";
 import { MAX_HISTORY_ITEMS, type HistoryItem, type HistoryDocPayload } from "../../../shared/longform";
 import { parseTranscriptPassages, planRedaction, hms, type TranscriptPassage } from "../../../shared/redact";
+import { MY_NOTES_HEADING } from "../../../shared/longform";
 
 // Notes (wave U5). The captures in Flow's own recordings folder, readable and
 // listenable in place, and downloadable into the system Downloads folder.
@@ -44,6 +45,11 @@ export function Notes({ s }: { s: UiStatePayload }) {
   const [picked, setPicked] = useState<number[]>([]);
   const [confirming, setConfirming] = useState(false);
   const [working, setWorking] = useState(false);
+  // D8: which passage a citation click just jumped to, so the destination is
+  // visibly the destination. Cleared on a new selection like everything else.
+  const [jumped, setJumped] = useState<number | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const passageRefs = useRef(new Map<number, HTMLDivElement>());
 
   const refresh = useCallback(async () => {
     const list = await window.flowui.historyList();
@@ -97,6 +103,10 @@ export function Notes({ s }: { s: UiStatePayload }) {
     setRemoving(false);
     setPicked([]);
     setConfirming(false);
+    // D8: a highlight and a passage-element map that survived the switch would
+    // point into the previous document.
+    setJumped(null);
+    passageRefs.current.clear();
     if (!selected) {
       setDoc(null);
       setDocFor(null);
@@ -160,6 +170,42 @@ export function Notes({ s }: { s: UiStatePayload }) {
     });
     return "error" in p ? null : p;
   }, [shownDoc, picked, current?.hasAudio]);
+
+  // D8: the passage every VERIFIED citation can point at, keyed by its stamp.
+  // Built from the passages of the document ACTUALLY ON SCREEN, which is the
+  // whole guarantee: readHistoryDoc caps its read at 5 MB, so a citation into the
+  // tail of a very long transcript may name a passage this page does not hold.
+  // Such a citation is rendered as plain text, never as a button - a control that
+  // scrolls nowhere is a defect, and "cannot show you the source" is the honest
+  // answer, not a click that appears to work and does nothing.
+  const passageByStamp = useMemo(() => {
+    const m = new Map<string, TranscriptPassage>();
+    for (const p of passages) {
+      const s = hms(p.startMs);
+      if (!m.has(s)) m.set(s, p); // the first passage at a stamp wins, as the citation was copied from it
+    }
+    return m;
+  }, [passages]);
+
+  /** Jump to the transcript passage a citation names - and to that moment of the
+   * audio when this capture kept some. Seeking is a bare `currentTime` write on
+   * the player already mounted above: the engine's streaming endpoint answers
+   * range requests, so this costs one small ranged GET and no new plumbing. It is
+   * guarded rather than assumed - a player that is absent, or that has not been
+   * given a source yet, simply does not move, and the transcript jump still
+   * happens. */
+  function jumpTo(p: TranscriptPassage) {
+    setJumped(p.index);
+    passageRefs.current.get(p.index)?.scrollIntoView({ block: "center" });
+    const el = audioRef.current;
+    if (el) {
+      try {
+        el.currentTime = p.startMs / 1000;
+      } catch {
+        /* no source loaded yet: the transcript jump above is the answer that matters */
+      }
+    }
+  }
 
   function togglePassage(index: number) {
     setConfirming(false); // any change to the selection invalidates the confirmation
@@ -369,6 +415,7 @@ export function Notes({ s }: { s: UiStatePayload }) {
                     // seeking works, and nothing is buffered into the renderer.
                     <>
                       <audio
+                        ref={audioRef}
                         className="doc-audio"
                         controls
                         preload="none"
@@ -417,7 +464,28 @@ export function Notes({ s }: { s: UiStatePayload }) {
                     onConfirm={() => void removePassages()}
                   />
                 ) : (
-                  <pre className="doc-body">{shownDoc.text}</pre>
+                  // D8: the document, with the notes block's verified citations
+                  // turned into jumps and the transcript split into addressable
+                  // passages. Rendered as a <div> of pre-wrap blocks rather than
+                  // one <pre> because a citation has to have somewhere to scroll
+                  // TO; the text itself is unchanged and still selectable.
+                  <div className="doc-body">
+                    {preamble ? (
+                      <Citations text={preamble} resolve={(s) => passageByStamp.get(s)} onJump={jumpTo} />
+                    ) : null}
+                    {passages.map((p) => (
+                      <div
+                        key={p.index}
+                        ref={(el) => {
+                          if (el) passageRefs.current.set(p.index, el);
+                          else passageRefs.current.delete(p.index);
+                        }}
+                        className={"doc-passage" + (jumped === p.index ? " jumped" : "")}
+                      >
+                        {p.text}
+                      </div>
+                    ))}
+                  </div>
                 )}
               </>
             )}
@@ -559,4 +627,63 @@ function formatBytes(n: number): string {
   if (mb < 1) return `${Math.max(1, Math.round(n / 1024))} KB`;
   if (mb < 1024) return `${mb.toFixed(mb < 10 ? 1 : 0)} MB`;
   return `${(mb / 1024).toFixed(1)} GB`;
+}
+
+/** D8: renders a notes block with its timestamp citations turned into jumps.
+ *
+ * The rule this component exists to enforce is written above `passageByStamp`,
+ * and it is the honest half of the feature: a citation only becomes a BUTTON
+ * when it resolves to a passage that really exists in this transcript. One that
+ * resolves to nothing stays plain text, because a control that scrolls nowhere
+ * is a defect, and a note that offered a click for a provenance it cannot show
+ * would be claiming a source it does not have.
+ *
+ * The text itself is never rewritten - only wrapped - so the document a user
+ * reads here is byte-for-byte the document on disk, and still selectable.
+ */
+function Citations({
+  text,
+  resolve,
+  onJump,
+}: {
+  text: string;
+  resolve: (stamp: string) => TranscriptPassage | undefined;
+  onJump: (p: TranscriptPassage) => void;
+}) {
+  // [hh:mm:ss] anywhere in a line, matching the recorder's own stamp shape (see
+  // STAMP_RE in shared/redact.ts, which is anchored because it parses line
+  // starts; here a citation sits mid-sentence).
+  const parts: Array<string | { stamp: string; passage: TranscriptPassage }> = [];
+  const re = /\[(\d{2}:\d{2}:\d{2})\]/g;
+  let last = 0;
+  for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+    const passage = resolve(m[1]);
+    if (passage) {
+      if (m.index > last) parts.push(text.slice(last, m.index));
+      parts.push({ stamp: m[1], passage });
+      last = m.index + m[0].length;
+    }
+    // No else: an unresolved stamp is deliberately left inside the surrounding
+    // text slice, so it renders as the plain characters the document contains.
+  }
+  if (last < text.length) parts.push(text.slice(last));
+
+  return (
+    <div className="doc-pre">
+      {parts.map((p, i) =>
+        typeof p === "string" ? (
+          <span key={i}>{p}</span>
+        ) : (
+          <button
+            key={i}
+            className="cite"
+            title={`Jump to ${p.stamp} in the transcript`}
+            onClick={() => onJump(p.passage)}
+          >
+            [{p.stamp}]
+          </button>
+        ),
+      )}
+    </div>
+  );
 }

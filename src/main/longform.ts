@@ -7,6 +7,10 @@ import { encodeWav } from "../shared/wav";
 import { analyzeSpeech } from "../shared/vad";
 import { gateTranscript } from "../shared/textGate";
 import { summarize } from "./llm/ollama";
+// U8: the ONE line format a kept live suggestion takes in the document. It lives
+// in the feature's own pure module (with the gate and the prompt) rather than in
+// shared/longform.ts, and is imported here exactly the way markLine is.
+import { suggestionLine } from "../shared/liveAssist";
 import {
   SAMPLE_RATE,
   SEGMENT_TARGET_MS,
@@ -23,6 +27,10 @@ import {
   summaryPrompt,
   chunkTranscript,
   spliceNotes,
+  composeNotesBlock,
+  renderMyNotes,
+  transcriptStamps,
+  verifyCitations,
   pushRecent,
   MAX_HISTORY_ITEMS,
   type RecentEntry,
@@ -100,6 +108,20 @@ export interface LongDeps {
    * an archive Flow was not managing, so the retention purge must not run at
    * all. Absent = not suspended, which is the normal case. */
   historyPurgeSuspended?(): boolean;
+  /** D7: the live-notes slot (main/liveNotes.ts). Injected rather than imported
+   * for the same reason as everything else in this interface - so the recorder's
+   * tests never touch the real ~/.flow - and OPTIONAL so a caller that has no
+   * notes panel (a test, a future headless mode) gets a recorder that behaves
+   * exactly as it did before D7.
+   *
+   * The recorder is the only thing that reads or clears this: notes reach the
+   * document through the one writer of the document, never through a second one
+   * (the "double ecrivain" this vague's review is told to hunt for). */
+  liveNotes?: {
+    open(startedIso: string): void;
+    read(startedIso: string): Array<{ atMs: number; text: string }>;
+    clear(startedIso: string): void;
+  };
   log?: (msg: string) => void;
   /** Tests only: keep the recent-list file away from the real ~/.agr-flow. */
   recentPathOverride?: string;
@@ -460,7 +482,7 @@ export function fileRecordingIntoHistory(opts: {
 function readStagedSession(
   dir: string,
   folderName: string,
-): { docPath: string; audioPath: string; title: string; startedMs: number } | null {
+): { docPath: string; audioPath: string; title: string; startedMs: number; startedIso: string } | null {
   let files: fs.Dirent[];
   try {
     files = fs.readdirSync(dir, { withFileTypes: true });
@@ -479,13 +501,20 @@ function readStagedSession(
   if (!docPath) return null;
   let title = path.basename(docPath, ".md");
   let startedMs = NaN;
+  // D7: the start instant EXACTLY as the header spells it, not re-derived from
+  // startedMs. It is the key the live-notes slot is filed under, and a
+  // round-trip through Date.parse and toISOString would not reproduce it byte
+  // for byte for every ISO form - a mismatch there would silently drop the
+  // user's notes instead of merging them.
+  let startedIso = "";
   try {
     const head = fs.readFileSync(docPath, "utf8").slice(0, 512);
     const t = head.match(/^# (.+)$/m);
     if (t) title = t[1].trim() || title;
     const r = head.match(/^- recorded: (.+)$/m);
     if (r) {
-      const ms = Date.parse(r[1].trim());
+      startedIso = r[1].trim();
+      const ms = Date.parse(startedIso);
       if (!Number.isNaN(ms)) startedMs = ms;
     }
   } catch {
@@ -502,7 +531,7 @@ function readStagedSession(
       startedMs = Date.now();
     }
   }
-  return { docPath, audioPath, title, startedMs };
+  return { docPath, audioPath, title, startedMs, startedIso };
 }
 
 /** Insert the interruption note at the TOP of the document, right under the
@@ -518,6 +547,48 @@ function readStagedSession(
  * that it covers only part of the audio without scrolling to the bottom. The
  * name says "interruption" because that is what it was written for; what it
  * DOES is "put this note right under the header, atomically, best effort". */
+/** D7: write a "## Notes" block into a document, SYNCHRONOUSLY and atomically.
+ *
+ * Used by the two interrupted paths - the quit rescue (which runs inside
+ * before-quit, where Electron awaits nothing) and the boot rescan of an orphaned
+ * staging folder - so a meeting that ended in a crash still carries the notes the
+ * user typed during it. finalize() does its own splice instead, because it also
+ * has generated notes to fold in and a summary to await.
+ *
+ * ORDER MATTERS, and it is the opposite of what looks right. noteInterruption()
+ * puts its warning immediately under the header, so it must run BEFORE this: a
+ * splice moves whatever it finds at the top of the body down into the transcript
+ * region, so a warning inserted afterwards would end up above the notes block
+ * and the body would no longer START with "## Notes" - which is exactly the
+ * anchor shared/redact.ts uses to find the derived notes and drop them on a
+ * passage removal (see MY_NOTES_HEADING's note in shared/longform.ts). Splicing
+ * last therefore keeps the redaction complete, at the cost of the interruption
+ * warning sitting just above the transcript instead of just below the header -
+ * which is where the existing regenerate path has always put it anyway.
+ *
+ * Best effort in the strict sense: a document that cannot be rewritten keeps its
+ * transcript and loses the block. Returns whether the notes reached the file, so
+ * the caller only clears the slot when they actually did. */
+export function spliceMyNotesSync(
+  docPath: string,
+  header: string,
+  notes: ReadonlyArray<{ atMs: number; text: string }>,
+  log?: (msg: string) => void,
+): boolean {
+  const block = renderMyNotes(notes);
+  if (!block) return false;
+  try {
+    const doc = fs.readFileSync(docPath, "utf8");
+    const tmp = docPath + ".tmp";
+    fs.writeFileSync(tmp, spliceNotes(doc, header, block));
+    fs.renameSync(tmp, docPath);
+    return true;
+  } catch (err) {
+    log?.(`[long] could not write the notes you typed into ${docPath} (the transcript is intact): ${err}`);
+    return false;
+  }
+}
+
 export function noteInterruption(docPath: string, note: string, log?: (msg: string) => void): void {
   try {
     const doc = fs.readFileSync(docPath, "utf8");
@@ -1009,6 +1080,15 @@ export class LongRecorder {
       // closes, so a file moved before this looks empty to every player.
       this.flushNativeAudioSync();
       noteInterruption(this.transcriptPath, interruptedNote("quit", pending), this.deps.log);
+      // D7: the notes the user typed go in NOW, on the way out, and before the
+      // document is relocated below. No summary and no model on this path - the
+      // process is dying and awaits nothing - so the block holds the human's
+      // notes alone, which is the honest content for an interrupted recording.
+      // See spliceMyNotesSync on why it must follow noteInterruption.
+      const mine = this.deps.liveNotes?.read(this.startedIso) ?? [];
+      if (spliceMyNotesSync(this.transcriptPath, this.headerStr, mine, this.deps.log)) {
+        this.deps.liveNotes?.clear(this.startedIso);
+      }
       // Only a recording still parked in staging needs relocating; one recorded
       // straight into the user's own folder is already where they want it.
       if (this.staged && this.underStaging(this.transcriptPath)) this.fileIntoHistory();
@@ -1070,6 +1150,27 @@ export class LongRecorder {
           continue;
         }
         noteInterruption(session.docPath, interruptedNote("recovered", -1), this.deps.log);
+        // D7, the last of the three merge paths: the app never got to run any
+        // shutdown code, so nothing filed the notes typed during this recording.
+        // The slot outlives the crash (it is a separate file under dataDir, not
+        // in this folder - see main/liveNotes.ts), so they can still be merged
+        // here. Matched on the start instant read out of the document's own
+        // header: notes from a DIFFERENT session are never attached to this one,
+        // they are left in the slot for open() to set aside by name.
+        if (session.startedIso) {
+          const mine = this.deps.liveNotes?.read(session.startedIso) ?? [];
+          if (
+            spliceMyNotesSync(
+              session.docPath,
+              transcriptHeader(session.title, session.startedIso),
+              mine,
+              this.deps.log,
+            )
+          ) {
+            this.deps.liveNotes?.clear(session.startedIso);
+            this.deps.log?.(`[long] recovered ${mine.length} note(s) you had typed during ${session.docPath}`);
+          }
+        }
         const filed = fileRecordingIntoHistory({
           historyRoot: this.historyBase(),
           docPath: session.docPath,
@@ -1205,6 +1306,11 @@ export class LongRecorder {
       return { ok: false, error: "cannot write in the folder: " + String(err) };
     }
     this.active = true;
+    // D7: bind the live-notes slot to THIS recording, after the document exists
+    // (a start that failed above must not claim the slot). Never destructive - a
+    // slot still holding an earlier session's unfiled notes is moved aside, not
+    // overwritten (main/liveNotes.ts's open()).
+    this.deps.liveNotes?.open(this.startedIso);
     this.deps.log?.(`[long] recording started -> ${this.transcriptPath}`);
     return { ok: true, docPath: this.transcriptPath, audioPath: this.audioPath };
   }
@@ -1308,6 +1414,42 @@ export class LongRecorder {
       fs.appendFileSync(this.transcriptPath, markLine(off));
     } catch {
       /* the in-memory mark still reaches the summary */
+    }
+    return { ok: true };
+  }
+
+  /** U8: a live suggestion the user explicitly KEPT.
+   *
+   * Deliberately the same shape as mark() above - append one blockquote line to
+   * the live document, best effort - and deliberately going through THIS class
+   * rather than being appended from main/liveAssist.ts: the document has exactly
+   * one writer, and a second one appending from elsewhere could land between
+   * finalize()'s read and its atomic rename, which would silently swallow the
+   * line the user just chose to keep.
+   *
+   * `!this.active` refuses for a stronger reason than mark()'s: after stop(),
+   * finalize() rewrites the whole document, so an append here would be either
+   * lost (during) or stranded past the end of a finished document (after).
+   *
+   * The line format itself lives in shared/liveAssist.ts (suggestionLine) and
+   * says "NOT spoken by anyone" before it says anything else - a suggestion that
+   * could be read back as speech would be the worst possible defect of that
+   * feature. Nothing here adds it to `this.marks`: a marked moment is a claim
+   * about the AUDIO, and a suggestion is not one. */
+  keepSuggestion(text: string, contextUpToMs: number): { ok: boolean; error?: string } {
+    if (!this.active) return { ok: false, error: "no recording is running" };
+    const clean = String(text ?? "").trim();
+    if (!clean) return { ok: false, error: "empty suggestion" };
+    try {
+      fs.appendFileSync(
+        this.transcriptPath,
+        suggestionLine(Date.now() - this.startedAt, contextUpToMs, clean),
+      );
+    } catch (err) {
+      // Unlike a mark, there is no in-memory consolation prize here: if the
+      // append failed, the suggestion is NOT in the document and the caller has
+      // to be told, or the panel would show it as kept when it is not.
+      return { ok: false, error: "could not write into the document: " + String(err) };
     }
     return { ok: true };
   }
@@ -1657,43 +1799,78 @@ export class LongRecorder {
       // v3 chantier 4: always attempt a summary and splice it into the SAME
       // document at the top (no template chooser anymore). If no local LLM is
       // available, the document is the transcript alone.
-      let summary = "";
+      //
+      // D7 adds a second author to that block, and it changes when the block is
+      // written: it used to appear only if a model produced something, and now it
+      // appears whenever EITHER author has something to say. A recording the user
+      // annotated on a machine with no local model still gets its notes - which
+      // is the case that matters most, since it is the campaign's own default.
+      const mine = this.deps.liveNotes?.read(this.startedIso) ?? [];
+      const mineBlock = renderMyNotes(mine);
+      let generated = "";
       const model =
         (this.deps.summaryModel?.() || "") ||
         (this.deps.ollamaModels ? (await this.deps.ollamaModels())?.[0] : undefined) ||
         "";
+      let doc = "";
+      let body = "";
+      if (model || mineBlock) {
+        doc = fs.readFileSync(this.transcriptPath, "utf8");
+        body = doc.startsWith(this.headerStr) ? doc.slice(this.headerStr.length) : doc;
+      }
       if (model) {
-        const doc = fs.readFileSync(this.transcriptPath, "utf8");
-        const body = doc.startsWith(this.headerStr) ? doc.slice(this.headerStr.length) : doc;
         const parts = chunkTranscript(body);
         if (parts.length === 1) {
-          summary = (await summarize(model, summaryPrompt(parts[0], this.marks))) ?? "";
+          generated = (await summarize(model, summaryPrompt(parts[0], this.marks, mineBlock))) ?? "";
         } else {
-          // Map-reduce: summarize each chunk, then the joined summaries.
+          // Map-reduce: summarize each chunk, then the joined summaries. The
+          // user's notes go to the REDUCE step only, not to every chunk: a note
+          // about minute 90 is noise while summarizing minute 3, and repeating
+          // the whole outline in every one of a dozen prompts spends the context
+          // budget on the part of the work that needs it least.
           const partials: string[] = [];
           for (const p of parts) {
             const x = await summarize(model, summaryPrompt(p, []));
             if (x) partials.push(x);
           }
-          summary =
-            (await summarize(model, summaryPrompt(partials.join("\n\n---\n\n"), this.marks))) ??
+          generated =
+            (await summarize(model, summaryPrompt(partials.join("\n\n---\n\n"), this.marks, mineBlock))) ??
             partials.join("\n\n---\n\n");
         }
-        if (summary) {
-          // Atomic swap (tmp + rename): the summary splice REWRITES the whole document, so a live
-          // transcriptSince poll racing this write must never observe a half-written file. Write the
-          // final content aside, then rename over the path in one step (same discipline as saveRecent).
-          const tmp = this.transcriptPath + ".tmp";
-          fs.writeFileSync(
-            tmp,
-            this.headerStr + "## Summary\n\n" + summary.trim() + "\n\n## Transcript\n\n" + body.replace(/^\s+/, ""),
-          );
-          fs.renameSync(tmp, this.transcriptPath);
+        if (generated) {
+          // D8: the model was ASKED for provenance; here is where we find out
+          // whether it told the truth. Every "[hh:mm:ss]" it wrote is checked
+          // against the timestamps that really begin a line of THIS transcript,
+          // and anything else is deleted. Nothing is ever repaired or
+          // approximated: see verifyCitations' note on why an invented citation
+          // is worse than none.
+          const checked = verifyCitations(generated, transcriptStamps(body));
+          if (checked.dropped > 0) {
+            this.deps.log?.(
+              `[long] notes provenance: kept ${checked.kept} citation(s), dropped ${checked.dropped} the model made up (model ${model})`,
+            );
+          }
+          generated = checked.text;
         } else {
           this.deps.log?.("[long] summary empty: transcript stands alone");
         }
       } else {
         this.deps.log?.("[long] no Ollama model available: transcript only, no summary");
+      }
+      const block = composeNotesBlock(mineBlock, generated);
+      if (block) {
+        // Atomic swap (tmp + rename): the splice REWRITES the whole document, so a live
+        // transcriptSince poll racing this write must never observe a half-written file. Write the
+        // final content aside, then rename over the path in one step (same discipline as saveRecent).
+        // Through spliceNotes, the SAME function the regenerate path uses, so
+        // there is one shape of document rather than two that can drift.
+        const tmp = this.transcriptPath + ".tmp";
+        fs.writeFileSync(tmp, spliceNotes(doc, this.headerStr, block));
+        fs.renameSync(tmp, this.transcriptPath);
+        // Only NOW, once the notes are on disk inside the document. A slot
+        // cleared before a failed write would have thrown the user's notes away
+        // (main/liveNotes.ts's clear()).
+        if (mineBlock) this.deps.liveNotes?.clear(this.startedIso);
       }
       // C10: a recording with no chosen destination is the history mechanism's
       // default landing spot, not a second write path (design invariant) - move
@@ -1712,7 +1889,11 @@ export class LongRecorder {
           staged: this.staged, // v6 c7: needs a "Save to..." step until filed
         }),
       );
-      this.deps.log?.(`[long] done: ${this.transcriptPath}${summary ? " (with summary)" : ""}`);
+      this.deps.log?.(
+        `[long] done: ${this.transcriptPath}` +
+          (mine.length > 0 ? ` (${mine.length} note(s) you typed` : " (") +
+          (generated ? (mine.length > 0 ? " + generated notes)" : "generated notes)") : mine.length > 0 ? ")" : "transcript only)"),
+      );
     } catch (err) {
       this.lastError = String(err);
       this.deps.log?.(`[long] finalize failed: ${err}`);
