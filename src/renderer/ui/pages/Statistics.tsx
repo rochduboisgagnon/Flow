@@ -94,7 +94,7 @@ export function Statistics({ s, patch }: {
               <span className="lbl">Speaking rate</span>
               <b className="num">
                 {data.avgWpm > 0 ? data.avgWpm : "-"}
-                {data.avgWpm > 0 ? <span style={{ fontSize: 13, color: "var(--ink2)" }}> wpm</span> : null}
+                {data.avgWpm > 0 ? <span style={{ fontSize: 15.6, color: "var(--ink2)" }}> wpm</span> : null}
               </b>
               <span className="delta">
                 {data.avgWpm > 0 ? "how fast you actually speak" : "needs a dictation or two"}
@@ -104,7 +104,7 @@ export function Statistics({ s, patch }: {
               <span className="lbl">Streak</span>
               <b className="num">
                 {data.streakDays}
-                <span style={{ fontSize: 13, color: "var(--ink2)" }}> {data.streakDays === 1 ? "day" : "days"}</span>
+                <span style={{ fontSize: 15.6, color: "var(--ink2)" }}> {data.streakDays === 1 ? "day" : "days"}</span>
               </b>
               <span className="delta">{data.streakDays > 0 ? "consecutive days with a dictation" : "dictate today to start one"}</span>
             </div>

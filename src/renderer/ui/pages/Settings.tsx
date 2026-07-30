@@ -106,7 +106,7 @@ function TabDictation({ s, patch }: { s: UiStatePayload; patch: Patch }) {
           the control was, rather than wondering what happened to their choice. */}
       <Row
         label="Microphone"
-        help="Flow keeps the microphone open for a few seconds after each dictation and holds a rolling half-second of sound in memory, which is added to the front of your next dictation so the first word is never clipped. Windows shows its microphone indicator during those seconds. Nothing is ever written to disk, the buffer is erased as soon as it is used, and the microphone is released whenever you lock the session, the machine sleeps, or you pause dictation from the tray."
+        help="Stays ready a few seconds after each dictation so your first word is never clipped. Windows shows its microphone indicator meanwhile. Nothing reaches the disk, the buffer is erased after use, and locking the session releases it."
       >
         <span className="pinned">Always ready &#183; nothing to configure</span>
       </Row>
@@ -152,11 +152,12 @@ function TabAudio({ s, patch }: { s: UiStatePayload; patch: Patch }) {
 //    note, fact by fact, and test/batch-engine.test.ts asserts it by identity.
 //  - "two models in memory at once" is the cost that file states, in the same
 //    place, rather than leaving it to be discovered.
+// 2026-07-30: this help text was 191 words. Nobody reads 191 words to pick a
+// dropdown value. What a reader actually needs is the trade in one line; the
+// reasoning that used to live here is in main/asr/batchEngine.ts, where a
+// maintainer will look for it and a user never will.
 const BATCH_MODEL_HELP =
-  "Which model transcribes a recorded meeting or an imported file. Everything else - every dictation - keeps using the model above. " +
-  "Why the split exists: a dictation is two seconds of audio whose whole value is that the text is there the instant you let go of the key, while a meeting is an hour nobody is waiting on. Sharing one model means one of those two jobs is always served badly. " +
-  "What it costs, plainly: while a meeting or an import is running, TWO models are loaded at the same time, which on the GPU means two allocations of video memory. Flow unloads the batch one after five idle minutes. If it cannot load at all - a GPU with no room left is the realistic reason - the job runs on the dictation model instead and this page says so; the job is never lost. " +
-  "What it never costs: a keypress. The dictation engine is a separate process that this setting never stops, swaps or reconfigures, so changing it here cannot make a dictation wait for a model to load.";
+  "Meetings and imports can afford a slower, more accurate model - nobody is waiting on them. Dictation never uses this one."
 
 function TabEngine({ s, patch }: { s: UiStatePayload; patch: Patch }) {
   const batch = s.batchEngine;
@@ -170,10 +171,9 @@ function TabEngine({ s, patch }: { s: UiStatePayload; patch: Patch }) {
           than offering a dial that can only make things worse.
           The row is kept (not deleted) because a user who upgrades and wonders
           where the choice went deserves an answer on the screen where it was. */}
-      <Row
-        label="Dictation model"
-        help="Pinned, and not a choice any more. Dictation runs on Large v3 Turbo: the multilingual model distilled from Large v3 - the same 99 languages, several times faster. For dictation, a transcription that lands seconds after you release the key has already failed however exact it is, so Flow picks the most accurate model that answers instantly. The extra accuracy of Large v3 is not lost - it is available just below, for meetings and imports, where nothing is waiting on it."
-      >
+      {/* No description: there is nothing to decide. The row states what runs,
+          which is the only thing left worth showing. */}
+      <Row label="Dictation model">
         <span className="pinned">Large v3 Turbo &#183; multilingual</span>
       </Row>
       <Row label="Meetings and imports" help={BATCH_MODEL_HELP}>
@@ -232,10 +232,11 @@ function TabEngine({ s, patch }: { s: UiStatePayload; patch: Patch }) {
 // it must say and does: whose speech is being read, that nothing leaves the
 // machine, and that Flow does not embed a model of its own yet.
 const LIVE_ASSIST_HELP =
-  "Off by default. While a meeting is being recorded, a model running on this machine reads the last few minutes of the transcript and proposes notes, questions or replies in the Record page. " +
-  "The cost first: this is the one feature of Flow that reads what OTHER PEOPLE say - they never installed Flow and never agreed to anything - and a panel proposing replies pulls your eyes off the person talking at the moment they are talking. It also asks the same GPU that is transcribing the meeting to write a few lines every 45 seconds. " +
-  "What it does not cost: nothing is sent anywhere, the model answers on this computer. Nothing new is stored: suggestions live in memory only, and one you choose to keep goes into that recording's own document on a line that says it was not spoken by anyone. The recording always wins - suggestions stop while you dictate and while the transcription is catching up. " +
-  "It needs a local model, and Flow does not embed one yet: it uses the Ollama model chosen above. Without Ollama the panel produces nothing and says so, rather than pretending.";
+  // 2026-07-30: this was 190 words across four paragraphs, on a toggle. The
+  // reasoning was worth writing down once - it is the one feature that reads
+  // what OTHER people say - but a settings row is not where anyone reads it.
+  // The argument now lives in shared/liveAssist.ts; here, the trade in a line.
+  "Off by default. A local model reads the last minutes of a meeting and suggests notes or replies. It reads what other people say, and they never agreed to anything. Nothing leaves this machine, and the recording always wins. Needs Ollama - Flow has no model of its own yet.";
 
 function TabLocalAi({ s, patch }: { s: UiStatePayload; patch: Patch }) {
   const [models, setModels] = useState<string[] | null | "loading">("loading");
@@ -338,10 +339,10 @@ function TabStorage({ s, patch }: { s: UiStatePayload; patch: Patch }) {
           this campaign where a code change quietly falsified a written promise,
           and the reason the rule is now to grep for the promise before shipping
           the change. */}
-      <Row label="Dictation retention" help="Your dictations are kept as TEXT for a rolling month, listed on the Home page, and erasable there in one click. Their AUDIO is never written anywhere - it exists for the one utterance and then it is gone. Nothing is sent off this machine either way.">
+      <Row label="Dictation retention" help="Text kept a month and listed on Home, erasable there. The audio is never written anywhere. Nothing leaves this machine.">
         <span />
       </Row>
-      <Row label="What Flow does keep" help="Your settings and your dictionary, because you wrote them. Long recordings, because you asked for them. A month of your dictations as text, on the Home page. And aggregate counters - words per day - which the Statistics page shows and can erase in one click.">
+      <Row label="What Flow does keep" help="Your settings, your dictionary, your long recordings, a month of dictations, and word counters. Everything else is dropped.">
         <span />
       </Row>
     </div>
@@ -362,7 +363,7 @@ function TabUpdates({ s }: { s: UiStatePayload }) {
   return (
     <div className="rows">
       <Row label="Current version" help="Flow updates itself from GitHub Releases. Updates never install while you are dictating or recording.">
-        <b className="num" style={{ fontSize: 15 }}>{s.version}</b>
+        <b className="num" style={{ fontSize: 18 }}>{s.version}</b>
       </Row>
       <Row label="Check for updates" help={msg ?? "Checks GitHub for a newer release."}>
         <button className="btn amber" disabled={busy} onClick={() => void check()}>{busy ? "Checking..." : "Check now"}</button>
@@ -375,7 +376,7 @@ function TabAbout({ s }: { s: UiStatePayload }) {
   return (
     <div className="rows">
       <Row label="Flow" help="Local, on-device voice transcription. By AGR Labs. MIT license.">
-        <b className="num" style={{ fontSize: 15 }}>{s.version}</b>
+        <b className="num" style={{ fontSize: 18 }}>{s.version}</b>
       </Row>
       <Row label="Source code" help="github.com/rochduboisgagnon/Flow">
         <button className="btn" onClick={() => void window.flowui.openPath("repo")}>Open on GitHub</button>

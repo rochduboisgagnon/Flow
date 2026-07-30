@@ -178,7 +178,7 @@ export function Import({ go }: { go: (s: Section) => void }) {
           </span>
         </label>
       </div>
-      <p className="sub" style={{ margin: "8px 0 0", fontSize: 11.5 }}>
+      <p className="sub" style={{ margin: "8px 0 0", fontSize: 13.8 }}>
         Both apply to what you add next, not to what is already in the queue.
       </p>
 
@@ -197,9 +197,8 @@ export function Import({ go }: { go: (s: Section) => void }) {
 
       {items.length === 0 ? (
         <p className="sub" style={{ margin: "18px 0 0", maxWidth: "62ch" }}>
-          Nothing in the queue. One file is transcribed at a time, and a dictation always goes
-          first: pressing your shortcut never waits for an import. Finished imports land in Notes,
-          in the same shape as a recording made here.
+          Nothing in the queue. One file at a time, and a dictation always goes first.
+          Finished imports land in Notes.
         </p>
       ) : (
         <div className="queue">

@@ -266,7 +266,7 @@ function Editor({ draft, setDraft, aliasText, setAliasText, onSave, onCancel }: 
         <button className="btn ghost" onClick={onCancel}>Cancel</button>
       </div>
       {isReplacement && aliasText.trim().length === 0 ? (
-        <p className="sub" style={{ margin: "10px 0 0", fontSize: 11.5 }}>
+        <p className="sub" style={{ margin: "10px 0 0", fontSize: 13.8 }}>
           A replacement needs at least one wrong spelling to look for.
         </p>
       ) : null}

@@ -493,10 +493,7 @@ export function Notes({ s }: { s: UiStatePayload }) {
       )}
 
       <p className="sub" style={{ margin: "16px 0 0", maxWidth: "62ch" }}>
-        Downloads go straight to your Downloads folder, with no dialog. Nothing is ever
-        overwritten: a second download of the same capture sits beside the first. A download
-        cut short - by a crash, an update or a shutdown - never leaves a half file under the
-        finished name.
+        Files go straight to your Downloads folder. Nothing is ever overwritten.
       </p>
     </>
   );

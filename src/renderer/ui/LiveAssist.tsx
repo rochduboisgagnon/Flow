@@ -95,9 +95,7 @@ export function LiveAssistPanel() {
         <div>
           <span className="lbl">Live suggestions</span>
           <p className="sub" style={{ margin: "4px 0 0" }}>
-            Off by default. When on, a model running on this machine reads the last few minutes of
-            the transcript and proposes notes, questions or replies. It never types into another
-            app, and nothing is added to the recording unless you keep it.
+            A local model reads the last few minutes and proposes notes or replies. It never types anywhere, and nothing joins the recording unless you keep it.
           </p>
         </div>
         <Toggle
@@ -188,10 +186,7 @@ export function LiveAssistPanel() {
 
       {enabled ? (
         <p className="assist-foot">
-          Suggestions are based on speech that has already been transcribed, so they lag the room by
-          several seconds - the time shown on each one is the part of the recording it came from, not
-          the present moment. They pause while you dictate or while the transcription is catching up:
-          the recording always comes first. Leaving this page stops them entirely.
+          Each one is stamped with the moment it came from, not now - they lag the room by a few seconds. They pause while you dictate.
         </p>
       ) : null}
     </div>

@@ -255,7 +255,7 @@ export function Record({ s }: { s: UiStatePayload }) {
                 : "Both mixes what the PC plays with your microphone. No bot joins the call."}
             </p>
             {nativeReady ? (
-              <p className="sub" style={{ margin: "6px 0 0", fontSize: 11.5 }}>{SYSTEM_ONLY_UNAVAILABLE}</p>
+              <p className="sub" style={{ margin: "6px 0 0", fontSize: 13.8 }}>{SYSTEM_ONLY_UNAVAILABLE}</p>
             ) : null}
           </div>
 
@@ -362,9 +362,7 @@ export function Record({ s }: { s: UiStatePayload }) {
                 <p className="sub" style={{ margin: 0 }}>Listening. The first lines appear once a segment is transcribed.</p>
               ) : (
                 <p className="sub" style={{ margin: 0 }}>
-                  Start a recording and the transcript appears here, line by line, as the engine
-                  works through it. It is written to disk at the same time, so nothing depends on
-                  this window staying open.
+                  The transcript appears here as the engine works, and is written to disk at the same time.
                 </p>
               )}
             </div>
@@ -419,9 +417,7 @@ function LiveNotesPanel(props: {
     <div className="card">
       <span className="lbl">Your notes</span>
       <p className="sub" style={{ margin: "6px 0 0" }}>
-        Type what matters as it happens - short, misspelled, abbreviated, it does not matter.
-        These notes lead the meeting notes Flow writes at the end, and they stay in the document
-        in your own words, exactly as you typed them.
+        Type what matters as it happens. Your notes lead the summary, and stay in the document exactly as you wrote them.
       </p>
 
       {error ? <p className="note-err" style={{ margin: "10px 0 0" }}>{error}</p> : null}
@@ -514,12 +510,12 @@ function LiveNotesPanel(props: {
       )}
 
       {active ? (
-        <p className="sub" style={{ margin: "10px 0 0", fontSize: 11.5 }}>
+        <p className="sub" style={{ margin: "10px 0 0", fontSize: 13.8 }}>
           A note is written to disk the moment you add it, so a crash or a power cut keeps every
           one of them. Only a line still sitting in the box above would be lost.
         </p>
       ) : mine.length > 0 ? (
-        <p className="sub" style={{ margin: "10px 0 0", fontSize: 11.5 }}>
+        <p className="sub" style={{ margin: "10px 0 0", fontSize: 13.8 }}>
           {finalizing
             ? "These are going into the document now, above the notes Flow writes from the transcript."
             : "These are in the document, at the top, above the notes Flow wrote from the transcript. Open it from the Notes page."}

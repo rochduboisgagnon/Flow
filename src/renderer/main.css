@@ -13,11 +13,17 @@
    in the #b9762a family and is NOT themed. */
 
 :root {
-  --bg: #191613;
-  --panel: #211d18;
-  --panel2: #292319;
-  --line: #2d2823;
-  --line2: #3d362d;
+  /* 2026-07-30, asked for directly: the dark theme read ORANGE. It was: every
+     surface token was a WARM near-black derived from the dictation pill (more
+     red than blue), which is invisible in isolation and unmistakable once the
+     window fills a screen. Now a neutral grey ramp at the same lightness - the
+     amber accent is what should carry the warmth, and it reads better against
+     a ground that does not compete with it. */
+  --bg: #1a1a1a;
+  --panel: #212121;
+  --panel2: #292929;
+  --line: #2e2e2e;
+  --line2: #3d3d3d;
   --ink: #f2ede4;
   /* Roch, 1.1.0 on-device validation: the mockup's secondary ink read fine on
      the design page but was "vraiment trop pale" in the real app, BOTH themes.
@@ -31,7 +37,7 @@
   --amber-deep: #9c6222;
   --amber-soft: rgba(201, 138, 58, 0.13);
   --err: #cf6a5c;
-  --hero-grad: linear-gradient(160deg, #241e16, #1d1915 55%);
+  --hero-grad: linear-gradient(160deg, #242424, #1d1d1d 55%);
   --r: 10px;
   /* MUST equal TITLEBAR_H in src/shared/constants.ts (the DIP height given to
      titleBarOverlay). If the two diverge, the native caption buttons float
@@ -65,8 +71,11 @@ html, body, #root {
   margin: 0;
   height: 100%;
   font-family: var(--font);
-  font-size: 13.5px;
-  line-height: 1.5;
+  /* 2026-07-30: +20% across the app, asked for directly (13.5 -> 16.2). Set
+     ONCE here; everything sized in px below scales with it only where it was
+     already relative, so the few absolute sizes were bumped to match. */
+  font-size: 16.2px;
+  line-height: 1.55;
   color: var(--ink);
   background: var(--bg);
 }
@@ -96,9 +105,9 @@ html, body, #root {
 }
 .tb-brand { display: flex; align-items: center; gap: 9px; padding: 0 14px; }
 .tb-icon { width: 20px; height: 20px; display: block; border-radius: 5px; }
-.tb-name { font-weight: 600; font-size: 13px; letter-spacing: 0.01em; }
+.tb-name { font-weight: 600; font-size: 15.6px; letter-spacing: 0.01em; }
 .tb-drag { flex: 1; }
-.tb-status { display: flex; align-items: center; gap: 7px; color: var(--ink2); font-size: 11.5px; padding-right: 12px; }
+.tb-status { display: flex; align-items: center; gap: 7px; color: var(--ink2); font-size: 13.8px; padding-right: 12px; }
 
 /* ---- body: rail + content ---- */
 .body { display: flex; flex: 1; min-height: 0; }
@@ -114,7 +123,7 @@ html, body, #root {
   overflow-y: auto;
 }
 .rail .grp {
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.09em;
@@ -147,17 +156,17 @@ html, body, #root {
 @keyframes pagein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .page { animation: none; } }
 
-h2 { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 3px; }
-.sub { color: var(--ink2); font-size: 12.5px; margin: 0 0 20px; max-width: 86ch; line-height: 1.55; }
-.lbl { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.09em; color: var(--ink2); }
+h2 { font-size: 21.6px; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 3px; }
+.sub { color: var(--ink2); font-size: 15px; margin: 0 0 20px; max-width: 86ch; line-height: 1.55; }
+.lbl { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.09em; color: var(--ink2); }
 
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 16px 18px; }
-.kbd { font-weight: 600; background: var(--panel2); border: 1px solid var(--line2); border-bottom-width: 2px; border-radius: 6px; padding: 2px 9px; font-size: 12.5px; }
+.kbd { font-weight: 600; background: var(--panel2); border: 1px solid var(--line2); border-bottom-width: 2px; border-radius: 6px; padding: 2px 9px; font-size: 15px; }
 .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 7px; vertical-align: 1px; }
 .dot.on { background: var(--amber); }
 .dot.off { background: transparent; border: 1.4px solid var(--ink2); }
 .dot.err { background: var(--err); }
-.chip { display: inline-block; background: var(--panel2); border: 1px solid var(--line2); border-radius: 999px; padding: 2.5px 10px; font-size: 11.5px; color: var(--ink2); }
+.chip { display: inline-block; background: var(--panel2); border: 1px solid var(--line2); border-radius: 999px; padding: 2.5px 10px; font-size: 13.8px; color: var(--ink2); }
 .num { font-variant-numeric: tabular-nums; }
 
 .btn {
@@ -185,10 +194,13 @@ html.light .btn.amber:hover { background: #c98a3a; border-color: #c98a3a; } /* r
    sat at 1.5:1 in light - a control that does not read as a control. The
    BORDER now carries the 3:1 boundary (--ink2 clears it in both themes); the
    rail fill stays quiet on purpose, OFF should recede next to amber ON. */
+/* 2026-07-30: the knob was 13px + 2 x 1px border = 15px inside a 17px inner
+   height, so it touched top AND bottom - "tout crush", and it was. Bigger, and
+   sized so the gap above and below is a real 3px at every state. */
 .toggle {
   position: relative;
-  width: 34px;
-  height: 19px;
+  width: 44px;
+  height: 25px;
   border-radius: 999px;
   border: 1px solid var(--ink2);
   background: var(--panel2);
@@ -201,10 +213,11 @@ html.light .btn.amber:hover { background: #c98a3a; border-color: #c98a3a; } /* r
 .toggle::after {
   content: "";
   position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 13px;
-  height: 13px;
+  box-sizing: border-box;
+  top: 3px;
+  left: 3px;
+  width: 17px;
+  height: 17px;
   border-radius: 50%;
   background: #fdfcfa; /* knob: near-white; on light its border does the work */
   border: 1px solid rgba(0, 0, 0, 0.18);
@@ -215,7 +228,7 @@ html.light .btn.amber:hover { background: #c98a3a; border-color: #c98a3a; } /* r
 .toggle.on { background: var(--amber); border-color: var(--amber); }
 .toggle.on:hover { background: #d69745; border-color: #d69745; } /* same pair as .btn.amber:hover */
 html.light .toggle.on:hover { background: #c98a3a; border-color: #c98a3a; }
-.toggle.on::after { left: 17px; }
+.toggle.on::after { left: 24px; }
 /* Light theme: the knob color equals --panel, so its edge must be firmer. */
 html.light .toggle::after { border-color: rgba(0, 0, 0, 0.3); }
 
@@ -236,7 +249,7 @@ select:focus, input:focus, button:focus-visible { outline: 2px solid var(--amber
 /* ---- Home (hero + status cards) ---- */
 .home-grid { display: grid; grid-template-columns: 1.5fr 1fr; gap: 14px; }
 .hero-card { grid-row: span 2; display: flex; flex-direction: column; justify-content: space-between; background: var(--hero-grad); border: 1px solid var(--line2); }
-.hero-card .big { font-size: 21px; font-weight: 600; letter-spacing: -0.01em; margin: 10px 0 4px; }
+.hero-card .big { font-size: 25.2px; font-weight: 600; letter-spacing: -0.01em; margin: 10px 0 4px; }
 .hero-card .ribbon-mini { margin: 22px 0 8px; }
 .stat-inline { display: flex; align-items: baseline; gap: 8px; }
 .progress { height: 5px; border-radius: 999px; background: var(--panel2); overflow: hidden; margin-top: 8px; width: 180px; }
@@ -247,7 +260,7 @@ table.diag { border-collapse: collapse; width: 100%; }
 table.diag td { padding: 9px 14px 9px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
 table.diag tr:last-child td { border-bottom: 0; }
 table.diag td:first-child { color: var(--ink2); white-space: nowrap; width: 180px; }
-.mono { font-family: Consolas, monospace; font-size: 12px; color: var(--ink2); word-break: break-all; }
+.mono { font-family: Consolas, monospace; font-size: 14.4px; color: var(--ink2); word-break: break-all; }
 
 /* ---- Settings ---- */
 .tabs { display: flex; flex-wrap: wrap; gap: 2px; border-bottom: 1px solid var(--line); margin-bottom: 20px; }
@@ -276,15 +289,15 @@ table.diag td:first-child { color: var(--ink2); white-space: nowrap; width: 180p
 .row:last-child { border-bottom: 0; }
 .row .l { min-width: 0; flex: 1 1 auto; }
 .row .l b { display: block; font-weight: 600; }
-.row .l span { color: var(--ink2); font-size: 12.5px; max-width: 86ch; display: block; margin-top: 3px; line-height: 1.55; }
+.row .l span { color: var(--ink2); font-size: 15px; max-width: 86ch; display: block; margin-top: 3px; line-height: 1.55; }
 .row .c { flex: none; display: flex; align-items: center; gap: 8px; padding-top: 2px; }
-.note-amber { color: var(--amber-text); font-size: 12.5px; }
-.note-err { color: var(--err); font-size: 12.5px; }
+.note-amber { color: var(--amber-text); font-size: 15px; }
+.note-err { color: var(--err); font-size: 15px; }
 
 /* ---- honest not-yet state (pages whose engine work is a later wave) ---- */
 .coming { border: 1.5px dashed var(--line2); border-radius: var(--r); padding: 30px 32px; color: var(--ink2); max-width: 86ch; }
-.coming .soon { display: inline-block; font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--amber-text); margin-bottom: 8px; }
-.coming .wave { margin-top: 10px; font-size: 11.5px; color: var(--ink2); }
+.coming .soon { display: inline-block; font-size: 13.2px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--amber-text); margin-bottom: 8px; }
+.coming .wave { margin-top: 10px; font-size: 13.8px; color: var(--ink2); }
 
 /* The shell is non-selectable; FACTS must be copyable. Extend this allowlist
    with every new readable surface (.transcript, .doc, .rich, .snip pre when
@@ -301,8 +314,8 @@ table.diag, .mono, .row .l span, .card .sub, .rich, .snip pre, .tl-raw, .doc-bod
 .fx-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
 .fx { display: flex; flex-direction: column; gap: 9px; }
 .fx header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.fx .nm { font-weight: 600; font-size: 14px; }
-.fx .desc { color: var(--ink2); font-size: 12.5px; margin: 0; }
+.fx .nm { font-weight: 600; font-size: 16.8px; }
+.fx .desc { color: var(--ink2); font-size: 15px; margin: 0; }
 /* V5: the trigger row of a Functions card (mockup .fx .chips). Ported here when
    the page arrived rather than up front, so the stylesheet only ever carries
    rules something actually renders. */
@@ -314,7 +327,7 @@ table.diag, .mono, .row .l span, .card .sub, .rich, .snip pre, .tl-raw, .doc-bod
 .fx.off .fmt { opacity: 0.55; }
 .snip .cue { color: var(--amber-text); font-weight: 600; }
 .fmt {
-  font-size: 9.5px;
+  font-size: 11.4px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.07em;
@@ -332,7 +345,7 @@ table.diag, .mono, .row .l span, .card .sub, .rich, .snip pre, .tl-raw, .doc-bod
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 10px 13px;
-  font-size: 12.5px;
+  font-size: 15px;
   color: var(--ink2);
   overflow-wrap: anywhere;
 }
@@ -348,7 +361,7 @@ table.diag, .mono, .row .l span, .card .sub, .rich, .snip pre, .tl-raw, .doc-bod
   border-radius: 8px;
   padding: 10px 13px;
   font-family: Consolas, monospace;
-  font-size: 11.5px;
+  font-size: 13.8px;
   color: var(--ink2);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -382,7 +395,7 @@ textarea.snip-src:focus { outline: 2px solid var(--amber); outline-offset: 1px; 
   background: transparent;
   color: var(--ink2);
   font: inherit;
-  font-size: 12px;
+  font-size: 14.4px;
   padding: 6px 4px;
   border-radius: 6px;
   cursor: pointer;
@@ -405,9 +418,9 @@ textarea.snip-src:focus { outline: 2px solid var(--amber); outline-offset: 1px; 
   padding: 10px 22px;
   box-shadow: 0 6px 22px rgba(0, 0, 0, 0.35);
 }
-.rec-time { font-size: 26px; font-weight: 600; letter-spacing: 0.02em; }
-.rec-meta { display: flex; gap: 12px; font-size: 11.5px; color: var(--ink2); }
-.rec-keep { display: flex; gap: 9px; align-items: flex-start; font-size: 12.5px; cursor: pointer; }
+.rec-time { font-size: 31.2px; font-weight: 600; letter-spacing: 0.02em; }
+.rec-meta { display: flex; gap: 12px; font-size: 13.8px; color: var(--ink2); }
+.rec-keep { display: flex; gap: 9px; align-items: flex-start; font-size: 15px; cursor: pointer; }
 .rec-keep input { margin-top: 2px; accent-color: var(--amber); }
 .transcript { display: flex; flex-direction: column; gap: 12px; max-height: 460px; overflow-y: auto; }
 .tl-raw {
@@ -440,7 +453,7 @@ textarea.snip-src:focus { outline: 2px solid var(--amber); outline-offset: 1px; 
 .drop.over { border-color: var(--amber); background: var(--amber-soft); }
 .drop svg { width: 26px; height: 26px; stroke: var(--ink3); stroke-width: 1.6; fill: none; stroke-linecap: round; stroke-linejoin: round; }
 .drop .hint { margin-top: 9px; font-weight: 600; color: var(--ink); }
-.drop .fmts { font-size: 12px; margin-top: 3px; }
+.drop .fmts { font-size: 14.4px; margin-top: 3px; }
 /* A link-shaped button: the mockup drew this as amber text, and it must still
    be a real <button> for the keyboard and the screen reader. */
 .linkish {
@@ -458,7 +471,7 @@ textarea.snip-src:focus { outline: 2px solid var(--amber); outline-offset: 1px; 
 .queue { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
 .qitem { display: flex; align-items: center; gap: 14px; padding: 12px 16px; }
 .qitem .nm { font-weight: 600; overflow-wrap: anywhere; }
-.qitem .meta { color: var(--ink2); font-size: 11.5px; }
+.qitem .meta { color: var(--ink2); font-size: 13.8px; }
 /* The waiting state is amber, not grey: an import standing aside for a
    dictation is not idle, and the page has to say which of the two it is. */
 .qitem .meta.waiting { color: var(--amber-text); }
@@ -480,10 +493,10 @@ textarea.snip-src:focus { outline: 2px solid var(--amber); outline-offset: 1px; 
 .note-item:hover { border-color: var(--line2); }
 .note-item.sel { border-color: var(--amber-deep); background: var(--amber-soft); }
 .note-item .nt { font-weight: 600; }
-.note-item .d { color: var(--ink2); font-size: 11.5px; margin-top: 2px; }
+.note-item .d { color: var(--ink2); font-size: 13.8px; margin-top: 2px; }
 .doc-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-.doc-title { font-size: 15px; font-weight: 600; }
-.doc-head .d { color: var(--ink2); font-size: 11.5px; margin-top: 2px; }
+.doc-title { font-size: 18px; font-weight: 600; }
+.doc-head .d { color: var(--ink2); font-size: 13.8px; margin-top: 2px; }
 .doc-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .doc-audio { display: block; width: 100%; margin-top: 14px; }
 .doc-body {
@@ -506,7 +519,7 @@ textarea.snip-src:focus { outline: 2px solid var(--amber); outline-offset: 1px; 
   background: var(--panel2);
   border: 1px solid var(--line2);
   border-radius: 8px;
-  font-size: 12.5px;
+  font-size: 15px;
   color: var(--ink2);
 }
 @media (max-width: 960px) { .notes-grid { grid-template-columns: 1fr; } }
@@ -519,7 +532,7 @@ textarea.snip-src:focus { outline: 2px solid var(--amber); outline-offset: 1px; 
   padding: 10px 14px;
   border: 1px dashed var(--line2);
   border-radius: 8px;
-  font-size: 12.5px;
+  font-size: 15px;
   color: var(--ink2);
   max-width: 72ch;
 }
@@ -570,7 +583,7 @@ textarea.snip-src:focus { outline: 2px solid var(--amber); outline-offset: 1px; 
 .drow .term { font-weight: 600; min-width: 130px; }
 .drow .arrow { color: var(--ink2); }
 .drow .kind {
-  font-size: 10.5px;
+  font-size: 12.6px;
   text-transform: uppercase;
   letter-spacing: 0.07em;
   color: var(--ink2);
@@ -580,7 +593,7 @@ textarea.snip-src:focus { outline: 2px solid var(--amber); outline-offset: 1px; 
   border: 0;
   background: transparent;
   font: inherit;
-  font-size: 15px;
+  font-size: 18px;
   line-height: 1;
   color: var(--amber);
   cursor: pointer;
@@ -593,8 +606,8 @@ textarea.snip-src:focus { outline: 2px solid var(--amber); outline-offset: 1px; 
 
 /* ---- Statistics (wave U7) ---- */
 .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 14px; }
-.tile b { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; display: block; margin: 4px 0 2px; }
-.tile .delta { font-size: 11.5px; color: var(--ink2); }
+.tile b { font-size: 31.2px; font-weight: 600; letter-spacing: -0.02em; display: block; margin: 4px 0 2px; }
+.tile .delta { font-size: 13.8px; color: var(--ink2); }
 .stats-low { display: grid; grid-template-columns: 1.4fr 1fr; gap: 14px; }
 .heat { display: grid; grid-template-columns: repeat(26, 1fr); gap: 3px; margin-top: 12px; }
 .heat i { aspect-ratio: 1; border-radius: 2.5px; background: var(--panel2); }
@@ -606,7 +619,7 @@ textarea.snip-src:focus { outline: 2px solid var(--amber); outline-offset: 1px; 
 html.light .heat i.l1 { background: #e8d3b4; }
 html.light .heat i.l2 { background: #cf9d55; }
 .bars { display: flex; flex-direction: column; gap: 11px; margin-top: 12px; }
-.bar .t { display: flex; justify-content: space-between; font-size: 12px; color: var(--ink2); margin-bottom: 5px; gap: 12px; }
+.bar .t { display: flex; justify-content: space-between; font-size: 14.4px; color: var(--ink2); margin-bottom: 5px; gap: 12px; }
 .bar .rail2 { height: 5px; border-radius: 999px; background: var(--panel2); }
 .bar .rail2 i { display: block; height: 100%; border-radius: 999px; background: var(--amber); }
 .stats-foot { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-top: 18px; flex-wrap: wrap; }
@@ -626,10 +639,10 @@ html.light .heat i.l2 { background: #cf9d55; }
 .assist-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 22px; }
 .assist-head .sub { max-width: 66ch; }
 /* Provenance, in the accent so it is read: which model, running where. */
-.assist-src { margin: 0; font-size: 12px; color: var(--amber-text); max-width: 68ch; }
+.assist-src { margin: 0; font-size: 14.4px; color: var(--amber-text); max-width: 68ch; }
 /* The state sentence. Secondary ink, never red - "waiting for the transcription"
    is normal operation, not an error. */
-.assist-wait { margin: 0; font-size: 12.5px; color: var(--ink2); max-width: 68ch; }
+.assist-wait { margin: 0; font-size: 15px; color: var(--ink2); max-width: 68ch; }
 .assist-list { display: flex; flex-direction: column; gap: 9px; max-height: 320px; overflow-y: auto; }
 .assist-item {
   background: var(--panel2);
@@ -642,16 +655,16 @@ html.light .heat i.l2 { background: #cf9d55; }
 }
 /* Attribution BEFORE the text, in every item. The uppercase micro-label is the
    same device .lbl uses for "this is a frame, not content". */
-.assist-by { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.09em; color: var(--ink3); }
+.assist-by { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.09em; color: var(--ink3); }
 /* Selectable, like every other readable surface (see the note on .app's
    user-select): a suggestion the user wants to paste elsewhere must be copyable. */
 .assist-item .txt { user-select: text; overflow-wrap: anywhere; }
-.assist-item .meta { font-size: 11.5px; color: var(--ink2); user-select: text; }
+.assist-item .meta { font-size: 13.8px; color: var(--ink2); user-select: text; }
 /* Kept = already in the document. The same amber pair every other "you acted on
    this" state uses, no new colour. */
 .assist-item.kept { border-color: var(--amber-deep); background: var(--amber-soft); }
 .assist-acts { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.assist-foot { margin: 0; font-size: 11.5px; color: var(--ink3); max-width: 74ch; }
+.assist-foot { margin: 0; font-size: 13.8px; color: var(--ink3); max-width: 74ch; }
 
 /* ---- D8: a verified citation, the only clickable thing inside a notes block.
    Styled as text that happens to be actionable, not as a button: it sits mid
@@ -675,7 +688,7 @@ html.light .heat i.l2 { background: #cf9d55; }
    disabled control. A greyed-out dropdown would suggest it could be re-enabled;
    this cannot, and saying so plainly is the honest shape. */
 .pinned {
-  font-size: 12.5px;
+  font-size: 15px;
   color: var(--ink2);
   padding: 6px 0;
   display: inline-block;
@@ -693,7 +706,7 @@ html.light .heat i.l2 { background: #cf9d55; }
   border-top: 1px solid var(--line);
 }
 .hrow:first-child { border-top: 0; }
-.hwhen { font-size: 11.5px; color: var(--ink2); white-space: nowrap; }
+.hwhen { font-size: 13.8px; color: var(--ink2); white-space: nowrap; }
 /* The text wraps and takes the width it needs. A dictation is a sentence, not a
    cell: truncating it here would make the history unreadable at exactly the
    moment someone is scanning it for something they said. */
