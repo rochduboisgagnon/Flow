@@ -67,13 +67,6 @@ import {
   UI_DOWNLOAD_DOC,
   UI_DOWNLOAD_AUDIO,
   UI_REDACT_PASSAGES,
-  UI_FUNC_LIST,
-  UI_FUNC_SAVE,
-  UI_FUNC_DELETE,
-  UI_FUNC_TEST,
-  type VoiceFunctionInput,
-  type VoiceFunctionsResult,
-  type FunctionTestResult,
   type CaptureStartPayload,
   type CaptureWarmPayload,
   type CaptureTimingPayload,
@@ -234,12 +227,8 @@ const ui = {
   // ---- voice functions (V5): PULL-only, and all three writes answer with the
   // WHOLE library - same contract as the dictionary above, so the page replaces
   // its list with what comes back rather than mutating its own copy.
-  funcList: (): Promise<VoiceFunctionsResult> => ipcRenderer.invoke(UI_FUNC_LIST),
-  funcSave: (input: VoiceFunctionInput): Promise<VoiceFunctionsResult> => ipcRenderer.invoke(UI_FUNC_SAVE, input),
-  funcDelete: (id: string): Promise<VoiceFunctionsResult> => ipcRenderer.invoke(UI_FUNC_DELETE, id),
   /** The dry run: what a dictation of this exact text would produce. SLOW by
    * nature - it calls the local model - and it inserts nothing anywhere. */
-  funcTest: (text: string): Promise<FunctionTestResult> => ipcRenderer.invoke(UI_FUNC_TEST, text),
   dictList: (): Promise<DictResult> => ipcRenderer.invoke(UI_DICT_LIST),
   dictSave: (input: DictInput): Promise<DictResult> => ipcRenderer.invoke(UI_DICT_SAVE, input),
   dictDelete: (id: string): Promise<DictResult> => ipcRenderer.invoke(UI_DICT_DELETE, id),

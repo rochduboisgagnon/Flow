@@ -32,9 +32,7 @@ import { Redactor } from "./redact";
 import { StatsStore } from "./stats";
 import { countWords } from "../shared/wordCount";
 import { primeDictionary, dictationPrompt, applyDictionaryReplacements } from "./dictionary";
-import { primeFunctions, applyVoiceCommands, enabledFunctions } from "./functions";
-import { detectCommand, explainNoMatch } from "../shared/functions";
-import type { FunctionTestResult } from "../shared/ipcContracts";
+import { applySnippetCue } from "./snippetCue";
 import type { LongStartResult, LongStopResult } from "../shared/longform";
 import { legacyHistoryInfo, type LegacyHistoryInfo } from "./legacyHistory";
 import { decideLaunchAtLogin } from "../shared/launchAtLogin";
@@ -143,12 +141,6 @@ if (!app.requestSingleInstanceLock()) {
     // same reason everything else is: dataDir() must already be the
     // post-migration folder.
     primeDictionary(flowLog);
-    // V5 E2: the same discipline, one storey up - load the function library ONCE
-    // and seed the shipped seven (all DISABLED, see defaultFunctions) on a
-    // machine that has never had a functions.json. From here on the dictation
-    // path reads a compiled cache, so no utterance ever pays a synchronous read
-    // to find out whether it might be a command.
-    primeFunctions(flowLog);
     hotkey.setCombo(settings.combo); // the adapter was built on the defaults above
     applyTheme(settings.theme);
     // U0: a Windows theme flip while theme="system" must repaint in under a
@@ -453,50 +445,6 @@ if (!app.requestSingleInstanceLock()) {
     updater = flowUpdater; // module-level handle for getUiState() and before-quit
     flowUpdater.start();
 
-    // ---- V5 E5: the dry run ----
-    // The SAME applyVoiceCommands the dictation path calls, with the SAME model
-    // resolution, so what the Functions page shows and what a spoken utterance
-    // produces cannot diverge. The two differences are deliberate and neither
-    // changes the outcome: no hot-path marks (a dry run belongs to no keypress),
-    // and nothing is inserted anywhere.
-    //
-    // detectCommand is then re-run, off the hot path, for one reason only: to
-    // NAME the gate that refused. "Nothing happened" is the answer a user cannot
-    // act on, and the whole point of this page is that he can.
-    const functionTestDep = async (rawText: string): Promise<FunctionTestResult> => {
-      const text = typeof rawText === "string" ? rawText.trim() : "";
-      if (!text) return { ok: false, transformed: false, text: "", error: "Type or paste some text to test." };
-      const out = await applyVoiceCommands(text, { fallbackModel: () => settings.summaryModel });
-      if (out.kind === "snippet") {
-        return {
-          ok: true,
-          transformed: false,
-          text: out.text,
-          reason: "A snippet cue matches this utterance exactly, so the stored block would be inserted. No model is involved.",
-        };
-      }
-      const det = detectCommand(text, enabledFunctions());
-      const matched = det.match
-        ? {
-            functionId: det.match.functionId,
-            functionName: det.match.functionName,
-            trigger: det.match.trigger,
-            param: det.match.param,
-            payload: det.match.payload,
-          }
-        : undefined;
-      if (out.kind === "function") return { ok: true, transformed: true, text: out.text, matched, ms: out.ms };
-      return {
-        ok: true,
-        transformed: false,
-        text: out.text,
-        matched,
-        ms: out.ms,
-        reason: det.match
-          ? `"${det.match.functionName}" fired, but the model did not answer (${out.failure ?? "unknown"}). Your text would be inserted exactly as dictated - that fallback is not optional.`
-          : explainNoMatch(det.reason ?? "no-trigger-at-head"),
-      };
-    };
 
     // ---- main window bridge (V1, A1/A2): SAME functions as the HTTP API ----
     uiBridge = new UiBridge(
@@ -580,9 +528,6 @@ if (!app.requestSingleInstanceLock()) {
         statsRead: () => stats.read(),
         statsClear: () => stats.clear(),
         // V5 E5: deliberately NOT given to LocalApi, for the same reason as the
-        // counters above and the assistance below - this one can start a local
-        // model on this machine's GPU, and the local API answers a phone.
-        functionTest: functionTestDep,
         // U8: deliberately NOT given to LocalApi either, and for a sharper
         // reason than the counters above - assistPoll is what can start a local
         // model reading the transcript of the meeting happening in this room,
@@ -1502,25 +1447,18 @@ function wireCapture() {
           hotpath.abandon(ms === 0 ? HOTPATH_ABANDON_REASON.noSpeech : HOTPATH_ABANDON_REASON.hallucinationGate);
           return;
         }
-        // V5 E3/E6: a snippet cue, a voice command, or plain dictation. The
-        // decision and the model call live in main/functions.ts; this call site
-        // stays four lines because the ONE thing it must guarantee is visible
-        // here: whatever happens, `out.text` is something to insert - a failed
-        // transformation comes back as the raw transcript, never as nothing.
+        // A snippet cue, or plain dictation. 2026-07-30: this used to also be
+        // where a VOICE FUNCTION could rewrite the transcript through a model.
+        // That feature is gone at Roch's request, and with it the whole problem
+        // of telling a command apart from ordinary speech - which had cost two
+        // blocking review findings and still failed a human test.
         //
-        // BEFORE the focus probe on purpose. A transformation takes seconds, and
-        // probing first would hand the router a foreground window the user has
-        // very likely left by the time the text is ready.
-        const out = await applyVoiceCommands(text, {
-          fallbackModel: () => settings.summaryModel,
-          // Bracketed from INSIDE, around the model call itself, so the two
-          // marks exist only when a model was really asked - and for BOTH
-          // outcomes, since a transformation that timed out spent the same
-          // seconds as one that worked (see hotpath.ts's functionStarted).
-          onModelStart: () => hotpath.mark("functionStarted"),
-          onModelEnd: () => hotpath.mark("functionFinished"),
-        });
-        if (out.failure) silentFailures.increment(SILENT_FAILURE.voiceFunctionFailed);
+        // What remains cannot fail and cannot invent: a cue either matches the
+        // WHOLE utterance, in which case a block the user typed himself is
+        // inserted, or nothing happens and his own words land. It is also now
+        // synchronous, so the focus probe below is no longer racing seconds of
+        // model time during which the user may have left the window.
+        const out = applySnippetCue(text);
         if (out.note) flowLog(out.note);
         // Probe the focus WHILE nothing else has stolen it, then route and act.
         const focus = (await probe?.probe()) ?? null;

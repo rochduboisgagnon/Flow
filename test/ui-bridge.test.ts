@@ -21,10 +21,6 @@ import {
   UI_ASSIST_DISMISS,
   UI_ASSIST_KEEP,
   UI_ASSIST_POLL,
-  UI_FUNC_DELETE,
-  UI_FUNC_LIST,
-  UI_FUNC_SAVE,
-  UI_FUNC_TEST,
   UI_LIVE_NOTES_ADD,
   UI_LIVE_NOTES_DELETE,
   UI_LIVE_NOTES_EDIT,
@@ -137,21 +133,21 @@ test("every ui:* invoke channel this bridge owns is registered through guarded()
     UI_IMPORT_START,
     UI_IMPORT_CANCEL,
     UI_IMPORT_PICK,
-    // U8 (live assist) and V5 (voice functions), added in the same pass. Each is
-    // a reason this registry stays hand-written: the assist channels hand a
-    // language model what a meeting just said, the live-notes channels write and
-    // DELETE the user's own typed notes, and the function channels edit what a
-    // spoken command is allowed to do. The same preload is loaded by the overlay
-    // and the hidden capture window, so none of them may sit outside fromMain().
+    // U8 (live assist) and the live notes. Each is a reason this registry stays
+    // hand-written: the assist channels hand a language model what a meeting
+    // just said, and the live-notes channels write and DELETE the user's own
+    // typed notes. The same preload is loaded by the overlay and the hidden
+    // capture window, so neither may sit outside fromMain().
+    //
+    // 2026-07-30: the four ui:function-* channels were here too, until voice
+    // functions were removed from Flow. Their absence is now asserted by this
+    // very list: a registry that must match the bridge exactly is also what
+    // catches a removed feature being wired back in by accident.
     UI_ASSIST_ASK,
     UI_ASSIST_DISMISS,
     UI_ASSIST_KEEP,
     UI_ASSIST_POLL,
-    UI_FUNC_DELETE,
-    UI_FUNC_LIST,
-    UI_FUNC_SAVE,
-    UI_FUNC_TEST,
-    UI_LIVE_NOTES_ADD,
+            UI_LIVE_NOTES_ADD,
     UI_LIVE_NOTES_DELETE,
     UI_LIVE_NOTES_EDIT,
     UI_LIVE_NOTES_LIST,

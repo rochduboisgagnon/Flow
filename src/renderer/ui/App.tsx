@@ -12,7 +12,6 @@ import { Notes } from "./pages/Notes";
 import { Dictionary } from "./pages/Dictionary";
 import { Statistics } from "./pages/Statistics";
 import { Import } from "./pages/Import";
-import { Functions } from "./pages/Functions";
 
 // Flow main window shell (wave U1). State discipline unchanged since A1/A2:
 // the window renders ONE snapshot pushed by the engine (UiStatePayload),
@@ -27,15 +26,15 @@ import { Functions } from "./pages/Functions";
 // V4 D3: `import` left this list - the decode pipeline the note pointed at
 // (D1/D2) exists, so the page is the real thing now.
 //
-// V6 (blocking defect, found while auditing the rail against the code):
-// `functions` was still in this list AFTER V5 shipped its page. Every layer
-// existed - shared/functions.ts, main/functions.ts, the four ui:function-*
-// channels in uiBridge and preload, and pages/Functions.tsx itself - and the rail
-// button opened a placeholder claiming "Needs the local AI wave first". That is
-// both halves of what this campaign calls blocking at once: a dead control, and
-// an interface sentence that says something false about the engine. The list is
-// now EMPTY, which is the state it should stay in: a section that is not built
-// does not belong in the rail.
+// The list is EMPTY, and that is the state it should stay in: a section that is
+// not built does not belong in the rail. A placeholder there is both halves of
+// what this campaign calls blocking at once - a dead control, and an interface
+// sentence that says something false about the engine.
+//
+// 2026-07-30: `functions` is gone from the rail entirely, along with the voice
+// functions feature itself, at Roch's request. Not hidden, not disabled -
+// removed, down to the shared module and the four IPC channels. Snippet cues,
+// which shared the same entry point on the dictation path, are untouched.
 const COMING: Partial<Record<Section, { title: string; blurb: string; missing: string; wave: string }>> = {};
 
 export function App() {
@@ -81,7 +80,6 @@ export function App() {
               {section === "notes" ? <Notes s={s} /> : null}
               {section === "stats" ? <Statistics s={s} patch={patch} /> : null}
               {section === "dictionary" ? <Dictionary /> : null}
-              {section === "functions" ? <Functions /> : null}
               {section === "snippets" ? <SnippetsPage /> : null}
               {section === "settings" ? <SettingsPage s={s} patch={patch} /> : null}
               {coming ? <Coming {...coming} /> : null}

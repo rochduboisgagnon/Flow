@@ -70,8 +70,6 @@ export type HotpathStep =
   // Diagnostics panel would report a 3000 ms breach of a 60 ms budget that
   // nothing in the activation path had broken. A panel that accuses the wrong
   // subsystem is worse than one that says nothing.
-  | "functionStarted" // right before the function model is asked
-  | "functionFinished" // right after it answers, times out, or fails
   | "focusProbed" // right after the focus probe resolves
   | "routeDecided" // right after decideRoute() returns
   | "textInserted"; // right after the text landed (paste, typed keystrokes, or clipboard)
@@ -527,12 +525,6 @@ export interface HotpathIntervals {
   pressToFirstSampleMs: number | null;
   /** The model's own inference time - what "excluding model time" (§3.3) subtracts out. */
   transcriptionMs: number | null;
-  /** V5 E3: the voice function's own model time, when one ran. Also subtracted
-   * out of releaseToTextExclModelMs, for the same reason transcriptionMs is: the
-   * §3.3 budget measures FLOW's plumbing, not how long somebody else's model
-   * thought. Null on the overwhelming majority of dictations, where no function
-   * fired at all. */
-  functionMs: number | null;
   /** release -> text landed, model time INCLUDED. */
   releaseToTextMs: number | null;
   /** release -> text landed, model time EXCLUDED - the §3.3 budget's own number. */
@@ -557,14 +549,14 @@ export function computeIntervals(trace: HotpathTrace): HotpathIntervals {
   const pressToFirstPaintMs = keyAt !== null && paintAt !== null ? paintAt - keyAt : null;
   const pressToFirstSampleMs = keyAt !== null && sampleAt !== null ? sampleAt - keyAt : null;
   const transcriptionMs = transStartAt !== null && transEndAt !== null ? transEndAt - transStartAt : null;
-  const fnStartAt = findMark(trace, "functionStarted");
-  const fnEndAt = findMark(trace, "functionFinished");
-  const functionMs = fnStartAt !== null && fnEndAt !== null ? fnEndAt - fnStartAt : null;
   const releaseToTextMs = releaseAt !== null && textAt !== null ? textAt - releaseAt : null;
-  // BOTH model times come out. Written as one subtraction of a summed
-  // deduction rather than two chained ones so a future third model on this path
-  // is one entry in the array, not a fourth place to forget.
-  const modelMs = (transcriptionMs ?? 0) + (functionMs ?? 0);
+  // 2026-07-30: there used to be TWO model times to deduct here - the
+  // transcription, and a voice function that could rewrite the transcript. Voice
+  // functions are gone, so only one remains. Kept as a named `modelMs` rather
+  // than inlining `transcriptionMs`, because the distinction this line draws is
+  // the point of the budget: it measures FLOW's plumbing, never how long
+  // somebody else's model thought.
+  const modelMs = transcriptionMs ?? 0;
   const releaseToTextExclModelMs = releaseToTextMs !== null ? releaseToTextMs - modelMs : null;
   const totalPressToTextMs = keyAt !== null && textAt !== null ? textAt - keyAt : null;
 
@@ -574,7 +566,6 @@ export function computeIntervals(trace: HotpathTrace): HotpathIntervals {
     pressToFirstPaintMs,
     pressToFirstSampleMs,
     transcriptionMs,
-    functionMs,
     releaseToTextMs,
     releaseToTextExclModelMs,
     totalPressToTextMs,

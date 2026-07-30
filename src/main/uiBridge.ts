@@ -43,12 +43,6 @@ import {
   UI_IMPORT_START,
   UI_IMPORT_CANCEL,
   UI_IMPORT_PICK,
-  UI_FUNC_LIST,
-  UI_FUNC_SAVE,
-  UI_FUNC_DELETE,
-  UI_FUNC_TEST,
-  type VoiceFunctionsResult,
-  type FunctionTestResult,
   type ImportQueueSnapshot,
   type ImportStartResult,
   type UiStatePayload,
@@ -74,7 +68,6 @@ import { ASSIST_UNAVAILABLE } from "../shared/liveAssist";
 import type { MainWindow } from "./mainWindow";
 import { listSnippets, saveSnippet, deleteSnippet, getSnippet } from "./snippets";
 import { listDictionary, saveDictEntry, deleteDictEntry } from "./dictionary";
-import { listFunctions, saveFunction, deleteFunction } from "./functions";
 import { cancelPendingRestore } from "./insert";
 import { decideLongStart } from "../shared/longStart";
 
@@ -202,7 +195,6 @@ export interface UiBridgeDeps {
    * (index.ts's voiceCommandsDep) - a dry run that could disagree with the
    * spoken path would be a lie about the engine, which is exactly the class of
    * defect this campaign counts as blocking. */
-  functionTest(text: string): Promise<FunctionTestResult>;
 
   statsRead(): StatsPayload;
   /** U7d: erases ~/.flow/stats.json on the spot and answers with the (now
@@ -285,21 +277,6 @@ const IMPORT_START_UNAVAILABLE: ImportStartResult = {
   ok: false,
   accepted: [],
   rejected: [],
-  error: "unavailable",
-};
-
-// V5 (E2/E5): the same fallback discipline for the function library. An empty
-// library with ok:false is the honest shape for an answer that never reached the
-// store - a refused sender must never be able to make a page report that a
-// function was saved, or that none exist.
-const FUNCS_UNAVAILABLE: VoiceFunctionsResult = { ok: false, items: [], error: "unavailable" };
-// And for the dry run: `transformed: false` with an empty text is the only
-// honest shape for a request that never ran. A refused sender must not be able
-// to make a page display a transformation that never happened.
-const FUNC_TEST_UNAVAILABLE: FunctionTestResult = {
-  ok: false,
-  transformed: false,
-  text: "",
   error: "unavailable",
 };
 
@@ -575,23 +552,6 @@ export class UiBridge {
     // ---- voice functions (V5, E2/E5): the store owns persistence and the
     // runtime cache (main/functions.ts); this class only gates the sender. The
     // gate matters as much here as on ui:dict-save and for a longer reach:
-    // ui:function-save changes what every FUTURE dictation may be REWRITTEN
-    // into, and by which model - and the same preload is loaded by the overlay
-    // and the hidden capture window.
-    //
-    // Every channel answers with the WHOLE library, and none of it is ever in
-    // UiStatePayload (see ipcContracts.ts).
-    this.guarded<[], VoiceFunctionsResult>(UI_FUNC_LIST, FUNCS_UNAVAILABLE, () => listFunctions());
-    this.guarded<[unknown], VoiceFunctionsResult>(UI_FUNC_SAVE, FUNCS_UNAVAILABLE, (input) => saveFunction(input));
-    this.guarded<[unknown], VoiceFunctionsResult>(UI_FUNC_DELETE, FUNCS_UNAVAILABLE, (id) => deleteFunction(id));
-    // The dry run calls a model, so it can take seconds - the page treats it as
-    // slow. It goes through the SAME dep the dictation path uses (index.ts's
-    // voiceCommandsDep), never a second implementation: a dry run that could
-    // disagree with the spoken path would be worse than no dry run at all.
-    this.guarded<[unknown], FunctionTestResult>(UI_FUNC_TEST, FUNC_TEST_UNAVAILABLE, (text) =>
-      this.deps.functionTest(typeof text === "string" ? text : ""),
-    );
-
     // ---- activation hot-path diagnostics (V2, B1) ----
     this.guarded<[], HotpathSnapshot | null>(UI_HOTPATH_SNAPSHOT, null, () => this.deps.hotpathSnapshot());
 
