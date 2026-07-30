@@ -671,3 +671,26 @@ html.light .heat i.l2 { background: #cf9d55; }
   padding: 6px 0;
   display: inline-block;
 }
+
+/* ---- Dictation history on Home (2026-07-30) ---- */
+.hist-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.hist { display: flex; flex-direction: column; margin-top: 10px; }
+.hrow {
+  display: grid;
+  grid-template-columns: 86px 1fr auto;
+  gap: 12px;
+  align-items: baseline;
+  padding: 9px 0;
+  border-top: 1px solid var(--line);
+}
+.hrow:first-child { border-top: 0; }
+.hwhen { font-size: 11.5px; color: var(--ink2); white-space: nowrap; }
+/* The text wraps and takes the width it needs. A dictation is a sentence, not a
+   cell: truncating it here would make the history unreadable at exactly the
+   moment someone is scanning it for something they said. */
+.htext { line-height: 1.5; overflow-wrap: anywhere; }
+/* Kept out of the way until the row is under the pointer: a Copy button on
+   every line would compete with the text for attention on a list whose whole
+   job is to be read. It stays reachable by keyboard at all times. */
+.hcopy { opacity: 0; transition: opacity 120ms ease; }
+.hrow:hover .hcopy, .hcopy:focus-visible { opacity: 1; }

@@ -16,14 +16,31 @@ Two things make it different from the tools it is inspired by:
 - **Nothing ever leaves your machine.** The speech-to-text engine runs locally
   (whisper.cpp as a warm sidecar); the optional cleanup and the meeting
   summaries run on a local LLM (Ollama). No cloud, no account, no API key.
-- **Dictation is never written down.** No history, no database, no transcript
-  on disk. A dictation's audio and text exist only for the duration of one
-  utterance. If you overwrite the clipboard before pasting, the dictation is
-  gone - by design. (Only the long-recording mode writes files, and only into
-  the folder you picked.) Flow does keep **one** audio buffer in memory, half a
-  second long, and it is described in full below - because a product that
-  claims the absolute and holds a buffer anyway has told you nothing you can
-  rely on.
+- **Nothing you dictate leaves this machine, and Flow keeps a history of it.**
+  Those are two separate promises and only the first is absolute. Until
+  2026-07-30 this line read "Dictation is never written down. No history, no
+  database, no transcript on disk." That was true, it was this product's
+  central claim, and it is gone - because a dictation that vanished the moment
+  the clipboard was overwritten was losing work that mattered more than the
+  sentence did. Saying so here, rather than quietly deleting the old wording,
+  is the whole point: a promise that changes and does not announce itself was
+  never a promise.
+
+  What Flow now keeps, and what still bounds it:
+
+  - **Your dictations, as text, for a rolling month.** They are listed on the
+    Home page, they are stored in `history.json` under Flow's own data folder,
+    and anything older than 31 days is dropped when the file is written - not
+    filtered out when it is displayed. One click erases the lot, and that
+    erase deletes the file rather than emptying it.
+  - **The audio is still never written.** A dictation's sound exists for
+    exactly one utterance and reaches no file, ever. Only the long-recording
+    mode writes audio, and only into the folder you picked.
+  - **Still no cloud, no account, no telemetry.** The history is a file on your
+    disk. Nothing about it is sent anywhere, which is the promise that has not
+    moved and will not.
+  - Flow also keeps **one** audio buffer in memory, half a second long,
+    described in full below.
 
 Status: **Windows, shipping** - autonomous app distributed via
 [GitHub Releases](https://github.com/rochduboisgagnon/Flow/releases) with built-in automatic updates.

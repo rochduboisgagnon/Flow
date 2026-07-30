@@ -475,11 +475,37 @@ test("the README describes the buffer the default ships with: what, why, how bou
   );
 });
 
-test("the README's remaining retention claims are about what is WRITTEN, which is still absolute", () => {
-  assert.match(README, /No history, no database/, "the strong claims that are still true stay strong");
-  const claim = slice(README, "- **Dictation is never written down.**", "\n\n");
-  assert.match(claim, /one\s+utterance/);
-  assert.match(claim, /buffer/i, "the exception is named in the same breath as the promise, not in a footnote");
+test("the README ANNOUNCES that its central promise changed, rather than quietly editing it", () => {
+  // This test was written after the V2 review to stop the README promising
+  // something the code had stopped doing. On 2026-07-30 it caught its author:
+  // the dictation history made "no history, no transcript on disk" false, and
+  // it failed on the very commit that introduced the feature. That is the test
+  // working, so it now guards the NEW promise the same way.
+  //
+  // The rule it encodes: a promise that changes and does not say so was never a
+  // promise. Deleting the old sentence silently would have been the cheapest
+  // way to look honest while being less so.
+  // The old sentence may still APPEAR - the rewrite quotes it, which is how it
+  // announces the change. What must be gone is the sentence used as a CLAIM:
+  // the bolded bullet a reader skims and takes as the current promise.
+  // Forbidding the string outright punished the honest rewrite for being
+  // honest, which it did on the first attempt at this very test.
+  assert.doesNotMatch(
+    README,
+    /- \*\*Dictation is never written down\.\*\*/,
+    "the old claim must no longer be MADE - quoting it is fine, asserting it is not",
+  );
+  assert.match(README, /2026-07-30/, "and the README must DATE the change rather than pretend there was none");
+  assert.match(README, /central claim/i, "naming what it was, so a reader sees what they are no longer promised");
+});
+
+test("what the README still claims absolutely is the part that is still absolute", () => {
+  // Two promises now, and only one is total. That distinction is what makes the
+  // rewrite honest rather than a retreat.
+  assert.match(README, /audio is still never written/i, "the audio promise did not move");
+  assert.match(README, /rolling month/i, "and the text promise states its bound");
+  assert.match(README, /erases|erase/i, "with the way out named");
+  assert.match(README, /leaves this machine|sent anywhere|no cloud/i, "and the promise that never moves");
 });
 
 test("Settings still names the COST of the buffer, now that there is no option to weigh", () => {

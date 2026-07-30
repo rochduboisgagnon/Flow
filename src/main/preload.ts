@@ -41,6 +41,8 @@ import {
   UI_HOTPATH_SNAPSHOT,
   UI_SELF_CHECK,
   UI_STATS_READ,
+  UI_HISTORY_READ,
+  UI_HISTORY_CLEAR,
   UI_STATS_CLEAR,
   UI_ASSIST_POLL,
   UI_ASSIST_ASK,
@@ -94,6 +96,7 @@ import {
   type HotpathSnapshot,
   type SelfCheckReport,
   type StatsPayload,
+  type HistoryPayload,
   type AssistSnapshot,
 } from "../shared/ipcContracts";
 
@@ -290,6 +293,11 @@ const ui = {
   // ---- statistics (U7): PULL, on demand. statsClear answers with the SAME
   // payload shape as statsRead, so the page replaces its state with what comes
   // back instead of assuming what "cleared" looks like (see ipcContracts.ts).
+  // ---- dictation history (2026-07-30): PULL, on demand. historyClear answers
+  // with the SAME payload shape as historyRead, so the page replaces its state
+  // with what comes back instead of guessing what "erased" looks like.
+  historyRead: (): Promise<HistoryPayload> => ipcRenderer.invoke(UI_HISTORY_READ),
+  historyClear: (): Promise<HistoryPayload> => ipcRenderer.invoke(UI_HISTORY_CLEAR),
   statsRead: (): Promise<StatsPayload> => ipcRenderer.invoke(UI_STATS_READ),
   statsClear: (): Promise<StatsPayload> => ipcRenderer.invoke(UI_STATS_CLEAR),
   // ---- live assistance during a recording (U8) ----

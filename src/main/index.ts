@@ -30,6 +30,7 @@ import { SUPPORTED_AUDIO_EXTENSIONS } from "../shared/audioImport";
 import { DownloadManager } from "./downloads";
 import { Redactor } from "./redact";
 import { StatsStore } from "./stats";
+import { DictationHistoryStore } from "./dictationHistory";
 import { countWords } from "../shared/wordCount";
 import { primeDictionary, dictationPrompt, applyDictionaryReplacements } from "./dictionary";
 import type { LongStartResult, LongStopResult } from "../shared/longform";
@@ -285,6 +286,7 @@ if (!app.requestSingleInstanceLock()) {
     // loads lazily at its first flush or read - so a boot pays nothing for it,
     // and an install where the counters are off never even creates the file.
     stats.start();
+    history.start();
     logLegacyHistoryState(); // U2c: say where the older recordings are, before purging anything
     // U4 (blocking review): the app can die without ever running before-quit -
     // a power cut, a bugcheck, a taskkill. Whatever is still in the staging
@@ -526,6 +528,11 @@ if (!app.requestSingleInstanceLock()) {
         // read - or erase - them.
         statsRead: () => stats.read(),
         statsClear: () => stats.clear(),
+        // 2026-07-30: the dictation history. Deliberately NOT given to
+        // LocalApi, like the counters: a phone on the local network has no
+        // business reading back a month of what was dictated on this machine.
+        historyRead: () => ({ ok: true, ...history.read() }),
+        historyClear: () => ({ ok: true, ...history.clear() }),
         // V5 E5: deliberately NOT given to LocalApi, for the same reason as the
         // U8: deliberately NOT given to LocalApi either, and for a sharper
         // reason than the counters above - assistPoll is what can start a local
@@ -1227,6 +1234,14 @@ const stats = new StatsStore({
   log: flowLog,
 });
 
+// 2026-07-30: the dictation history. Same construction discipline as the
+// statistics above - `file` is a CLOSURE because dataDir() caches the
+// post-migration folder on its first call and this runs at module load.
+const history = new DictationHistoryStore({
+  file: () => path.join(dataDir(), "history.json"),
+  log: flowLog,
+});
+
 // NOTE: the "open AGR Pilot" shortcut used to live here (v5 c2, fired from Flow's keyspy),
 // which coupled it to AGR Flow - disabling Flow killed the shortcut. It now belongs entirely to
 // AGR Manager (its always-on LL hook), which owns Pilot and runs whether or not Flow does. This
@@ -1481,6 +1496,11 @@ function wireCapture() {
         // itself never enters the subsystem: countWords consumes it here and
         // StatsUtterance carries a number (main/stats.ts). Memory only; the
         // disk is touched on a timer and at quit, never on this path.
+        // 2026-07-30: the history gets the text that was actually INSERTED,
+        // after every filter, so what the page shows is what landed rather
+        // than what the model first said. Memory only here; the disk is
+        // touched on a timer and at quit, never on this path.
+        history.record(text);
         stats.record({
           words: countWords(text),
           // The HOLD's own audio. A warm capture carries up to preRollCreditMs
@@ -1490,7 +1510,9 @@ function wireCapture() {
           ms: Math.max(0, payload.durationMs - preRoll),
           app: focus?.app,
         });
-        // `text` goes out of scope here: the dictation is never retained (5.4).
+        // `text` goes out of scope here. It is no longer true that a dictation
+        // is never retained: history.record above keeps it for a rolling month
+        // (Roch's decision, 2026-07-30). Nothing else on this path does.
         if (DEV)
           console.log(`[flow] ${ms} ms | focus=${focus?.control ?? "none"} -> ${route}`);
       })
@@ -1777,6 +1799,7 @@ app.on("before-quit", () => {
   // is lost forever otherwise, and up to a minute of counters is exactly what
   // the 60 s timer trades away for keeping the disk off the dictation path.
   stats.stop();
+  history.stop();
   // B4b: LAST, on purpose. Every line the shutdown above just wrote (the
   // recorder's rescue, the API's cleanup) is still sitting in the queue: the
   // writes are asynchronous now, and this handler is synchronous with the

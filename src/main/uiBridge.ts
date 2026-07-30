@@ -13,6 +13,8 @@ import {
   UI_HOTPATH_SNAPSHOT,
   UI_SELF_CHECK,
   UI_STATS_READ,
+  UI_HISTORY_READ,
+  UI_HISTORY_CLEAR,
   UI_STATS_CLEAR,
   UI_ASSIST_POLL,
   UI_ASSIST_ASK,
@@ -57,6 +59,7 @@ import {
   type HotpathSnapshot,
   type SelfCheckReport,
   type StatsPayload,
+  type HistoryPayload,
   type AssistSnapshot,
 } from "../shared/ipcContracts";
 import { ASSIST_UNAVAILABLE } from "../shared/liveAssist";
@@ -193,6 +196,10 @@ export interface UiBridgeDeps {
   /** U7d: erases ~/.flow/stats.json on the spot and answers with the (now
    * empty) payload, so the page repaints from the same call. */
   statsClear(): StatsPayload;
+  /** 2026-07-30: the dictation history. Read is a page opening; clear DELETES
+   * what the user dictated, which is why it lives behind the same gate. */
+  historyRead(): HistoryPayload;
+  historyClear(): HistoryPayload;
 
   // ---- live assistance during a recording (U8) ----
   // Main-process only, NO HTTP equivalent, and for the same class of reason as
@@ -271,6 +278,8 @@ const IMPORT_START_UNAVAILABLE: ImportStartResult = {
 // switches read off, which is the honest thing for an answer that never
 // reached the store: a refused sender must not be able to make a page claim
 // that attribution is on.
+const HISTORY_UNAVAILABLE: HistoryPayload = { ok: false, entries: [], error: "unavailable" };
+
 const STATS_UNAVAILABLE: StatsPayload = {
   ok: false,
   counting: false,
@@ -542,6 +551,14 @@ export class UiBridge {
     // the overlay and the hidden capture window.
     this.guarded<[], StatsPayload>(UI_STATS_READ, STATS_UNAVAILABLE, () => this.deps.statsRead());
     this.guarded<[], StatsPayload>(UI_STATS_CLEAR, STATS_UNAVAILABLE, () => this.deps.statsClear());
+
+    // ---- dictation history (2026-07-30) ----
+    // Same fallback discipline: an empty list with ok:false is the honest shape
+    // for an answer that never reached the store. A refused sender must not be
+    // able to make a page report that the history is empty - which, on this
+    // feature, would read as "your dictations were erased".
+    this.guarded<[], HistoryPayload>(UI_HISTORY_READ, HISTORY_UNAVAILABLE, () => this.deps.historyRead());
+    this.guarded<[], HistoryPayload>(UI_HISTORY_CLEAR, HISTORY_UNAVAILABLE, () => this.deps.historyClear());
 
     // ---- live assistance during a recording (U8) ----
     // The gate earns its place here more than on any other channel of this file:

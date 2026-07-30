@@ -230,6 +230,31 @@ export const UI_STATS_READ = "ui:stats-read";
 export const UI_STATS_CLEAR = "ui:stats-clear";
 export type { StatsPayload, StatsDay, StatsAppShare } from "./stats";
 
+// ---- dictation history (2026-07-30) ----
+//
+// PULL-only, like everything else that is user content of unbounded size:
+// UiStatePayload is re-serialized every second while the window is visible, and
+// a month of dictations has no business riding that heartbeat.
+//
+// ui:history-clear DELETES what the user dictated. It is in the same class as
+// ui:stats-clear, one storey more serious - and the same preload is loaded by
+// the overlay and the hidden capture window, neither of which is a page anyone
+// reviews. Both channels answer with the WHOLE list, so a page can replace its
+// state with what came back and never has to guess what "cleared" looks like.
+export const UI_HISTORY_READ = "ui:history-read";
+export const UI_HISTORY_CLEAR = "ui:history-clear";
+
+export type { HistoryEntry } from "./dictationHistory";
+
+/** What both history channels answer with. */
+export interface HistoryPayload {
+  ok: boolean;
+  /** Newest first. Empty is a real answer, never a reason to invent rows. */
+  entries: import("./dictationHistory").HistoryEntry[];
+  /** Human-readable, shown as-is by the page. */
+  error?: string;
+}
+
 // ---- dictionary (U6) ----
 // PULL-only: the dictionary is user
 // content of unbounded size and UiStatePayload is re-serialized every second

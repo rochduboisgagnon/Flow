@@ -332,10 +332,16 @@ function TabStorage({ s, patch }: { s: UiStatePayload; patch: Patch }) {
           added files that do persist. Nothing of what is DICTATED is kept, and
           that part was and stays true; what is kept is counters and settings,
           and a screen about retention has to name them. */}
-      <Row label="Dictation retention" help="None of what you dictate is kept. Audio and text live for the one utterance, then every reference is dropped - there is no transcript of a dictation anywhere on disk.">
+      {/* 2026-07-30: this row said "none of what you dictate is kept", which
+          stopped being true the moment the history landed. Corrected here at
+          the same time as the README and the module note - the third place in
+          this campaign where a code change quietly falsified a written promise,
+          and the reason the rule is now to grep for the promise before shipping
+          the change. */}
+      <Row label="Dictation retention" help="Your dictations are kept as TEXT for a rolling month, listed on the Home page, and erasable there in one click. Their AUDIO is never written anywhere - it exists for the one utterance and then it is gone. Nothing is sent off this machine either way.">
         <span />
       </Row>
-      <Row label="What Flow does keep" help="Your settings, your snippets and your dictionary, because you wrote them. Long recordings, because you asked for them. And aggregate counters - words per day, no text, no timestamps - which the Statistics page shows and can erase in one click.">
+      <Row label="What Flow does keep" help="Your settings and your dictionary, because you wrote them. Long recordings, because you asked for them. A month of your dictations as text, on the Home page. And aggregate counters - words per day - which the Statistics page shows and can erase in one click.">
         <span />
       </Row>
     </div>

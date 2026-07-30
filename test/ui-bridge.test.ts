@@ -16,6 +16,8 @@ import {
   UI_SELF_CHECK,
   UI_STATS_READ,
   UI_STATS_CLEAR,
+  UI_HISTORY_READ,
+  UI_HISTORY_CLEAR,
   UI_REDACT_PASSAGES,
   UI_ASSIST_ASK,
   UI_ASSIST_DISMISS,
@@ -112,6 +114,12 @@ test("every ui:* invoke channel this bridge owns is registered through guarded()
     // enumeration exists to keep behind the fromMain() gate.
     UI_STATS_READ,
     UI_STATS_CLEAR,
+    // 2026-07-30: the dictation history. ui:history-clear DELETES a month of
+    // what the user actually said, which makes it the most consequential write
+    // on this whole surface - and the same preload is loaded by the overlay and
+    // the hidden capture window, neither of which is a page anyone reviews.
+    UI_HISTORY_READ,
+    UI_HISTORY_CLEAR,
     // D11: ui:redact-passages DESTROYS part of a transcript on purpose, and it
     // is the user's only recourse for a sentence someone else regrets saying.
     // It belongs behind the same gate for the same reason as ui:stats-clear.
