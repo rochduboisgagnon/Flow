@@ -5,7 +5,6 @@ import { DEFAULT_COMBO } from "../shared/constants";
 import { DEFAULT_MODEL_FILE } from "./asr/modelStore";
 import { resolveDataDir } from "./migrate";
 import { isThemePref, type ThemePref } from "../shared/theme";
-import { isMicPrewarm, type MicPrewarm } from "../shared/micWarmth";
 import { BATCH_MODEL_SHARED } from "../shared/asrRole";
 
 // Flow settings live in the user's own data folder (~/.flow), OUTSIDE the
@@ -41,7 +40,6 @@ export interface FlowSettings {
    * outside a press, so it is a named choice with honest wording in Settings >
    * Dictation rather than a hidden optimisation. See shared/micWarmth.ts for
    * what each value means and for the four rules that bound all of them. */
-  micPrewarm: MicPrewarm;
   /** Roch 2026-07-27: Flow registers itself at login ON FIRST RUN, because a
    * dictation daemon that is not running dictates nothing (the Manager's
    * watchdog used to do this). This flag records that the one-time
@@ -109,7 +107,6 @@ export const SETTINGS_DEFAULTS: FlowSettings = {
   // first word is broken in the way users actually notice, and the default has
   // to be the one that works; the exposure it costs is bounded in seconds, said
   // plainly in Settings, and turned off in one click.
-  micPrewarm: "after",
   loginItemInitialized: false, // false = the one-time "start with Windows" registration has not run yet
   legacyHistoryDir: "", // "" = this machine never had its own recordings folder
   historyPurgeSuspended: false, // retention runs normally until we learn otherwise
@@ -218,7 +215,11 @@ export function sanitizeSettings(raw: unknown): FlowSettings {
   }
   if (r.insertMode === "type" || r.insertMode === "paste") out.insertMode = r.insertMode;
   if (isThemePref(r.theme)) out.theme = r.theme;
-  if (isMicPrewarm(r.micPrewarm)) out.micPrewarm = r.micPrewarm;
+  // 2026-07-30: micPrewarm is gone - one behaviour, no setting. A stored
+  // value is read by nothing, which IS the migration: a machine that had
+  // "always" (the mode that left the Windows mic indicator lit through a
+  // session lock) comes back on the single guarded behaviour without being
+  // asked, and a machine that had "off" stops clipping its first word.
   if (typeof r.loginItemInitialized === "boolean") out.loginItemInitialized = r.loginItemInitialized;
   // U2c: a remembered FACT and the safety flag it justifies. Trimmed only - the
   // value is a path this app never writes into, so there is nothing to validate

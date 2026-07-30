@@ -28,7 +28,7 @@ Two things make it different from the tools it is inspired by:
 Status: **Windows, shipping** - autonomous app distributed via
 [GitHub Releases](https://github.com/rochduboisgagnon/Flow/releases) with built-in automatic updates.
 
-## The one buffer, and how to turn it off
+## The one buffer, and what bounds it
 
 Flow ships with **microphone pre-warm** set to *a few seconds after each
 dictation*. That setting does exactly one thing, and it is worth stating
@@ -55,13 +55,21 @@ What bounds it:
 - **Visible.** Windows shows its microphone indicator for the seconds Flow
   holds the device. That is the honest cost of the trade, and it is not hidden.
 
-How to turn it off, in one click: **Settings > Dictation >
-Microphone pre-warm > Off**. The microphone then opens only while you hold the
-shortcut and closes the moment you let go, no buffer is ever allocated, and the
-first word of a dictation can be clipped instead - Diagnostics shows by how
-much. The third option, *Always, while Flow runs*, keeps the microphone open
-for the whole session: no acquisition cost ever, and the indicator stays lit
-the whole time.
+**There is no longer a switch for this, and that is a deliberate change made on
+2026-07-30.** It used to be a three-way setting. Being honest about why it went:
+
+- *Always, while Flow runs* held the microphone open for the whole session. It
+  is also the option that failed a human check - with it on, the Windows
+  microphone indicator stayed lit through a **session lock**, which is Flow
+  holding the microphone through a gesture that means "stop listening".
+- *Off* allocated no buffer and clipped the first word instead. It existed
+  mostly as an escape hatch from the option above.
+
+What is left is the middle one, which was always the right answer, so it is now
+the only one. In exchange for losing the choice you get a narrower promise that
+is easier to check: the microphone is held for **a few seconds after a
+dictation and no longer**, and it is released outright whenever you lock the
+session, the machine sleeps, or you pause dictation from the tray.
 
 ## How dictation works
 

@@ -70,7 +70,7 @@
 // margin" test in capture-continuity.test.ts, which pins this down with real
 // numbers instead of leaving it as an argument in a comment.
 
-import { PRE_ROLL_MS, type MicPrewarm } from "./micWarmth";
+import { PRE_ROLL_MS } from "./micWarmth";
 
 /** Below this, a press is too short for the arithmetic to mean anything: the
  * capture's own startup latency is too large a share of it. */
@@ -125,8 +125,13 @@ export function judgeCaptureShortfall(heldMs: number, capturedMs: number, preRol
  * when it is. Kept here, pure and tested, rather than computed ad hoc at each
  * call site - `judgeCaptureShortfall` and the 300 ms release-noise guard in
  * main/index.ts must never independently drift on what "the pre-roll" means. */
-export function preRollCreditMs(mode: MicPrewarm): number {
-  return mode === "off" ? 0 : PRE_ROLL_MS;
+export function preRollCreditMs(): number {
+  // 2026-07-30: there is no mode any more. Every capture carries the pre-roll,
+  // so the credit is unconditional. Kept as a FUNCTION rather than inlining the
+  // constant at both call sites, because the point of this export was never the
+  // branch - it was that the shortfall judge and the 300 ms release-noise guard
+  // can never drift on what "the pre-roll" means.
+  return PRE_ROLL_MS;
 }
 
 /** The line for flow.log. Says the numbers AND the likely cause, because a user

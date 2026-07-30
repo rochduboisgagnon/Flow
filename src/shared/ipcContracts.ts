@@ -3,7 +3,6 @@
 
 import type { ThemePref, ResolvedTheme } from "./theme";
 import type { HookHealth } from "./hookWatchdog";
-import type { MicPrewarm } from "./micWarmth";
 import type { BatchEngineState } from "./asrRole";
 
 // main -> overlay
@@ -378,7 +377,6 @@ export interface UiStatePayload {
     insertMode: "paste" | "type";
     theme: ThemePref;
     /** B2: "off" | "after" | "always" - see shared/micWarmth.ts. */
-    micPrewarm: MicPrewarm;
     /** U7a: aggregated counters are being written (default true). */
     stats: boolean;
     /** U7a: per-application attribution is being written (default FALSE).

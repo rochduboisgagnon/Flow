@@ -4,7 +4,6 @@ import {
   PcmRing,
   preRollSamples,
   warmPolicy,
-  isMicPrewarm,
   PRE_ROLL_MS,
   WARM_HOLD_MS,
   MAX_FRAME_GAP_MS,
@@ -339,32 +338,29 @@ test("preRollSamples answers 0 for anything that is not a positive duration", ()
   assert.equal(preRollSamples(Infinity, 16_000), 0);
 });
 
-// ---- warmPolicy: the ONE translation from setting to behaviour ----
+// ---- warmPolicy: no longer a translation from a setting, because there is
+// no setting. 2026-07-30: the three prewarm modes were removed after a human
+// check. "always" was the one that failed it - the Windows microphone indicator
+// stayed lit through a session lock, the app holding the mic open through a
+// gesture that means "stop listening". "off" clipped the first word and existed
+// only as an escape hatch from "always". What is left is the middle behaviour,
+// which was always the right default. ----
 
-test("warmPolicy('off') is null - no warm microphone and no ring to hold anything", () => {
-  assert.equal(warmPolicy("off", ""), null);
-  assert.equal(warmPolicy("off", "some-device-id"), null);
-});
-
-test("warmPolicy('after') holds the microphone for a bounded time, with the plan's pre-roll", () => {
-  const p = warmPolicy("after", "device-1");
+test("warmPolicy always returns a real policy - there is no 'off' to fall into", () => {
+  const p = warmPolicy("device-1");
   assert.deepEqual(p, { micDeviceId: "device-1", preRollMs: PRE_ROLL_MS, holdMs: WARM_HOLD_MS });
-  assert.equal(PRE_ROLL_MS, 500, "the plan's §3.4 number");
-  assert.ok(typeof p?.holdMs === "number" && p.holdMs > 0 && p.holdMs <= 10_000);
+  assert.notEqual(p, null, "a null here would mean a mode that can clip the first word came back");
 });
 
-test("warmPolicy('always') expresses 'never release' as null, never as a huge number", () => {
-  const p = warmPolicy("always", "");
-  assert.equal(p?.holdMs, null, "a distinct value: no arithmetic can turn it into a finite delay");
-  assert.equal(p?.preRollMs, PRE_ROLL_MS, "the pre-roll is the same size in every mode");
+test("the hold is BOUNDED - the session-long hold is gone and cannot return by arithmetic", () => {
+  const p = warmPolicy("");
+  assert.ok(typeof p.holdMs === "number", "null used to mean 'never release'; that mode no longer exists");
+  assert.ok(p.holdMs > 0 && p.holdMs <= 10_000);
+  assert.equal(PRE_ROLL_MS, 500, "the plan's section 3.4 number");
 });
 
 test("warmPolicy carries the chosen microphone through, so a device change can release the graph", () => {
-  assert.equal(warmPolicy("after", "abc")?.micDeviceId, "abc");
-  assert.equal(warmPolicy("always", "")?.micDeviceId, "", "'' means the system default, and is a real value");
+  assert.equal(warmPolicy("abc").micDeviceId, "abc");
+  assert.equal(warmPolicy("").micDeviceId, "", "'' means the system default, and is a real value");
 });
 
-test("isMicPrewarm accepts exactly the three modes and nothing else", () => {
-  for (const ok of ["off", "after", "always"]) assert.equal(isMicPrewarm(ok), true, ok);
-  for (const bad of ["", "on", "true", null, undefined, 1, {}]) assert.equal(isMicPrewarm(bad), false);
-});

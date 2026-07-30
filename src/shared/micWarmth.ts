@@ -61,42 +61,43 @@ export const PRE_ROLL_MS = 500;
  * indicator go out within seconds rather than staying lit all day. */
 export const WARM_HOLD_MS = 5_000;
 
-/** The user's choice, in Settings > Dictation. Three levels because there are
- * genuinely three answers to "how much microphone-open time will you trade for
- * never losing a first word", and pretending there are two would push someone
- * into the wrong one. */
-export type MicPrewarm =
-  /** Never open the microphone outside a press. Lowest exposure; the first
-   * word of a dictation can be clipped, and the timings in Diagnostics will
-   * say by how much. */
-  | "off"
-  /** Default. Open it for a few seconds at startup and after each dictation,
-   * with a half-second rolling pre-roll prepended to the next press. */
-  | "after"
-  /** Keep it open for as long as Flow runs. Zero acquisition cost on every
-   * press, forever - and the indicator stays lit, forever. Opt-in only. */
-  | "always";
+// 2026-07-30: `MicPrewarm` and `isMicPrewarm` are GONE, along with the setting
+// they described. The type documented three answers to "how much
+// microphone-open time will you trade for never losing a first word". A human
+// check answered it differently: the question should not have been asked.
+//
+// "always" is what failed the check - the Windows microphone indicator stayed
+// lit through a session lock, Flow holding the mic through a gesture that means
+// "stop listening". "off" clipped the first word and existed mainly as an escape
+// hatch from "always". Deleting the type outright, rather than keeping it around
+// unused, is what stops a future reader from wiring the modes back up.
 
-export function isMicPrewarm(v: unknown): v is MicPrewarm {
-  return v === "off" || v === "after" || v === "always";
-}
 
 /**
- * The ONE translation from "what the user chose" to "what the renderer does".
- * `null` means the feature is off: no warm microphone, and a pre-roll ring of
- * zero capacity, so there is nothing held in memory to leak, clear or forget.
+ * 2026-07-30: the pre-warm MODE is gone. There is one behaviour now, and no
+ * setting.
  *
- * `holdMs: null` (the "always" mode) means "never arm the release timer" - a
- * distinct value rather than a huge number, so no arithmetic anywhere can
- * accidentally turn "forever" into "in 24 days".
+ * The instruction was plain: "the microphone must always just work - no always
+ * open, no pre-warm, remove it completely, just put the best option". Removing
+ * the machinery outright was not the way to honour that, because the pre-roll
+ * is what stops the first word being clipped, which is the single largest thing
+ * the activation-path wave fixed. What had to go is the CHOICE:
+ *
+ *  - "always" kept the microphone open for the whole session. It is also the
+ *    mode that failed the human check: with it on, the Windows microphone
+ *    indicator stayed LIT through a session lock - the app holding the mic open
+ *    through a gesture that means "stop listening". Removing the mode removes
+ *    that failure with it.
+ *  - "off" clipped the first word, and existed only because "always" was scary
+ *    enough to need an escape hatch.
+ *
+ * What is left is the middle option, which was always the right default: a
+ * short warm window after each dictation, and half a second of pre-roll. The
+ * outside suspension (lock, sleep, tray pause) still applies to that window -
+ * it is narrower now, not unguarded.
  */
-export function warmPolicy(mode: MicPrewarm, micDeviceId: string): CaptureWarmPayload | null {
-  if (mode === "off") return null;
-  return {
-    micDeviceId,
-    preRollMs: PRE_ROLL_MS,
-    holdMs: mode === "always" ? null : WARM_HOLD_MS,
-  };
+export function warmPolicy(micDeviceId: string): CaptureWarmPayload {
+  return { micDeviceId, preRollMs: PRE_ROLL_MS, holdMs: WARM_HOLD_MS };
 }
 
 /** Ring capacity in SAMPLES for a wanted pre-roll duration. Floor, never

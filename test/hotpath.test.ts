@@ -673,7 +673,7 @@ test("a lone press is NOT ambiguous - the common case stays measurable", () => {
   log.mark("keyEventReceived", 0);
   log.mark("releaseObserved", 100);
   log.mark("textInserted", 140);
-  log.complete({ kind: "inserted" }, 5, 140);
+  log.complete("inserted", 5, 140);
   const [tr] = log.snapshot().completed;
   assert.equal(tr.ambiguous, undefined, "one press at a time attributes exactly");
   assert.equal(computeIntervals(tr).releaseToTextMs, 40);

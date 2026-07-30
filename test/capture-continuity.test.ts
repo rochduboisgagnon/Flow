@@ -154,12 +154,15 @@ test("constat 4: a negative or non-finite preRollMs is treated as zero credit, n
   assert.equal(v.missingMs, 4_000, "NaN credit behaves exactly like 0 credit");
 });
 
-// ---- preRollCreditMs: the worst-case credit for a prewarm mode ----
+// ---- preRollCreditMs: the worst-case credit, now unconditional ----
 
-test("preRollCreditMs: 'off' credits nothing, 'after' and 'always' credit the ring's full capacity", () => {
-  assert.equal(preRollCreditMs("off"), 0);
-  assert.equal(preRollCreditMs("after"), PRE_ROLL_MS);
-  assert.equal(preRollCreditMs("always"), PRE_ROLL_MS);
+test("preRollCreditMs credits the ring's full capacity, with no mode to depend on", () => {
+  // 2026-07-30: the prewarm modes are gone (one behaviour, no setting), so the
+  // credit no longer branches. It stays a FUNCTION rather than an inlined
+  // constant because its whole reason for existing was that the shortfall judge
+  // and the 300 ms release-noise guard can never drift on what "the pre-roll"
+  // means - and a shared constant with two readers is exactly how they would.
+  assert.equal(preRollCreditMs(), PRE_ROLL_MS);
 });
 
 // ---- zero retention (plan §5.4) ----

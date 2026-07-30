@@ -371,7 +371,7 @@ test("the pre-warm policy is derived in exactly ONE place", () => {
   // SECOND place that decides how long Flow may hold a microphone.
   const body = slice(INDEX_SRC, "function applyMicWarmth(): void {", "\n}");
   assert.match(body, /overlay\.setWarmPolicy\(/, "the one function that pushes the policy");
-  assert.match(body, /warmPolicy\(settings\.micPrewarm, settings\.micDeviceId\)/, "derived from the setting, here");
+  assert.match(body, /warmPolicy\(settings\.micDeviceId\)/, "one policy, derived here, with no mode to read");
   const calls = INDEX_SRC.match(/applyMicWarmth\(\)/g) ?? [];
   assert.ok(calls.length >= 4, `expected boot + settings change + pre-arm + the definition, got ${calls.length}`);
   assert.equal(
@@ -381,9 +381,13 @@ test("the pre-warm policy is derived in exactly ONE place", () => {
   );
 });
 
-test("turning the setting off takes effect immediately, not at the next restart", () => {
+test("changing the MICROPHONE takes effect immediately, not at the next restart", () => {
+  // The prewarm mode is gone, so the only thing left that can change the warm
+  // graph from the settings page is which device it holds. It still has to
+  // apply live: a graph left open on a microphone the user just stopped using
+  // is both the wrong input and an indicator lit for no reason.
   const apply = slice(INDEX_SRC, "function applySettings(", "async function startPtt()");
-  assert.match(apply, /next\.micPrewarm !== settings\.micPrewarm \|\| next\.micDeviceId !== settings\.micDeviceId/);
+  assert.match(apply, /next\.micDeviceId !== settings\.micDeviceId/);
   assert.match(apply, /if \(warmthChanged\) applyMicWarmth\(\);/);
 });
 
@@ -416,18 +420,27 @@ test("sending the warm policy can never throw into the keyboard hook's callback"
   assert.match(setter, /setImmediate\(/, "flowLog writes to disk: never on that stack");
 });
 
-// ---- the setting itself ----
+// ---- the setting itself: there is none any more ----
+//
+// 2026-07-30, after a human check. `micPrewarm` is removed: one behaviour, no
+// choice. These tests now pin the REMOVAL, because a setting is far easier to
+// bring back by accident than to delete on purpose.
 
-test("the default is the middle setting: bounded warmth, not off and not always", () => {
-  assert.equal(SETTINGS_DEFAULTS.micPrewarm, "after");
+test("micPrewarm is gone from the settings shape entirely", () => {
+  assert.equal("micPrewarm" in SETTINGS_DEFAULTS, false, "not a default any more");
+  assert.equal("micPrewarm" in sanitizeSettings({}), false);
 });
 
-test("a corrupt or missing micPrewarm falls back to the default rather than to a wilder mode", () => {
-  assert.equal(sanitizeSettings({}).micPrewarm, "after");
-  assert.equal(sanitizeSettings({ micPrewarm: "yes please" }).micPrewarm, "after");
-  assert.equal(sanitizeSettings({ micPrewarm: true }).micPrewarm, "after");
-  assert.equal(sanitizeSettings({ micPrewarm: "off" }).micPrewarm, "off");
-  assert.equal(sanitizeSettings({ micPrewarm: "always" }).micPrewarm, "always");
+test("a stored micPrewarm is IGNORED - that silence is the migration", () => {
+  // A machine that had "always" is what failed the human check: its Windows
+  // microphone indicator stayed lit through a session lock. Reading the field
+  // back would restore exactly that. Ignoring it puts every machine on the one
+  // guarded behaviour without asking, and a machine that had "off" stops
+  // clipping its first word into the bargain.
+  for (const stored of ["always", "off", "after", "yes please", true, null]) {
+    const out = sanitizeSettings({ micPrewarm: stored }) as unknown as Record<string, unknown>;
+    assert.equal("micPrewarm" in out, false, `stored ${JSON.stringify(stored)} must not survive`);
+  }
 });
 
 // ---- V2 review, finding 5 (blocking): a public promise that went false ----
@@ -448,7 +461,7 @@ test("the README no longer claims the thing the shipped default makes untrue", (
 });
 
 test("the README describes the buffer the default ships with: what, why, how bounded, how to kill it", () => {
-  assert.notEqual(SETTINGS_DEFAULTS.micPrewarm, "off", "if the default ever becomes 'off', rewrite this section too");
+  // The buffer is unconditional now, so there is no default left to guard.
   assert.match(README, /half a second|half-second/i, "the size, in words a user can check against the setting");
   assert.match(README, /in memory|in RAM/i, "where it lives");
   assert.match(README, /never (be )?written to disk|never written to disk/i, "and where it does NOT");
@@ -457,8 +470,8 @@ test("the README describes the buffer the default ships with: what, why, how bou
   assert.match(README, /microphone indicator/i, "the visible cost, stated rather than discovered");
   assert.match(
     README,
-    /Microphone pre-warm[\s\S]{0,40}Off/,
-    "and the exact one-click way out, named as the Settings control shows it",
+    /no longer a switch|There is no longer a switch/i,
+    "and the truth that there is NO way out any more - the section used to promise a one-click Off that no longer exists, which is exactly the kind of stale promise this suite exists to catch",
   );
 });
 
@@ -469,14 +482,19 @@ test("the README's remaining retention claims are about what is WRITTEN, which i
   assert.match(claim, /buffer/i, "the exception is named in the same breath as the promise, not in a footnote");
 });
 
-test("Settings > Dictation names the cost of every option, not just the benefit", () => {
-  const help = slice(SETTINGS_PAGE, "const PREWARM_HELP", "function TabDictation");
-  assert.match(help, /off:[\s\S]*?can be clipped/, "'off' must say what it costs the user");
-  assert.match(help, /after:[\s\S]*?microphone indicator/, "'after' must name Windows' indicator");
-  assert.match(help, /always:[\s\S]*?stays lit/, "'always' must be blunt about it");
-  for (const mode of ["after", "always"]) {
-    const line = slice(help, `${mode}:`, "\n");
-    assert.match(line, /(never|nothing)[^.]*disk/i, `${mode} must state where the buffer does NOT go`);
-  }
-  assert.match(SETTINGS_PAGE, /aria-label="Microphone pre-warm"/);
+test("Settings still names the COST of the buffer, now that there is no option to weigh", () => {
+  // There used to be one help sentence per mode, each stating its cost before
+  // its benefit. The modes are gone, but the reason those sentences existed is
+  // not: a privacy trade the user cannot read is a trade they did not make -
+  // and it matters MORE now, because they can no longer decline it.
+  const help = slice(SETTINGS_PAGE, 'label="Microphone"', "</Row>");
+  assert.match(help, /microphone indicator/i, "Windows' indicator is the visible cost, and it is stated");
+  assert.match(help, /(never|nothing)[^.]*disk/i, "and where the buffer does NOT go");
+  assert.match(help, /erased/i, "and that it does not outlive the dictation it feeds");
+  assert.match(help, /lock|sleep|tray/i, "and the three gestures that release the microphone outright");
+  assert.doesNotMatch(
+    SETTINGS_PAGE,
+    /aria-label="Microphone pre-warm"/,
+    "the control itself must be GONE, not merely hidden - a disabled dropdown would suggest it could come back",
+  );
 });

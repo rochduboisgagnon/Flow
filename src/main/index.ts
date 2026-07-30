@@ -672,7 +672,6 @@ function getUiState(): UiStatePayload {
       forceCpu: settings.forceCpu,
       insertMode: settings.insertMode,
       theme: settings.theme,
-      micPrewarm: settings.micPrewarm,
       // U7a: the two switches only - the counters themselves are PULLED
       // (ui:stats-read), never pushed once a second (ipcContracts.ts).
       stats: settings.stats,
@@ -1359,7 +1358,7 @@ const hotkey = new HotkeyAdapter(settings.combo, {
  * itself is pure and unit-tested in shared/micWarmth.ts. */
 /** Review B10 (major): the warm microphone is SUSPENDED by an outside order -
  * the session locking, the machine sleeping, dictation paused from the tray.
- * Kept apart from settings.micPrewarm on purpose: a transient state must never
+ * Kept apart from the (now unconditional) warm window on purpose: a transient
  * overwrite what the user chose. A microphone left open through a gesture that
  * MEANS "stop listening" is a privacy breach in the most literal sense, and the
  * Windows indicator would sit there saying so. */
@@ -1372,7 +1371,7 @@ function setMicWarmthSuspended(v: boolean): void {
 
 function applyMicWarmth(): void {
   overlay.setWarmPolicy(
-    micWarmthSuspended ? null : warmPolicy(settings.micPrewarm, settings.micDeviceId),
+    micWarmthSuspended ? null : warmPolicy(settings.micDeviceId),
   );
 }
 
@@ -1482,7 +1481,7 @@ function wireCapture() {
     // from BEFORE the key went down, so the raw WAV duration can EXCEED the hold.
     // Both the shortfall judge and the release-noise guard below must reason on
     // the hold's own audio, never on the padded clip.
-    const preRoll = preRollCreditMs(settings.micPrewarm);
+    const preRoll = preRollCreditMs();
     noteCaptureContinuity(payload.durationMs, preRoll);
     // NOTHING is retained: the WAV lives in this handler, feeds one inference,
     // and every reference dies with it. Sub-300 ms of audio is release noise.
@@ -1701,7 +1700,7 @@ function applySettings(patch: Partial<FlowSettings>): FlowSettings {
   // to close it - otherwise the next dictation would be captured, warm and
   // fast, from the microphone the user just stopped choosing.
   const warmthChanged =
-    next.micPrewarm !== settings.micPrewarm || next.micDeviceId !== settings.micDeviceId;
+    next.micDeviceId !== settings.micDeviceId;
   // U7a: read BEFORE the assignment, like every other change flag here - the
   // store reads the LIVE settings, so it must be told after they have moved.
   const statsChanged = next.stats !== settings.stats || next.statsPerApp !== settings.statsPerApp;
