@@ -245,6 +245,14 @@ function aggregateBudgets(traces: HotpathTrace[]): BudgetRow[] {
   const placeholder = evaluateBudgets({ id: 0, outcome: "abandoned", marks: [] });
   const values: number[][] = placeholder.map(() => []);
   for (const tr of traces) {
+    // 2026-07-30: an AMBIGUOUS trace is excluded from every budget summary.
+    // A trace opened while another was still open has its later marks attached
+    // by "oldest open trace missing this step", so its intervals can span two
+    // different presses. Averaging those in would make the panel report Flow's
+    // plumbing as slow when what it actually measured was a user pressing again
+    // because nothing had happened yet - which is exactly the case that produced
+    // a 2 301 ms red cell on a real machine.
+    if (tr.ambiguous) continue;
     evaluateBudgets(tr).forEach((row, i) => {
       if (row.valueMs !== null) values[i].push(row.valueMs);
     });
@@ -443,14 +451,29 @@ function HotpathPanel() {
                   return (
                     <tr key={tr.id}>
                       <td className="mono">{agoLabel(traceLastT(tr), snap.generatedAt)}</td>
-                      <td>{outcomeLabel(tr)}</td>
+                      <td>
+                        {outcomeLabel(tr)}
+                        {/* 2026-07-30: an overlapping press makes this row's
+                            durations arithmetic across two different presses.
+                            Said on the row rather than hidden, because the row
+                            is where someone reads a number and believes it. */}
+                        {tr.ambiguous ? (
+                          <div className="sub" style={{ fontSize: 11 }}>
+                            overlapped another press &#183; timings not attributable
+                          </div>
+                        ) : null}
+                      </td>
                       <td className="mono">{fmtMs(iv.verdictLatencyMs)}</td>
                       <td>
-                        <BudgetCell value={iv.keyToOverlayOrderMs} budgetMs={30} measurable />
+                        {tr.ambiguous ? <span className="sub">&#8211;</span> : (
+                          <BudgetCell value={iv.keyToOverlayOrderMs} budgetMs={30} measurable />
+                        )}
                       </td>
                       <td className="mono">{fmtMs(iv.transcriptionMs)}</td>
                       <td>
-                        <BudgetCell value={iv.releaseToTextExclModelMs} budgetMs={60} measurable />
+                        {tr.ambiguous ? <span className="sub">&#8211;</span> : (
+                          <BudgetCell value={iv.releaseToTextExclModelMs} budgetMs={60} measurable />
+                        )}
                       </td>
                       <td className="mono">{tr.textChars ?? "-"}</td>
                     </tr>

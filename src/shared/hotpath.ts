@@ -131,6 +131,24 @@ export interface HotpathTrace {
   result?: HotpathResult; // present when outcome === "completed"
   utteranceMs?: number; // the captured clip's own duration (a NUMBER, never its content)
   textChars?: number; // character COUNT of what was inserted, never the characters
+  /** 2026-07-30: set when this trace was opened while ANOTHER was still open,
+   * which makes every interval derived from it UNTRUSTWORTHY - and saying so is
+   * the whole point of the flag.
+   *
+   * Why. Marks other than the first are attached by findOpenMissing(), i.e. to
+   * the oldest open trace still missing that step. With one press at a time that
+   * is exact. With two presses overlapping - which is precisely what a user does
+   * when the app feels stuck and they press again - a later press's
+   * `textInserted` attaches to an EARLIER press's trace, and the resulting
+   * "release -> text" is not a duration of anything: it is the gap between two
+   * different presses.
+   *
+   * This was found by reading a real Diagnostics panel that showed 2 301 ms in
+   * red against a 60 ms budget, blaming Flow's own plumbing, on a press whose
+   * model time was blank. The number was not a slow path; it was arithmetic
+   * across two presses. A panel that exists to tell the truth about latency must
+   * not publish that as a fact. */
+  ambiguous?: boolean;
 }
 
 // ---- bounded ring buffer (generic, reused for traces and raw numbers) ----
@@ -302,7 +320,19 @@ export class HotpathLog {
         const evicted = this.open.shift();
         if (evicted) this.close(evicted, "abandoned", HOTPATH_ABANDON_REASON.openQueueFull, t);
       }
-      this.open.push({ id: this.nextId++, outcome: "in-progress", marks: [{ step, t }] });
+      this.open.push({
+        id: this.nextId++,
+        outcome: "in-progress",
+        marks: [{ step, t }],
+        // Ambiguous the moment it is not alone: see the field's own note.
+        ...(this.open.length > 0 ? { ambiguous: true } : {}),
+      });
+      // The trace ALREADY open is now ambiguous too - its later marks can be
+      // stolen by, or stolen from, the one just opened. Marking only the newcomer
+      // would leave the more misleading of the two looking trustworthy.
+      if (this.open.length > 1) {
+        for (const t2 of this.open) t2.ambiguous = true;
+      }
       return;
     }
     const trace = this.findOpenMissing(step);

@@ -171,10 +171,18 @@ function TabEngine({ s, patch }: { s: UiStatePayload; patch: Patch }) {
   const batchLabel = s.models.find((m) => m.file === batch.model)?.label ?? batch.model;
   return (
     <div className="rows">
-      <Row label="Dictation model" help="The model behind the shortcut. Bigger models transcribe better and decode slower, and you wait for every millisecond of that on every dictation. It downloads once into Flow's own data folder; switching applies live.">
-        <select value={s.settings.model} onChange={(e) => void patch({ model: e.target.value })} aria-label="Dictation model">
-          {s.models.map((m) => <option key={m.file} value={m.file}>{m.label} ({m.size})</option>)}
-        </select>
+      {/* 2026-07-30: the dictation model selector is GONE, on purpose. Dictating
+          on large-v3 measured 16 547 ms per utterance on a real machine - the
+          app failed at the one thing it exists to do, and the setting is what
+          let it happen. It is pinned now, and this row states what runs rather
+          than offering a dial that can only make things worse.
+          The row is kept (not deleted) because a user who upgrades and wonders
+          where the choice went deserves an answer on the screen where it was. */}
+      <Row
+        label="Dictation model"
+        help="Pinned, and not a choice any more. Dictation runs on Large v3 Turbo: the multilingual model distilled from Large v3 - the same 99 languages, several times faster. For dictation, a transcription that lands seconds after you release the key has already failed however exact it is, so Flow picks the most accurate model that answers instantly. The extra accuracy of Large v3 is not lost - it is available just below, for meetings and imports, where nothing is waiting on it."
+      >
+        <span className="pinned">Large v3 Turbo &#183; multilingual</span>
       </Row>
       <Row label="Meetings and imports" help={BATCH_MODEL_HELP}>
         <select value={s.settings.batchModel} onChange={(e) => void patch({ batchModel: e.target.value })} aria-label="Model for meetings and imports">

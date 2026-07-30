@@ -651,3 +651,67 @@ test("summarize reports count/median/p95/max together", () => {
   assert.equal(s.p95Ms, 95.05);
   assert.equal(s.maxMs, 100);
 });
+
+// ---------------------------------------------------------------------------
+// 2026-07-30: overlapping presses make a trace's durations UNTRUSTWORTHY.
+//
+// Found by reading a real Diagnostics panel. It showed 2 301 ms in red against
+// a 60 ms budget on the "release -> text (excl. model)" column, blaming Flow's
+// own plumbing, on a press whose model time was blank. The cause is structural:
+// every mark after the first attaches to the OLDEST open trace still missing
+// that step. With one press at a time that is exact. But a user whose app feels
+// stuck presses again - and then a later press's `textInserted` lands on an
+// earlier press's trace, so "release -> text" becomes the gap between two
+// different presses rather than the duration of anything.
+//
+// The number was not a slow path. It was arithmetic across two presses, painted
+// red as if it were a fact about the code.
+// ---------------------------------------------------------------------------
+
+test("a lone press is NOT ambiguous - the common case stays measurable", () => {
+  const log = new HotpathLog();
+  log.mark("keyEventReceived", 0);
+  log.mark("releaseObserved", 100);
+  log.mark("textInserted", 140);
+  log.complete({ kind: "inserted" }, 5, 140);
+  const [tr] = log.snapshot().completed;
+  assert.equal(tr.ambiguous, undefined, "one press at a time attributes exactly");
+  assert.equal(computeIntervals(tr).releaseToTextMs, 40);
+});
+
+test("two overlapping presses are BOTH flagged, not just the newcomer", () => {
+  const log = new HotpathLog();
+  log.mark("keyEventReceived", 0); // press 1
+  log.mark("keyEventReceived", 50); // press 2, while press 1 is still open
+  const traces = log.snapshot().open;
+  assert.equal(traces.length, 2);
+  assert.ok(
+    traces.every((t) => t.ambiguous === true),
+    "the EARLIER trace is the one that steals a later mark, so flagging only the newcomer would leave the more misleading of the two looking trustworthy",
+  );
+});
+
+test("the reproduction: a second press's insertion lands on the first press's trace", () => {
+  const log = new HotpathLog();
+  log.mark("keyEventReceived", 0); // press 1: the user speaks, nothing appears
+  log.mark("releaseObserved", 200);
+  log.mark("keyEventReceived", 1000); // press 2: they try again
+  log.mark("releaseObserved", 1200);
+  log.mark("textInserted", 2500); // whichever press this belongs to...
+
+  const [first] = log.snapshot().open;
+  // ...it attached to the OLDEST trace missing it - press 1 - producing 2300 ms.
+  assert.equal(computeIntervals(first).releaseToTextMs, 2300);
+  assert.equal(first.ambiguous, true, "and that is exactly why the trace must be flagged");
+});
+
+test("an ambiguous trace still records what it saw - the flag hides no evidence", () => {
+  // The flag says "do not derive budgets from this", not "throw this away". A
+  // support case needs the marks; it just must not read them as durations.
+  const log = new HotpathLog();
+  log.mark("keyEventReceived", 0);
+  log.mark("keyEventReceived", 10);
+  const [tr] = log.snapshot().open; // both are still open: nothing closed them
+  assert.ok(tr.marks.length > 0, "the marks are kept");
+  assert.equal(tr.ambiguous, true);
+});

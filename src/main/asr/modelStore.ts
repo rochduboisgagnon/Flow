@@ -7,24 +7,37 @@ import { defaultLocalAppData, resolveModelsRoot } from "../migrate";
 // outside the install directory: an app update must never re-download 190 MB,
 // and an uninstall of the binaries can leave user data alone.
 //
-// Default model (plan v4 chantier 11, Roch's call = best French): large-v3-turbo
-// (multilingual, q5_0). It is the strongest French transcriber whisper.cpp ships
-// quantized, and the sidecar stays warm so the bigger model is a one-time load
-// cost, not a per-utterance one. small-q5_1 stays in the list as the "fast"
-// option for anyone who wants sub-second dictation over top accuracy.
+// THE DICTATION MODEL, pinned since 2026-07-30. Not a default any more: the
+// dictation model is no longer a setting at all (see main/settings.ts).
+//
+// Why it was pinned. Dictating on large-v3 measured 16 547 ms per utterance on
+// a real machine - the app was unusable for the one thing it exists to do. The
+// instruction that followed was "the same for everyone, no option, the best one
+// for ALL languages, not just French".
+//
+// Why THIS one answers that. large-v3-turbo is not a French model, and the old
+// label saying so was wrong. It is the multilingual model distilled from
+// large-v3: the same 99 languages, roughly 8x faster, for a small accuracy
+// loss. For DICTATION, "best" cannot mean "most accurate in the absolute" - a
+// transcription that lands 16 seconds after you let go of the key has already
+// failed, however exact it is. It means the most accurate among those that
+// return the text immediately.
+//
+// The accuracy of large-v3 is not lost: it moved to `batchModel`, where a
+// meeting or an import runs and nobody is waiting.
 
 export const DEFAULT_MODEL_FILE = "ggml-large-v3-turbo-q5_0.bin";
 const HF_BASE = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
 
-// The models offered in the settings (all multilingual, all quantized builds
-// shipped upstream by whisper.cpp). Accuracy/speed is the user's dial; turbo is
-// the French-first default, small the fast fallback.
+// The models offered for BATCH work (meetings, imports) - all multilingual, all
+// quantized builds shipped upstream by whisper.cpp. Dictation no longer appears
+// here: it is pinned above. Accuracy/speed is a dial only where waiting is free.
 export const AVAILABLE_MODELS = [
   { file: "ggml-tiny-q5_1.bin", label: "Tiny - fastest, least accurate", size: "32 MB" },
   { file: "ggml-base-q5_1.bin", label: "Base - fast", size: "60 MB" },
   { file: "ggml-small-q5_1.bin", label: "Small - fast, good balance", size: "190 MB" },
   { file: "ggml-medium-q5_0.bin", label: "Medium - accurate, slower", size: "540 MB" },
-  { file: "ggml-large-v3-turbo-q5_0.bin", label: "Large v3 Turbo - best French (default)", size: "547 MB" },
+  { file: "ggml-large-v3-turbo-q5_0.bin", label: "Large v3 Turbo - multilingual, fast", size: "547 MB" },
   { file: "ggml-large-v3-q5_0.bin", label: "Large v3 - most accurate, slowest", size: "1.1 GB" },
 ] as const;
 

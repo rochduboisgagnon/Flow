@@ -163,16 +163,38 @@ export function sanitizeSettings(raw: unknown): FlowSettings {
   if (typeof r.language === "string" && /^[a-z]{2,3}$|^auto$/.test(r.language)) {
     out.language = r.language;
   }
-  if (typeof r.model === "string" && /^[\w.-]+\.bin$/.test(r.model)) {
-    out.model = r.model;
-  }
+  // 2026-07-30 (validation humaine): the dictation model is PINNED and is no
+  // longer a setting. Roch dictated on large-v3 and measured 16.5 SECONDS per
+  // utterance on his own machine - the app was unusable for the one thing it
+  // exists to do. His instruction was "the same for everyone, no option, the
+  // best one for ALL languages". So this field is now read only to be DROPPED:
+  // whatever a stored settings.json says, dictation runs on DEFAULT_MODEL_FILE.
+  //
+  // Deliberately not deleted from the type: a machine upgrading from 1.11.0 has
+  // `model` on disk, and silently ignoring it here is what performs the
+  // migration. The accuracy that a bigger model buys is not lost either - it
+  // moved to `batchModel`, where meetings and imports run and nobody is waiting.
+  out.model = DEFAULT_MODEL_FILE;
+  // ...but the accuracy the user had CHOSEN is not thrown away. Someone running
+  // large-v3 for dictation was buying accuracy at a latency they had not
+  // measured; dropping the field alone would silently downgrade their MEETINGS
+  // too, which is the one place that accuracy was free. So an old non-default
+  // dictation model is carried over to batch work - unless they already picked
+  // one there, in which case their explicit choice wins over this inference.
+  const priorDictationModel =
+    typeof r.model === "string" && /^[\w.-]+\.bin$/.test(r.model) ? r.model : "";
+  const carryOver = priorDictationModel && priorDictationModel !== DEFAULT_MODEL_FILE;
   // F1: the SAME filename shape as `model` above, plus the empty string, which
   // is the "share the dictation engine" value. Anything else falls back to the
   // default, and the safe direction here is unambiguous: a malformed field can
   // only ever mean "one engine", never "spawn a second whisper-server on a name
   // nobody validated".
   if (typeof r.batchModel === "string" && (r.batchModel === "" || /^[\w.-]+\.bin$/.test(r.batchModel))) {
-    out.batchModel = r.batchModel;
+    out.batchModel = r.batchModel === "" && carryOver ? priorDictationModel : r.batchModel;
+  } else if (carryOver) {
+    // No batchModel field at all (a settings.json from before the split) plus a
+    // deliberate old dictation model: the same inference applies.
+    out.batchModel = priorDictationModel;
   }
   if (typeof r.micDeviceId === "string") out.micDeviceId = r.micDeviceId;
   // U2a: historyDir is gone (the recordings folder is fixed under dataDir()/history).

@@ -661,3 +661,13 @@ html.light .heat i.l2 { background: #cf9d55; }
 }
 .cite:hover { text-decoration-style: solid; }
 .cite:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+
+/* A setting that is no longer a choice: reads as a stated fact, not as a
+   disabled control. A greyed-out dropdown would suggest it could be re-enabled;
+   this cannot, and saying so plainly is the honest shape. */
+.pinned {
+  font-size: 12.5px;
+  color: var(--ink2);
+  padding: 6px 0;
+  display: inline-block;
+}

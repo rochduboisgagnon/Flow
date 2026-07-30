@@ -19,7 +19,10 @@ test("valid fields are kept, unknown fields dropped", () => {
   });
   assert.deepEqual(s.combo, ["RIGHT CTRL"]);
   assert.equal(s.language, "fr");
-  assert.equal(s.model, "ggml-base-q5_1.bin");
+  // `model` is the one field that is NOT kept: dictation is pinned since
+  // 2026-07-30, and a stored value can only ever slow it back down. It is
+  // carried over to batch work instead - proved in its own test below.
+  assert.equal(s.model, "ggml-large-v3-turbo-q5_0.bin");
   assert.equal(s.micDeviceId, "abc123");
   assert.equal(s.sounds, false);
   assert.equal("evil" in s, false);
@@ -129,13 +132,32 @@ test("U7a: both statistics switches are literal booleans - junk falls back to th
 // F1 (plan-standalone §7): the batch model. The whole upgrade story is that there
 // ISN'T one - a settings.json from any earlier version resolves to "share the
 // dictation engine", which is byte for byte the behaviour it already had.
-test("F1: a settings.json written before the two-model split shares the dictation engine", () => {
+// 2026-07-30: the dictation model is PINNED and no longer a setting. Dictating
+// on large-v3 measured 16 547 ms per utterance on a real machine. These two
+// tests now pin the MIGRATION, which has to do two things at once.
+test("the stored dictation model is dropped: dictation is pinned, whatever settings.json says", () => {
   const upgraded = sanitizeSettings({ combo: ["CTRL", "WIN"], model: "ggml-large-v3-q5_0.bin" });
-  assert.equal(upgraded.batchModel, "", "\"\" = batch work runs on the dictation engine");
+  assert.equal(upgraded.model, SETTINGS_DEFAULTS.model, "a stored choice cannot slow dictation down again");
+  assert.equal(upgraded.model, "ggml-large-v3-turbo-q5_0.bin");
+});
+
+test("but the accuracy that choice was BUYING moves to batch work, it is not thrown away", () => {
+  // Someone on large-v3 wanted accuracy. Dictation is where it cost 16 seconds;
+  // a meeting is where it costs nothing. Dropping the field alone would have
+  // silently downgraded their meetings too - a regression hidden inside a fix.
+  const upgraded = sanitizeSettings({ model: "ggml-large-v3-q5_0.bin" });
+  assert.equal(upgraded.batchModel, "ggml-large-v3-q5_0.bin");
+});
+
+test("an EXPLICIT batch choice always wins over that inference", () => {
+  const explicit = sanitizeSettings({ model: "ggml-large-v3-q5_0.bin", batchModel: "ggml-medium-q5_0.bin" });
+  assert.equal(explicit.batchModel, "ggml-medium-q5_0.bin", "what the user picked beats what we inferred");
+});
+
+test("a machine already on the pinned model gets no phantom batch model", () => {
+  const clean = sanitizeSettings({ model: "ggml-large-v3-turbo-q5_0.bin" });
+  assert.equal(clean.batchModel, "", "\"\" = batch work shares the dictation engine, as before");
   assert.equal(SETTINGS_DEFAULTS.batchModel, "");
-  // And `model` still means what it always meant: nobody's engine choice is
-  // silently reinterpreted as a batch-only choice.
-  assert.equal(upgraded.model, "ggml-large-v3-q5_0.bin");
 });
 
 test("F1: batchModel accepts a model filename or the empty string, and nothing else", () => {
