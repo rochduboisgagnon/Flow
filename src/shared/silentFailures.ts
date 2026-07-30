@@ -96,6 +96,21 @@ export const SILENT_FAILURE = {
   // his side the symptom is "my function did nothing", and this counter plus the
   // named line in flow.log are the only two places that can say why.
   voiceFunctionFailed: "voice-function-failed",
+  // src/main/asr/batchEngine.ts - fallback(), wired in main/index.ts (plan V6, F1).
+  //
+  // The user configured a SEPARATE model for batch work (a recorded meeting, an
+  // imported file) and batch work ran on the dictation engine instead. Like
+  // micDroppedMidDictation above, this is not a catch: nothing throws, the job
+  // succeeds, and the transcript is complete - it is simply less accurate (or
+  // slower) than what was asked for. The realistic cause is a GPU with no room
+  // left for a second resident model, and the second-most-likely is a model
+  // download that failed.
+  //
+  // It belongs in this vocabulary for the same reason as the microphone one: a
+  // setting that silently never takes effect is indistinguishable from a setting
+  // that does not work, and there was no surface that could tell the difference.
+  // Settings > Engine names the failure in words; this is the tally.
+  batchEngineFallback: "batch-engine-fallback",
 } as const;
 
 export type SilentFailureName = (typeof SILENT_FAILURE)[keyof typeof SILENT_FAILURE];

@@ -5,6 +5,7 @@ import { HotkeyAdapter } from "./hotkey";
 import { OverlayWindow } from "./overlay";
 import { NativeCapture } from "./capture";
 import { WhisperSidecar } from "./asr/sidecar";
+import { BatchEngine } from "./asr/batchEngine";
 // B5: `modelFilePath` is modelStore's modelPath() under another name - index.ts
 // already has a local `modelPath` (newSidecar's parameter), and a self-check
 // that silently read the wrong one would report on a file nobody uses.
@@ -654,12 +655,17 @@ function getUiState(): UiStatePayload {
     recording: longRec.isBusy,
     backend: sidecar ? path.basename(sidecar.activeBackend() || "") : "",
     modelState: lastModelState,
+    // F1: derived on every snapshot from the live settings AND the live process,
+    // never remembered here - the Settings row that reads it must not be able to
+    // outlive the fact it describes.
+    batchEngine: batchEngine.state(),
     paused: tray !== null && tray.pausedUntilMs() !== null,
     hookOk: hookIsArmed(hook),
     hook,
     settings: {
       language: settings.language,
       model: settings.model,
+      batchModel: settings.batchModel, // F1: "" = batch work shares the dictation engine
       micDeviceId: settings.micDeviceId,
       sounds: settings.sounds,
       summaryModel: settings.summaryModel,
@@ -1120,8 +1126,39 @@ function recentForUi(): UiStatePayload["recent"] {
 // is called inside the store, on each operation (main/liveNotes.ts).
 const liveNotes = new LiveNotesStore({ log: flowLog });
 
+// F1: the SECOND speech engine, the one a meeting or an imported file runs on
+// when the user has asked for a different model there. Built here - before the
+// two consumers below - and deliberately holding NOTHING until batch work
+// actually arrives: with the default settings (batchModel === "") it never
+// spawns a process at all and every call goes straight to the warm dictation
+// engine.
+//
+// The four facts that make "a dictation never waits for a model to load" a
+// structural property rather than a hope are written out in
+// main/asr/batchEngine.ts's module note. Two of them are visible right here:
+// `dictationEngine` is a GETTER (so a swapModel() never leaves batch work
+// holding a dead engine), and `makeSidecar` is newSidecar - the same function
+// warmAsr and swapModel use - so the batch engine inherits the backend list,
+// `forceCpu`, the beam size, the French seed and the dictionary prompt instead of
+// restating any of them.
+const batchEngine = new BatchEngine({
+  dictationEngine: () => sidecar,
+  dictationModel: () => settings.model,
+  batchModel: () => settings.batchModel,
+  ensureModel: (file) => ensureModel(file),
+  makeSidecar: (modelPath) => newSidecar(modelPath),
+  setTimer: (fn, ms) => ({ id: setTimeout(fn, ms) }),
+  clearTimer: (t) => clearTimeout(t.id as ReturnType<typeof setTimeout>),
+  log: flowLog,
+  onFallback: () => silentFailures.increment(SILENT_FAILURE.batchEngineFallback),
+});
+
 const longRec = new LongRecorder({
-  getSidecar: () => sidecar,
+  // F1: a meeting's segments go through the batch engine, which - with the
+  // default settings - IS the warm dictation engine, byte for byte the same call
+  // this dep made before. `allowEmptyDemote: false` moved inside it, because both
+  // batch callers passed it for the same reason (see BatchEngine.transcribe).
+  transcribeSegment: (wav) => batchEngine.transcribe(wav),
   summaryModel: () => settings.summaryModel,
   ollamaModels: () => listOllamaModels(),
   // U2c: read lazily, so the Settings button that resumes cleanup takes effect
@@ -1175,15 +1212,12 @@ const importQueue = new ImportQueue({
     audioDecode.create(DEV);
     return audioDecode.decode(call);
   },
-  // The SAME warm sidecar dictation uses, with the long recorder's
-  // allowEmptyDemote:false - an imported meeting legitimately contains music and
-  // ambience, and demoting a healthy GPU over an empty segment would slow the
-  // whole app down silently (see ImportDeps.transcribe).
-  transcribe: async (wav) => {
-    const sc = sidecar;
-    if (!sc) throw new Error("the speech engine is not ready yet");
-    return await sc.transcribe(wav, { allowEmptyDemote: false });
-  },
+  // F1: the batch engine, exactly like a recorded meeting's segments - an import
+  // is the other half of what "batch" means. With the default settings this is
+  // still the warm dictation engine, and `allowEmptyDemote: false` (an imported
+  // file legitimately contains music and ambience, so an empty decode must not
+  // demote a healthy GPU) now lives inside the one call both callers make.
+  transcribe: (wav) => batchEngine.transcribe(wav),
   // THE DICTATION ALWAYS WINS (plan §5.1.4, master invariant 2). The import
   // reads this before every segment and stands aside; the dictation path reads
   // NOTHING of the import's, holds no lock and acquires nothing, so a press can
@@ -1654,6 +1688,13 @@ function applySettings(patch: Partial<FlowSettings>): FlowSettings {
   // fresh sidecar = the backend list is re-evaluated (the model is already on
   // disk, so this is a reload, not a download).
   const backendChanged = next.forceCpu !== settings.forceCpu;
+  // F1: read BEFORE the assignment like every other flag here. Deliberately NOT
+  // folded into `modelChanged`: the whole point of the batch model is that
+  // choosing it can never make the DICTATION engine reload, and folding it in
+  // would do exactly that (`modelChanged` drives swapModel). forceCpu counts here
+  // too, because it changes the backend candidate list the batch sidecar was built
+  // with - the same reason it forces a dictation swap one line up.
+  const batchModelChanged = next.batchModel !== settings.batchModel || backendChanged;
   const themeChanged = next.theme !== settings.theme;
   // B2: both inputs of the pre-warm policy. The microphone matters as much as
   // the mode: a warm graph is bound to ONE device, so picking another one has
@@ -1669,6 +1710,11 @@ function applySettings(patch: Partial<FlowSettings>): FlowSettings {
   if (comboChanged) hotkey.setCombo(settings.combo);
   if (langChanged) sidecar?.setLanguage(settings.language);
   if (modelChanged || backendChanged) void swapModel(settings.model);
+  // F1: drops a batch engine the user stopped asking for, and clears a stale
+  // failure. It starts nothing: the batch engine only ever loads when batch work
+  // arrives, which is what keeps this setting free for anyone who never records
+  // or imports anything.
+  if (batchModelChanged) batchEngine.settingsChanged();
   if (themeChanged) applyTheme(settings.theme);
   // Applied IMMEDIATELY, never at the next restart: turning this off is the
   // user asking for the microphone to be closed, and "it will be, later" is not
@@ -1783,6 +1829,12 @@ app.on("before-quit", () => {
   nativeCapture.destroy();
   asrWarm = false;
   sidecar?.stop();
+  // F1: AFTER the two rescues above, which are the last things that can ask it to
+  // transcribe anything. Both are synchronous and neither reaches the engine (they
+  // file what is already on disk), so nothing is cut short - this only kills the
+  // second whisper-server instead of leaving it to the process teardown. A no-op
+  // on the overwhelming majority of machines, where no second engine ever loaded.
+  batchEngine.stop();
   probe?.stop();
   api?.stop();
   // U7b: the last counter flush, synchronously, while the process still exists.

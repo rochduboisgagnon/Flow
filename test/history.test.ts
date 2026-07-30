@@ -63,7 +63,7 @@ test("C10 (a): a staged recording without a destination is filed into history at
     transcribe: () => Promise.resolve({ text: "Bonjour tout le monde.", ms: 5 }),
   } as unknown as WhisperSidecar;
   const rec = new LongRecorder({
-    getSidecar: () => mockSidecar,
+    transcribeSegment: (wav) => mockSidecar.transcribe(wav),
     recentPathOverride: recent,
     stagingRootOverride: staging,
     historyRootOverride: history,
@@ -118,7 +118,7 @@ test("C10 (b): save() files a history entry into the chosen folder and cleans th
     JSON.stringify([{ title: "T", startedIso: "", dir: recDir, docPath: doc, audioPath: "", durationMs: 0, staged: true }]),
   );
   const rec = new LongRecorder({
-    getSidecar: () => null,
+    transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
     recentPathOverride: recent,
     historyRootOverride: history,
   });
@@ -154,7 +154,7 @@ test("U4-2: a staged recording still gets an audio path, but keepAudio off means
     transcribe: () => Promise.resolve({ text: "Bonjour.", ms: 5 }),
   } as unknown as WhisperSidecar;
   const rec = new LongRecorder({
-    getSidecar: () => mockSidecar,
+    transcribeSegment: (wav) => mockSidecar.transcribe(wav),
     recentPathOverride: recent,
     stagingRootOverride: staging,
     historyRootOverride: history,
@@ -199,7 +199,7 @@ test("U4-2: keepAudio ON keeps the .wav all the way into history (the checkbox w
     transcribe: () => Promise.resolve({ text: "Bonjour.", ms: 5 }),
   } as unknown as WhisperSidecar;
   const rec = new LongRecorder({
-    getSidecar: () => mockSidecar,
+    transcribeSegment: (wav) => mockSidecar.transcribe(wav),
     recentPathOverride: recent,
     stagingRootOverride: staging,
     historyRootOverride: history,
@@ -257,7 +257,7 @@ test("C10 (c): purgeHistory removes only date-named folders older than 90 days, 
     symlinked = false; // not every environment allows creating a link; the rest of the test still holds
   }
 
-  const rec = new LongRecorder({ getSidecar: () => null, historyRootOverride: history });
+  const rec = new LongRecorder({ transcribeSegment: () => Promise.reject(new Error("speech engine not ready")), historyRootOverride: history });
   rec.purgeHistory();
 
   assert.equal(fs.existsSync(oldDir), false, "older than 90 days is removed");
@@ -276,7 +276,7 @@ test("C10 F1: a folder WITHOUT the app marker is never purged, whatever dated su
   const oldDir = path.join(work, ymd(new Date(Date.now() - 200 * dayMs)));
   fs.mkdirSync(oldDir);
   fs.writeFileSync(path.join(oldDir, "real-user-file.md"), "someone's real export");
-  const rec = new LongRecorder({ getSidecar: () => null, historyRootOverride: work });
+  const rec = new LongRecorder({ transcribeSegment: () => Promise.reject(new Error("speech engine not ready")), historyRootOverride: work });
   rec.purgeHistory();
   assert.equal(fs.existsSync(path.join(oldDir, "real-user-file.md")), true, "no marker = not our folder = untouched");
   fs.rmSync(work, { recursive: true, force: true });
@@ -285,7 +285,7 @@ test("C10 F1: a folder WITHOUT the app marker is never purged, whatever dated su
 test("C10 F1: purgeHistory refuses an immediate child of the user profile (Documents-like)", () => {
   const logs: string[] = [];
   const rec = new LongRecorder({
-    getSidecar: () => null,
+    transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
     historyRootOverride: path.join(os.homedir(), "Documents"),
     log: (m) => logs.push(m),
   });
@@ -296,7 +296,7 @@ test("C10 F1: purgeHistory refuses an immediate child of the user profile (Docum
 test("C10: purgeHistory refuses to operate on the user's profile root", () => {
   const logs: string[] = [];
   const rec = new LongRecorder({
-    getSidecar: () => null,
+    transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
     historyRootOverride: os.homedir(),
     log: (m) => logs.push(m),
   });
@@ -308,7 +308,7 @@ test("C10: purgeHistory refuses to operate on a filesystem/volume root", () => {
   const logs: string[] = [];
   const root = path.parse(process.cwd()).root; // e.g. "C:\\" on Windows, "/" elsewhere
   const rec = new LongRecorder({
-    getSidecar: () => null,
+    transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
     historyRootOverride: root,
     log: (m) => logs.push(m),
   });
@@ -321,7 +321,7 @@ test("C10: purgeHistory is a silent no-op when the history folder does not exist
   const history = path.join(work, "history"); // never created
   const logs: string[] = [];
   const rec = new LongRecorder({
-    getSidecar: () => null,
+    transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
     historyRootOverride: history,
     log: (m) => logs.push(m),
   });
@@ -403,7 +403,7 @@ test("U2c: a suspended purge deletes NOTHING, however old the folders are", () =
 
   const logs: string[] = [];
   const rec = new LongRecorder({
-    getSidecar: () => null,
+    transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
     historyRootOverride: history,
     historyPurgeSuspended: () => true,
     log: (m) => logs.push(m),
@@ -430,7 +430,7 @@ test("U2c: with the flag off, the purge still does its job (no regression)", () 
   fs.writeFileSync(path.join(keepDir, "note.md"), "recent");
 
   const rec = new LongRecorder({
-    getSidecar: () => null,
+    transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
     historyRootOverride: history,
     historyPurgeSuspended: () => false, // explicitly NOT suspended
   });

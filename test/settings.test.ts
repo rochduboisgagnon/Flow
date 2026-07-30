@@ -125,3 +125,27 @@ test("U7a: both statistics switches are literal booleans - junk falls back to th
   assert.equal(sanitizeSettings({ stats: "false" }).stats, true);
   assert.equal(sanitizeSettings({ stats: 0 }).stats, true);
 });
+
+// F1 (plan-standalone §7): the batch model. The whole upgrade story is that there
+// ISN'T one - a settings.json from any earlier version resolves to "share the
+// dictation engine", which is byte for byte the behaviour it already had.
+test("F1: a settings.json written before the two-model split shares the dictation engine", () => {
+  const upgraded = sanitizeSettings({ combo: ["CTRL", "WIN"], model: "ggml-large-v3-q5_0.bin" });
+  assert.equal(upgraded.batchModel, "", "\"\" = batch work runs on the dictation engine");
+  assert.equal(SETTINGS_DEFAULTS.batchModel, "");
+  // And `model` still means what it always meant: nobody's engine choice is
+  // silently reinterpreted as a batch-only choice.
+  assert.equal(upgraded.model, "ggml-large-v3-q5_0.bin");
+});
+
+test("F1: batchModel accepts a model filename or the empty string, and nothing else", () => {
+  assert.equal(sanitizeSettings({ batchModel: "ggml-large-v3-q5_0.bin" }).batchModel, "ggml-large-v3-q5_0.bin");
+  assert.equal(sanitizeSettings({ batchModel: "" }).batchModel, "");
+  // The safe direction is unambiguous here: anything unreadable means ONE engine,
+  // never "spawn a second whisper-server on a name nobody validated".
+  assert.equal(sanitizeSettings({ batchModel: "../../etc/passwd" }).batchModel, "");
+  assert.equal(sanitizeSettings({ batchModel: "C:\\models\\x.bin" }).batchModel, "");
+  assert.equal(sanitizeSettings({ batchModel: "model.exe" }).batchModel, "");
+  assert.equal(sanitizeSettings({ batchModel: 42 }).batchModel, "");
+  assert.equal(sanitizeSettings({ batchModel: null }).batchModel, "");
+});

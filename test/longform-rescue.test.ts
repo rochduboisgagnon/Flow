@@ -83,7 +83,7 @@ test("U4-1: an orphaned staging folder is filed into history at boot and becomes
 
   const logs: string[] = [];
   const rec = new LongRecorder({
-    getSidecar: () => null,
+    transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
     recentPathOverride: recent,
     stagingRootOverride: staging,
     historyRootOverride: history,
@@ -126,7 +126,7 @@ test("U4-1: the boot rescan is a silent no-op when staging is empty or absent", 
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-rescue-none-"));
   const logs: string[] = [];
   const rec = new LongRecorder({
-    getSidecar: () => null,
+    transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
     recentPathOverride: path.join(work, "recent.json"),
     stagingRootOverride: path.join(work, "staging"), // never created
     historyRootOverride: path.join(work, "history"),
@@ -151,7 +151,7 @@ test("U4-1: a recovered recording is never filed into a date the very next purge
   const orphan = orphanStagingFolder(staging, { title: "Very old meeting", startedMs: Date.now() - 200 * DAY_MS });
 
   const rec = new LongRecorder({
-    getSidecar: () => null,
+    transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
     recentPathOverride: recent,
     stagingRootOverride: staging,
     historyRootOverride: history,
@@ -195,7 +195,7 @@ test("U4-1: the rescue files even while the retention purge is suspended", () =>
   const history = path.join(work, "history");
   orphanStagingFolder(staging, { title: "Suspended-purge meeting", startedMs: Date.now() - 60_000 });
   const rec = new LongRecorder({
-    getSidecar: () => null,
+    transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
     recentPathOverride: path.join(work, "recent.json"),
     stagingRootOverride: staging,
     historyRootOverride: history,
@@ -226,7 +226,7 @@ test("U4-1: a boot rescue never demotes a capture the user finished later", () =
   orphanStagingFolder(staging, { title: "Older orphan", startedMs: Date.now() - 5 * DAY_MS });
 
   const rec = new LongRecorder({
-    getSidecar: () => null,
+    transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
     recentPathOverride: recent,
     stagingRootOverride: staging,
     historyRootOverride: history,
@@ -250,7 +250,7 @@ test("U4-1: quitting mid-recording files the meeting into history with its inter
     transcribe: () => new Promise<{ text: string; ms: number }>(() => {}),
   } as unknown as WhisperSidecar;
   const rec = new LongRecorder({
-    getSidecar: () => wedged,
+    transcribeSegment: (wav) => wedged.transcribe(wav),
     recentPathOverride: recent,
     stagingRootOverride: staging,
     historyRootOverride: history,
@@ -300,7 +300,7 @@ test("U4-1 + U4-2: a quit rescue honours keepAudio off, and drops the .wav only 
   const history = path.join(work, "history");
   const recent = path.join(work, "recent.json");
   const rec = new LongRecorder({
-    getSidecar: () => null,
+    transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
     recentPathOverride: recent,
     stagingRootOverride: staging,
     historyRootOverride: history,
@@ -323,7 +323,7 @@ test("U4-1 + U4-2: a quit rescue honours keepAudio off, and drops the .wav only 
 test("U4-1: rescueOnQuit does nothing when no recording is in flight", () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-rescue-idle-"));
   const rec = new LongRecorder({
-    getSidecar: () => null,
+    transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
     recentPathOverride: path.join(work, "recent.json"),
     stagingRootOverride: path.join(work, "staging"),
     historyRootOverride: path.join(work, "history"),
@@ -343,7 +343,7 @@ test("U4-1: a rescue that cannot write its destination destroys nothing and neve
 
   const logs: string[] = [];
   const rec = new LongRecorder({
-    getSidecar: () => null,
+    transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
     recentPathOverride: recent,
     stagingRootOverride: staging,
     historyRootOverride: history,
@@ -381,7 +381,7 @@ test("U4-1: a staging folder with no transcript is left exactly where it is", ()
   fs.writeFileSync(stray, Buffer.alloc(64));
   const logs: string[] = [];
   const rec = new LongRecorder({
-    getSidecar: () => null,
+    transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
     recentPathOverride: path.join(work, "recent.json"),
     stagingRootOverride: staging,
     historyRootOverride: history,

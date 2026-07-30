@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { WhisperSidecar } from "./asr/sidecar";
 import { dataDir } from "./settings";
 import { encodeWav } from "../shared/wav";
 import { analyzeSpeech } from "../shared/vad";
@@ -96,7 +95,21 @@ export interface LongStartOpts {
 // reuses it for UI_LONG_STATE without pulling src/main into the renderer build).
 
 export interface LongDeps {
-  getSidecar(): WhisperSidecar | null;
+  /** F1: transcribe ONE segment of this recording.
+   *
+   * Was `getSidecar(): WhisperSidecar | null` until F1 gave batch work its own
+   * model. Two things changed and both are deliberate:
+   *
+   *  - The recorder no longer knows what a WhisperSidecar is. It asks for a
+   *    segment to be transcribed and gets text back, which is the whole of what
+   *    it ever wanted; WHICH engine serves it is a decision that now has a
+   *    policy (shared/asrRole.ts) and a holder (main/asr/batchEngine.ts).
+   *  - `allowEmptyDemote: false` moved INSIDE the implementation. It used to be
+   *    passed here with a comment explaining that a meeting legitimately contains
+   *    music and applause, so an empty decode must not demote a healthy GPU. The
+   *    import pipeline passed it with the same comment for the same reason. One
+   *    fact, one place. */
+  transcribeSegment(wav: Uint8Array): Promise<{ text: string; ms: number }>;
   /** settings.summaryModel: the Ollama model used for meeting summaries.
    * "" (or absent) falls back to the first installed model. */
   summaryModel?(): string;
@@ -1754,11 +1767,12 @@ export class LongRecorder {
         try {
           const speech = analyzeSpeech(item.pcm);
           if (speech.voicedMs >= 250) {
-            const sc = this.deps.getSidecar();
-            if (!sc) throw new Error("speech engine not ready");
-            // Long-form auto-segments legitimately contain non-speech (music, applause);
-            // an empty decode must NOT demote a healthy GPU (only a hard failure does).
-            const { text } = await sc.transcribe(encodeWav(item.pcm), { allowEmptyDemote: false });
+            // F1: which engine serves this is the batch engine's decision, not
+            // the recorder's - and with the default settings it is the same warm
+            // dictation engine this line used to reach for directly. The
+            // "an empty decode must not demote a healthy GPU" rule moved with the
+            // call (see LongDeps.transcribeSegment).
+            const { text } = await this.deps.transcribeSegment(encodeWav(item.pcm));
             const clean = gateTranscript(text);
             if (clean) fs.appendFileSync(this.transcriptPath, transcriptLine(item.offsetMs, clean));
           }

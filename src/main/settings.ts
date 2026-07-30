@@ -6,6 +6,7 @@ import { DEFAULT_MODEL_FILE } from "./asr/modelStore";
 import { resolveDataDir } from "./migrate";
 import { isThemePref, type ThemePref } from "../shared/theme";
 import { isMicPrewarm, type MicPrewarm } from "../shared/micWarmth";
+import { BATCH_MODEL_SHARED } from "../shared/asrRole";
 
 // Flow settings live in the user's own data folder (~/.flow), OUTSIDE the
 // install directory (plan §8): an update or reinstall never touches them.
@@ -17,7 +18,18 @@ import { isMicPrewarm, type MicPrewarm } from "../shared/micWarmth";
 export interface FlowSettings {
   combo: string[]; // stored combo, e.g. ["CTRL","WIN"] (generic) or exact keys
   language: string; // "auto" or an ISO code ("fr", "en") to bias the model
-  model: string; // ggml model file name served from AGR Flow's model store
+  model: string; // ggml model file name served from AGR Flow's model store - the DICTATION engine's model
+  /** F1: the model BATCH work runs on - a meeting being recorded, an imported
+   * file. "" (the default) means "share the warm dictation engine", which is
+   * exactly what every settings.json written before this wave resolves to, so an
+   * upgrade changes nothing until the user picks a model on purpose.
+   *
+   * The key is deliberately NOT a rename of `model`: `model` stays the dictation
+   * engine's file, so a settings.json from any earlier version keeps meaning what
+   * it meant, and nobody's engine choice is silently reinterpreted. See
+   * shared/asrRole.ts for the policy and main/asr/batchEngine.ts for the reason a
+   * dictation can never pay for this setting. */
+  batchModel: string;
   micDeviceId: string; // "" = system default microphone
   sounds: boolean; // audible start/stop cues
   summaryModel: string; // Ollama model for meeting summaries; "" = first installed model
@@ -83,6 +95,10 @@ export const SETTINGS_DEFAULTS: FlowSettings = {
   combo: DEFAULT_COMBO,
   language: "fr", // v5 c1: force French (auto-detect is unreliable on 1-2 s clips, locked EN)
   model: DEFAULT_MODEL_FILE,
+  // F1: "" = batch work shares the warm dictation engine. The default is the
+  // no-second-process, no-second-download, no-extra-VRAM path, and it is the one
+  // an upgrade lands on.
+  batchModel: BATCH_MODEL_SHARED,
   micDeviceId: "",
   sounds: false, // v5 c5: no audible cues at all
   summaryModel: "", // "" = the first installed Ollama model
@@ -149,6 +165,14 @@ export function sanitizeSettings(raw: unknown): FlowSettings {
   }
   if (typeof r.model === "string" && /^[\w.-]+\.bin$/.test(r.model)) {
     out.model = r.model;
+  }
+  // F1: the SAME filename shape as `model` above, plus the empty string, which
+  // is the "share the dictation engine" value. Anything else falls back to the
+  // default, and the safe direction here is unambiguous: a malformed field can
+  // only ever mean "one engine", never "spawn a second whisper-server on a name
+  // nobody validated".
+  if (typeof r.batchModel === "string" && (r.batchModel === "" || /^[\w.-]+\.bin$/.test(r.batchModel))) {
+    out.batchModel = r.batchModel;
   }
   if (typeof r.micDeviceId === "string") out.micDeviceId = r.micDeviceId;
   // U2a: historyDir is gone (the recordings folder is fixed under dataDir()/history).

@@ -133,7 +133,7 @@ test("LongRecorder end to end with a mock engine (one document, audio kept)", as
     },
   } as unknown as WhisperSidecar;
   const rec = new LongRecorder({
-    getSidecar: () => mockSidecar,
+    transcribeSegment: (wav) => mockSidecar.transcribe(wav),
     recentPathOverride: recent,
     // C10: start() now runs a retention purge; keep it off the real ~/.agr-flow.
     historyRootOverride: path.join(work, "history"),
@@ -179,7 +179,7 @@ test("LongRecorder end to end with a mock engine (one document, audio kept)", as
 
 test("LongRecorder refuses a missing folder and double starts", () => {
   const rec = new LongRecorder({
-    getSidecar: () => null,
+    transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
     recentPathOverride: path.join(os.tmpdir(), "agrflow-long-none.json"),
     // C10: start() now runs a retention purge; keep it off the real ~/.agr-flow.
     historyRootOverride: path.join(os.tmpdir(), "agrflow-long-none-history"),
@@ -219,7 +219,7 @@ test("U4a: state().recent is cached briefly, not re-read from disk on every call
   const entryB: RecentEntry = { title: "B", startedIso: "", dir: work, docPath: docB, audioPath: "", durationMs: 2 };
   fs.writeFileSync(recent, JSON.stringify([entryA]));
 
-  const rec = new LongRecorder({ getSidecar: () => null, recentPathOverride: recent });
+  const rec = new LongRecorder({ transcribeSegment: () => Promise.reject(new Error("speech engine not ready")), recentPathOverride: recent });
   const first = rec.state().recent;
   assert.equal(first.length, 1);
   assert.equal(first[0].title, "A");
@@ -251,7 +251,7 @@ test("v6 c7 + C10: no dir -> stage, finalize files it into history, then save() 
     transcribe: () => Promise.resolve({ text: "Bonjour tout le monde.", ms: 5 }),
   } as unknown as WhisperSidecar;
   const rec = new LongRecorder({
-    getSidecar: () => mockSidecar,
+    transcribeSegment: (wav) => mockSidecar.transcribe(wav),
     recentPathOverride: recent,
     stagingRootOverride: staging,
     historyRootOverride: history,
@@ -313,7 +313,7 @@ test("v6 c7: save() never reuses an existing folder in the destination (uniqueDi
     JSON.stringify([{ title: "T", startedIso: "", dir: staging, docPath: doc, audioPath: "", durationMs: 0, staged: true }]),
   );
   const rec = new LongRecorder({
-    getSidecar: () => null,
+    transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
     recentPathOverride: recent,
     stagingRootOverride: staging,
   });
@@ -327,7 +327,7 @@ test("v6 c7: save() never reuses an existing folder in the destination (uniqueDi
 test("v6 c7: save() refuses a missing destination and an empty recent list", async () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-save2-"));
   const recent = path.join(work, "recent.json");
-  const rec = new LongRecorder({ getSidecar: () => null, recentPathOverride: recent });
+  const rec = new LongRecorder({ transcribeSegment: () => Promise.reject(new Error("speech engine not ready")), recentPathOverride: recent });
   assert.equal(((await rec.save(path.join(work, "nope"))) as { ok: boolean }).ok, false, "a missing dir is refused");
   fs.writeFileSync(recent, "[]");
   assert.equal(((await rec.save(work)) as { ok: boolean }).ok, false, "no finished recording is refused");
@@ -348,7 +348,7 @@ test("v6 c7: save() tolerates a phantom .wav (keepAudio on but the file was neve
     recent,
     JSON.stringify([{ title: "T", startedIso: "", dir: staging, docPath: doc, audioPath: phantomWav, durationMs: 0, staged: true }]),
   );
-  const rec = new LongRecorder({ getSidecar: () => null, recentPathOverride: recent, stagingRootOverride: staging });
+  const rec = new LongRecorder({ transcribeSegment: () => Promise.reject(new Error("speech engine not ready")), recentPathOverride: recent, stagingRootOverride: staging });
   const res = (await rec.save(dest)) as { ok: boolean; error?: string; docPath?: string; audioPath?: string };
   assert.equal(res.ok, true, res.error ?? "expected ok"); // the missing .wav must not fail the save
   assert.equal(res.audioPath, "", "a phantom .wav is dropped, not treated as saved");
@@ -367,7 +367,7 @@ test("v6 c7: save() with a vanished document refuses and leaves recent.json unto
   const doc = path.join(staging, "gone.md"); // referenced but not on disk
   const entry = { title: "T", startedIso: "", dir: staging, docPath: doc, audioPath: "", durationMs: 0, staged: true };
   fs.writeFileSync(recent, JSON.stringify([entry]));
-  const rec = new LongRecorder({ getSidecar: () => null, recentPathOverride: recent, stagingRootOverride: staging });
+  const rec = new LongRecorder({ transcribeSegment: () => Promise.reject(new Error("speech engine not ready")), recentPathOverride: recent, stagingRootOverride: staging });
   const res = (await rec.save(dest)) as { ok: boolean };
   assert.equal(res.ok, false, "a vanished source is refused, not half-committed");
   assert.deepEqual(JSON.parse(fs.readFileSync(recent, "utf8")), [entry], "recent.json is left exactly as it was");
@@ -389,7 +389,7 @@ test("2026-07-21: a failed save() rolls the capture folder back out of the desti
   fs.mkdirSync(badWav);
   const entry = { title: "T", startedIso: "", dir: staging, docPath: doc, audioPath: badWav, durationMs: 0, staged: true };
   fs.writeFileSync(recent, JSON.stringify([entry]));
-  const rec = new LongRecorder({ getSidecar: () => null, recentPathOverride: recent, stagingRootOverride: staging });
+  const rec = new LongRecorder({ transcribeSegment: () => Promise.reject(new Error("speech engine not ready")), recentPathOverride: recent, stagingRootOverride: staging });
   const res = (await rec.save(dest)) as { ok: boolean };
   assert.equal(res.ok, false, "the failed copy is reported");
   assert.deepEqual(fs.readdirSync(dest), [], "no capture folder (or partial copy) is left in the destination");
@@ -443,7 +443,7 @@ test("notesSplice: writes the notes, resolves the target from recent.json", asyn
     recent,
     JSON.stringify([{ title: "Kickoff", startedIso: "2026-07-21T09:00:00.000Z", dir: work, docPath: doc, audioPath: "", durationMs: 0 }]),
   );
-  const rec = new LongRecorder({ getSidecar: () => null, recentPathOverride: recent });
+  const rec = new LongRecorder({ transcribeSegment: () => Promise.reject(new Error("speech engine not ready")), recentPathOverride: recent });
   const res = rec.notesSplice(doc, "## Resume\n\nCourt.");
   assert.equal(res.ok, true, res.error ?? "expected ok");
   const out = fs.readFileSync(doc, "utf8");
@@ -463,7 +463,7 @@ test("notesSplice: a stale docPath (save moved the capture) answers movedTo inst
     recent,
     JSON.stringify([{ title: "Kickoff", startedIso: "2026-07-21T09:00:00.000Z", dir: work, docPath: newDoc, audioPath: "", durationMs: 0 }]),
   );
-  const rec = new LongRecorder({ getSidecar: () => null, recentPathOverride: recent });
+  const rec = new LongRecorder({ transcribeSegment: () => Promise.reject(new Error("speech engine not ready")), recentPathOverride: recent });
   const res = rec.notesSplice(path.join(work, "old-location.md"), "notes");
   assert.equal(res.ok, false);
   assert.equal(res.movedTo, newDoc, "the caller is pointed at the new location");
@@ -485,7 +485,7 @@ test("U4: the duration stays at what the recording reached, through finalizing a
     transcribe: () => new Promise<{ text: string; ms: number }>((r) => setTimeout(() => r({ text: "Bonjour.", ms: 5 }), 400)),
   } as unknown as WhisperSidecar;
   const rec = new LongRecorder({
-    getSidecar: () => slow,
+    transcribeSegment: (wav) => slow.transcribe(wav),
     recentPathOverride: path.join(work, "recent.json"),
     stagingRootOverride: staging,
     historyRootOverride: history,
@@ -533,7 +533,7 @@ test("U4: every write of recent.json made HERE drops the state() cache (save no 
     transcribe: () => Promise.resolve({ text: "Bonjour tout le monde.", ms: 5 }),
   } as unknown as WhisperSidecar;
   const rec = new LongRecorder({
-    getSidecar: () => mockSidecar,
+    transcribeSegment: (wav) => mockSidecar.transcribe(wav),
     recentPathOverride: path.join(work, "recent.json"),
     stagingRootOverride: staging,
     historyRootOverride: history,
@@ -576,7 +576,7 @@ test("U4: the boot rescan's own write is visible to state() immediately too", ()
     transcriptHeader("Orphan", new Date(Date.now() - 60_000).toISOString()) + "[00:00:00] Bonjour.\n\n",
   );
   const rec = new LongRecorder({
-    getSidecar: () => null,
+    transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
     recentPathOverride: path.join(work, "recent.json"),
     stagingRootOverride: staging,
     historyRootOverride: history,

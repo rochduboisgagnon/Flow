@@ -144,14 +144,64 @@ function TabAudio({ s, patch }: { s: UiStatePayload; patch: Patch }) {
   );
 }
 
+// F1: the wording of the two-model split, and it is written under one hard
+// constraint from this campaign - a sentence that describes engine behaviour must
+// name the code that implements it, and a number must have been measured.
+//
+// So: no WER figure and no latency figure appear here. Flow's own bench
+// (npm run bench:wer) has no French voice on the reference machine, which makes
+// every number it currently prints unusable for a claim (see the campaign
+// journal's rank-7 lesson). What IS said is what the code does, and each
+// sentence points at the function that does it:
+//
+//  - "batch work" means a recorded meeting and an imported file, which are the
+//    two callers of BatchEngine.transcribe (main/index.ts wires both).
+//  - "a dictation never waits for it to load" is main/asr/batchEngine.ts's module
+//    note, fact by fact, and test/batch-engine.test.ts asserts it by identity.
+//  - "two models in memory at once" is the cost that file states, in the same
+//    place, rather than leaving it to be discovered.
+const BATCH_MODEL_HELP =
+  "Which model transcribes a recorded meeting or an imported file. Everything else - every dictation - keeps using the model above. " +
+  "Why the split exists: a dictation is two seconds of audio whose whole value is that the text is there the instant you let go of the key, while a meeting is an hour nobody is waiting on. Sharing one model means one of those two jobs is always served badly. " +
+  "What it costs, plainly: while a meeting or an import is running, TWO models are loaded at the same time, which on the GPU means two allocations of video memory. Flow unloads the batch one after five idle minutes. If it cannot load at all - a GPU with no room left is the realistic reason - the job runs on the dictation model instead and this page says so; the job is never lost. " +
+  "What it never costs: a keypress. The dictation engine is a separate process that this setting never stops, swaps or reconfigures, so changing it here cannot make a dictation wait for a model to load.";
+
 function TabEngine({ s, patch }: { s: UiStatePayload; patch: Patch }) {
+  const batch = s.batchEngine;
+  const batchLabel = s.models.find((m) => m.file === batch.model)?.label ?? batch.model;
   return (
     <div className="rows">
-      <Row label="Speech model" help="Bigger models transcribe better and load slower. The model downloads once into Flow's own data folder; switching applies live.">
-        <select value={s.settings.model} onChange={(e) => void patch({ model: e.target.value })} aria-label="Speech model">
+      <Row label="Dictation model" help="The model behind the shortcut. Bigger models transcribe better and decode slower, and you wait for every millisecond of that on every dictation. It downloads once into Flow's own data folder; switching applies live.">
+        <select value={s.settings.model} onChange={(e) => void patch({ model: e.target.value })} aria-label="Dictation model">
           {s.models.map((m) => <option key={m.file} value={m.file}>{m.label} ({m.size})</option>)}
         </select>
       </Row>
+      <Row label="Meetings and imports" help={BATCH_MODEL_HELP}>
+        <select value={s.settings.batchModel} onChange={(e) => void patch({ batchModel: e.target.value })} aria-label="Model for meetings and imports">
+          <option value="">Same as the dictation model (default)</option>
+          {s.models.map((m) => <option key={m.file} value={m.file}>{m.label} ({m.size})</option>)}
+        </select>
+      </Row>
+      {/* F1: shown ONLY when a second model is actually configured, and it reads
+          the engine's own derived state (BatchEngine.state()) rather than
+          restating the setting - a row that said "loaded" because a dropdown said
+          so would be the exact class of false interface sentence this campaign
+          treats as blocking. */}
+      {batch.status === "loading" ? (
+        <Row label="Batch model" help={`Flow loads ${batchLabel} the first time a meeting or an import needs it, not now - so a machine that never records anything never pays for this setting.`}>
+          <span className="note-amber">Loads on demand</span>
+        </Row>
+      ) : null}
+      {batch.status === "ready" ? (
+        <Row label="Batch model" help={`${batchLabel} is loaded and serving meetings and imports. It is unloaded after five idle minutes. Your dictation model is loaded separately and was not touched.`}>
+          <span className="num">Loaded</span>
+        </Row>
+      ) : null}
+      {batch.status === "failed" ? (
+        <Row label="Batch model unavailable" help={`${batchLabel} could not be loaded: ${batch.message ?? "unknown error"}. Meetings and imports are running on the dictation model instead - nothing is lost, it is just not the model you picked. If the machine has a GPU, the usual cause is no video memory left for a second model: pick a smaller one here, or turn on Force CPU below.`}>
+          <span className="note-err">Using the dictation model</span>
+        </Row>
+      ) : null}
       {s.modelState.status === "downloading" ? (
         <Row label="Downloading model" help="Dictation keeps using the previous model until the new one is ready.">
           <span className="note-amber num">{s.modelState.pct ?? 0}%</span>

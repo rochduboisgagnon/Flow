@@ -12,6 +12,7 @@ import { Notes } from "./pages/Notes";
 import { Dictionary } from "./pages/Dictionary";
 import { Statistics } from "./pages/Statistics";
 import { Import } from "./pages/Import";
+import { Functions } from "./pages/Functions";
 
 // Flow main window shell (wave U1). State discipline unchanged since A1/A2:
 // the window renders ONE snapshot pushed by the engine (UiStatePayload),
@@ -25,14 +26,17 @@ import { Import } from "./pages/Import";
 // missing and the wave that builds it.
 // V4 D3: `import` left this list - the decode pipeline the note pointed at
 // (D1/D2) exists, so the page is the real thing now.
-const COMING: Partial<Record<Section, { title: string; blurb: string; missing: string; wave: string }>> = {
-  functions: {
-    title: "Functions",
-    blurb: "Say a trigger at the start of an utterance and Flow transforms everything after it.",
-    missing: "Needs the local AI wave first: transformations run on a local model that may not be installed.",
-    wave: "Planned as the voice-functions wave of the standalone plan (V5).",
-  },
-};
+//
+// V6 (blocking defect, found while auditing the rail against the code):
+// `functions` was still in this list AFTER V5 shipped its page. Every layer
+// existed - shared/functions.ts, main/functions.ts, the four ui:function-*
+// channels in uiBridge and preload, and pages/Functions.tsx itself - and the rail
+// button opened a placeholder claiming "Needs the local AI wave first". That is
+// both halves of what this campaign calls blocking at once: a dead control, and
+// an interface sentence that says something false about the engine. The list is
+// now EMPTY, which is the state it should stay in: a section that is not built
+// does not belong in the rail.
+const COMING: Partial<Record<Section, { title: string; blurb: string; missing: string; wave: string }>> = {};
 
 export function App() {
   const [s, setS] = useState<UiStatePayload | null>(null);
@@ -77,6 +81,7 @@ export function App() {
               {section === "notes" ? <Notes s={s} /> : null}
               {section === "stats" ? <Statistics s={s} patch={patch} /> : null}
               {section === "dictionary" ? <Dictionary /> : null}
+              {section === "functions" ? <Functions /> : null}
               {section === "snippets" ? <SnippetsPage /> : null}
               {section === "settings" ? <SettingsPage s={s} patch={patch} /> : null}
               {coming ? <Coming {...coming} /> : null}

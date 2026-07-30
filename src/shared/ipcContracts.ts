@@ -4,6 +4,7 @@
 import type { ThemePref, ResolvedTheme } from "./theme";
 import type { HookHealth } from "./hookWatchdog";
 import type { MicPrewarm } from "./micWarmth";
+import type { BatchEngineState } from "./asrRole";
 
 // main -> overlay
 export const CAPTURE_START = "capture:start";
@@ -165,6 +166,10 @@ export interface ModelChoice {
   label: string;
   size: string;
 }
+
+// F1: the batch engine's state, re-exported from the pure policy module so a page
+// needs one import line (same discipline as the hot-path and hook types below).
+export type { BatchEngineState, AsrRole } from "./asrRole";
 
 // ---- main window bridge (plan V1, A1/A2) ----
 // The main window drives the engine over invoke/handle channels. The handlers
@@ -345,6 +350,12 @@ export interface UiStatePayload {
   recording: boolean;
   backend: string; // active whisper-server binary basename, "" while selecting
   modelState: ModelStatePayload;
+  /** F1: what the SECOND (batch) engine is doing. Four scalars at most, derived
+   * fresh in main from the live settings and the live process, so it rides the
+   * 1 Hz push like modelState above rather than being pulled: Settings > Engine
+   * has to be able to say "loaded" or "could not load, batch work is running on
+   * the dictation engine" without the user opening another panel. */
+  batchEngine: BatchEngineState;
   /** Typed overlay states (audit: the cards must not sniff the status STRING). */
   paused: boolean; // tray pause in effect
   hookOk: boolean; // the low-level keyboard hook is armed RIGHT NOW
@@ -357,6 +368,9 @@ export interface UiStatePayload {
   settings: {
     language: string;
     model: string;
+    /** F1: the model BATCH work runs on; "" = share the warm dictation engine
+     * (the default). See shared/asrRole.ts. */
+    batchModel: string;
     micDeviceId: string;
     sounds: boolean;
     summaryModel: string;

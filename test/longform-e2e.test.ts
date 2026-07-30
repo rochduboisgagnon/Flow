@@ -57,7 +57,7 @@ test(
     const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-lt-"));
     const sc = new WhisperSidecar({ binaryPaths: BINS, modelPath: MODEL });
     const rec = new LongRecorder({
-      getSidecar: () => sc,
+      transcribeSegment: (wav) => sc.transcribe(wav),
       recentPathOverride: path.join(work, "recent.json"),
       // C10: start() now runs a retention purge; keep it off the real ~/.agr-flow.
       historyRootOverride: path.join(work, "history"),
