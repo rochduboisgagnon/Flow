@@ -25,10 +25,6 @@ import {
   UI_LIVE_NOTES_DELETE,
   UI_LIVE_NOTES_EDIT,
   UI_LIVE_NOTES_LIST,
-  UI_SNIPPET_LIST,
-  UI_SNIPPET_SAVE,
-  UI_SNIPPET_DELETE,
-  UI_SNIPPET_COPY,
   UI_DICT_LIST,
   UI_DICT_SAVE,
   UI_DICT_DELETE,
@@ -94,11 +90,7 @@ test("every ui:* invoke channel this bridge owns is registered through guarded()
     UI_GET_LOGIN_ITEM,
     UI_SET_LOGIN_ITEM,
     UI_CHECK_UPDATES,
-    UI_SNIPPET_LIST,
-    UI_SNIPPET_SAVE,
-    UI_SNIPPET_DELETE,
-    UI_SNIPPET_COPY,
-    // U6: ui:dict-save changes what every FUTURE dictation is transcribed and
+            // U6: ui:dict-save changes what every FUTURE dictation is transcribed and
     // rewritten into - a write with a longer reach than any snippet edit, and
     // reachable from the overlay's preload if it were ever left ungated.
     UI_DICT_LIST,
@@ -172,32 +164,20 @@ test("every ui:* invoke channel this bridge owns is registered through guarded()
 // electron and cannot be instantiated outside an Electron process.
 const INSERT_SRC = fs.readFileSync(path.join(__dirname, "..", "src", "main", "insert.ts"), "utf8");
 
-test("copySnippet disarms the pending clipboard restore BEFORE it writes the clipboard", () => {
-  const method = /private copySnippet\([\s\S]*?\n {2}\}/.exec(SRC);
-  assert.ok(method, "copySnippet must still exist as a method on the bridge");
-  const body = method[0];
 
-  const disarm = body.indexOf("cancelPendingRestore(");
-  const write = Math.min(
-    ...[body.indexOf("clipboard.write("), body.indexOf("clipboard.writeText(")].filter((i) => i >= 0),
-  );
-  assert.ok(disarm >= 0, "copySnippet must cancel the restore that may be in flight");
-  assert.ok(write >= 0, "copySnippet must still put the snippet on the clipboard");
-  assert.ok(
-    disarm < write,
-    "cancelling AFTER the write leaves a window where the armed timer can still clobber the copy",
-  );
-});
-
-test("cancelPendingRestore drops the pending value instead of writing it back", () => {
-  assert.match(INSERT_SRC, /export function cancelPendingRestore\(\)/);
-  const fn = /export function cancelPendingRestore\(\)[\s\S]*?\n\}/.exec(INSERT_SRC);
-  assert.ok(fn);
-  assert.ok(
-    !fn[0].includes("restoreClipboard("),
-    "restoring here would write the pre-dictation clipboard over the copy the user just asked for - the exact clobber this cancels",
-  );
-  assert.ok(fn[0].includes("clearTimeout("), "the armed timer has to actually be cleared");
+test("the clipboard restore has no CANCEL path any more, and that is deliberate", () => {
+  // cancelPendingRestore existed for one caller: copying a snippet inside the
+  // ~250 ms restore window, where the timer would overwrite the user's copy a
+  // quarter second later. Snippets are gone (2026-07-30), so nothing can put
+  // something on the clipboard on purpose between a dictation and its restore,
+  // and the rule it encoded has no case left to arbitrate.
+  //
+  // Asserted rather than simply deleted: an exported function with no caller is
+  // how a removed feature grows back, and this is the file that would notice.
+  assert.doesNotMatch(INSERT_SRC, /export function cancelPendingRestore/);
+  // What must NOT have gone with it: quitting still gives the clipboard back,
+  // which protects a real user from losing it forever to a dying process.
+  assert.match(INSERT_SRC, /export function flushPendingRestore\(\)/);
 });
 
 test("flushPendingRestore still RESTORES (quit) - the two paths must not be confused", () => {

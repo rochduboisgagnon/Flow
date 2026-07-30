@@ -6,7 +6,7 @@ import { Icon, IC } from "./components";
 // honestly instead of hiding. Three families: DO, LIBRARY, and one Settings.
 export type Section =
   | "home" | "record" | "import" | "notes" | "stats" | "diagnostics"
-  | "dictionary" | "snippets" | "settings";
+  | "dictionary" | "settings";
 
 const TOP: Array<[Section, string, { d: string; d2?: string }]> = [
   ["home", "Home", { d: IC.home }],
@@ -18,7 +18,6 @@ const TOP: Array<[Section, string, { d: string; d2?: string }]> = [
 ];
 const LIBRARY: Array<[Section, string, { d: string; d2?: string }]> = [
   ["dictionary", "Dictionary", { d: IC.dict }],
-  ["snippets", "Snippets", { d: IC.snip }],
 ];
 
 export function Rail({ section, go }: { section: Section; go: (s: Section) => void }) {

@@ -11,7 +11,7 @@ import { BatchEngine } from "./asr/batchEngine";
 // that silently read the wrong one would report on a file nobody uses.
 import { ensureModel, DEFAULT_MODEL_FILE, AVAILABLE_MODELS, modelPath as modelFilePath } from "./asr/modelStore";
 import { FocusProbe } from "./focus/probe";
-import { insertViaPaste, insertRichViaPaste, insertTyped, leaveOnClipboard, flushPendingRestore } from "./insert";
+import { insertViaPaste, insertTyped, leaveOnClipboard, flushPendingRestore } from "./insert";
 import { decideRoute } from "../shared/route";
 import { comboLabel } from "../shared/combo";
 import { loadSettings, saveSettings, sanitizeSettings, dataDir, type FlowSettings } from "./settings";
@@ -32,7 +32,6 @@ import { Redactor } from "./redact";
 import { StatsStore } from "./stats";
 import { countWords } from "../shared/wordCount";
 import { primeDictionary, dictationPrompt, applyDictionaryReplacements } from "./dictionary";
-import { applySnippetCue } from "./snippetCue";
 import type { LongStartResult, LongStopResult } from "../shared/longform";
 import { legacyHistoryInfo, type LegacyHistoryInfo } from "./legacyHistory";
 import { decideLaunchAtLogin } from "../shared/launchAtLogin";
@@ -1447,19 +1446,19 @@ function wireCapture() {
           hotpath.abandon(ms === 0 ? HOTPATH_ABANDON_REASON.noSpeech : HOTPATH_ABANDON_REASON.hallucinationGate);
           return;
         }
-        // A snippet cue, or plain dictation. 2026-07-30: this used to also be
-        // where a VOICE FUNCTION could rewrite the transcript through a model.
-        // That feature is gone at Roch's request, and with it the whole problem
-        // of telling a command apart from ordinary speech - which had cost two
-        // blocking review findings and still failed a human test.
+        // 2026-07-30: what you dictated is what gets inserted, full stop.
         //
-        // What remains cannot fail and cannot invent: a cue either matches the
-        // WHOLE utterance, in which case a block the user typed himself is
-        // inserted, or nothing happens and his own words land. It is also now
-        // synchronous, so the focus probe below is no longer racing seconds of
-        // model time during which the user may have left the window.
-        const out = applySnippetCue(text);
-        if (out.note) flowLog(out.note);
+        // Two features used to sit between these lines and the cursor. A VOICE
+        // FUNCTION could send the transcript to a model to be rewritten, and a
+        // SNIPPET CUE could swap the whole utterance for a stored block. Both
+        // are gone at Roch's request, and the path is better for it: there is no
+        // longer any question to answer between "the engine produced text" and
+        // "the text is inserted", so nothing here can fail, stall, or substitute.
+        //
+        // It is also synchronous now, which matters beyond tidiness: the focus
+        // probe below is no longer racing seconds of model time during which the
+        // user may well have moved to another window.
+        //
         // Probe the focus WHILE nothing else has stolen it, then route and act.
         const focus = (await probe?.probe()) ?? null;
         hotpath.mark("focusProbed");
@@ -1467,16 +1466,14 @@ function wireCapture() {
         hotpath.mark("routeDecided");
         if (route === "insert") {
           // "type" mode keystrokes the text (paste-hostile apps); default pastes.
-          // A rich snippet pastes as rich text where the target accepts it, and
-          // as its stored plain-text fallback everywhere else - keystrokes
-          // cannot carry formatting, so "type" mode always sends the plain one.
-          if (settings.insertMode === "type") await insertTyped(out.text);
-          else if (out.html !== undefined) await insertRichViaPaste(out.text, out.html);
-          else await insertViaPaste(out.text);
-        } else leaveOnClipboard(out.text);
-        // B1: textChars is a LENGTH, recorded after `out.text` has already done
+          // The rich-text branch went with snippets: a transcript is plain text,
+          // and there is nothing left on this path that could carry formatting.
+          if (settings.insertMode === "type") await insertTyped(text);
+          else await insertViaPaste(text);
+        } else leaveOnClipboard(text);
+        // B1: textChars is a LENGTH, recorded after the text has already done
         // its job - never the text itself (see hotpath.ts's zero-retention note).
-        hotpath.complete(route === "insert" ? "inserted" : "clipboarded", out.text.length);
+        hotpath.complete(route === "insert" ? "inserted" : "clipboarded", text.length);
         // U7b: the aggregated counters. This is the ONLY thing the statistics
         // feature ever learns about an utterance: a word COUNT, a duration, and
         // - only if the user turned attribution on - the application name the

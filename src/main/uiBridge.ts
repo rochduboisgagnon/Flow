@@ -1,4 +1,4 @@
-import { ipcMain, shell, app, clipboard } from "electron";
+import { ipcMain, shell, app } from "electron";
 import {
   UI_GET_STATE,
   UI_SET_SETTINGS,
@@ -18,10 +18,6 @@ import {
   UI_ASSIST_ASK,
   UI_ASSIST_KEEP,
   UI_ASSIST_DISMISS,
-  UI_SNIPPET_LIST,
-  UI_SNIPPET_SAVE,
-  UI_SNIPPET_DELETE,
-  UI_SNIPPET_COPY,
   UI_DICT_LIST,
   UI_DICT_SAVE,
   UI_DICT_DELETE,
@@ -47,7 +43,6 @@ import {
   type ImportStartResult,
   type UiStatePayload,
   type UpdateCheckResult,
-  type SnippetsResult,
   type DictResult,
   type LongStateSnapshot,
   type LongStartResult,
@@ -66,9 +61,7 @@ import {
 } from "../shared/ipcContracts";
 import { ASSIST_UNAVAILABLE } from "../shared/liveAssist";
 import type { MainWindow } from "./mainWindow";
-import { listSnippets, saveSnippet, deleteSnippet, getSnippet } from "./snippets";
 import { listDictionary, saveDictEntry, deleteDictEntry } from "./dictionary";
-import { cancelPendingRestore } from "./insert";
 import { decideLongStart } from "../shared/longStart";
 
 // The main window's bridge into the engine (plan V1, A2). One rule above all:
@@ -225,12 +218,6 @@ const REPO_URL = "https://github.com/rochduboisgagnon/Flow";
 // two can never diverge again.
 export const LOGIN_ARGS = ["--hidden"];
 
-// U3c: the fallback SnippetsResult for a request that never reaches the
-// store at all - refused by guarded() (wrong sender) or aimed at an id that
-// resolves to nothing. Shaped like every other SnippetsResult (ok/items/
-// error) so the page never has to special-case "no library" vs "empty
-// library".
-const SNIPPETS_UNAVAILABLE: SnippetsResult = { ok: false, items: [], error: "unavailable" };
 
 // U6: the same fallback discipline for the dictionary. Shaped like every real
 // DictResult so the page never has to special-case "refused" against "the
@@ -405,15 +392,6 @@ export class UiBridge {
       this.deps.checkUpdates(),
     );
 
-    // ---- snippets (U3b/U3c): the store owns persistence, this class only
-    // gates the sender and (for copy) writes the clipboard. Every channel
-    // answers with the WHOLE library (SnippetsResult) - see ipcContracts.ts's
-    // module note on why snippets are PULL-only and never in UiStatePayload.
-    this.guarded<[], SnippetsResult>(UI_SNIPPET_LIST, SNIPPETS_UNAVAILABLE, () => listSnippets());
-    this.guarded<[unknown], SnippetsResult>(UI_SNIPPET_SAVE, SNIPPETS_UNAVAILABLE, (input) => saveSnippet(input));
-    this.guarded<[unknown], SnippetsResult>(UI_SNIPPET_DELETE, SNIPPETS_UNAVAILABLE, (id) => deleteSnippet(id));
-    this.guarded<[unknown], SnippetsResult>(UI_SNIPPET_COPY, SNIPPETS_UNAVAILABLE, (id) => this.copySnippet(id));
-
     // ---- dictionary (U6a): exactly the snippets shape - the store owns
     // persistence AND the runtime caches (main/dictionary.ts), this class only
     // gates the sender. Every channel answers with the WHOLE dictionary, and
@@ -583,29 +561,6 @@ export class UiBridge {
     this.guarded<[unknown], AssistSnapshot>(UI_ASSIST_DISMISS, ASSIST_UNAVAILABLE, (id) =>
       this.deps.assistDismiss(typeof id === "string" ? id : ""),
     );
-  }
-
-  /** U3c: copy is not paste. No Ctrl+V, no clipboard snapshot/restore dance -
-   * insertRichViaPaste (src/main/insert.ts) exists for LANDING dictation at
-   * the cursor and is deliberately NOT reused here; this only has to put the
-   * snippet on the clipboard for the user's own next Ctrl+V, same as any
-   * ordinary copy. */
-  private copySnippet(rawId: unknown): SnippetsResult {
-    const found = getSnippet(rawId);
-    const current = listSnippets();
-    if (!found) return { ...current, ok: false, error: "snippet not found" };
-    // U3g (review, major): "no restore dance" was not the same as "immune to
-    // one". A dictation arms a ~250 ms clipboard restore, and copying a snippet
-    // inside that window used to be undone by it a quarter second later - the
-    // user's copy silently replaced by their pre-dictation clipboard. Disarm it
-    // FIRST, before the write, so no timer can be sitting between our write and
-    // the user's Ctrl+V. This is the one place in the app where the user
-    // explicitly chose what belongs on their clipboard, and that choice is both
-    // more recent and more intentional than the restore it cancels.
-    if (cancelPendingRestore()) this.deps.log?.("[snippets] copy cancelled a pending clipboard restore");
-    if (found.format === "html" && found.html !== undefined) clipboard.write({ text: found.text, html: found.html });
-    else clipboard.writeText(found.text);
-    return current;
   }
 
   /** U0: pushes a snapshot immediately instead of waiting for the 1 Hz timer.

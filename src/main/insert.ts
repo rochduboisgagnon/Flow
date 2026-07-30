@@ -141,22 +141,6 @@ export async function insertViaPaste(text: string): Promise<void> {
   armRestore(prior);
 }
 
-/**
- * Rich-text sibling of insertViaPaste: pastes text + HTML in one go.
- *
- * Deliberately a SEPARATE ENTRY POINT. The dictation path (index.ts wireCapture
- * -> decideRoute -> insertViaPaste) is the most-reviewed code in the app and it
- * has no rich content to insert; adding a branch there would be a new failure
- * mode on the hot path for zero benefit. Callers that genuinely have HTML call
- * this instead. Same paste keystroke, same single-restore discipline, so a mix
- * of rich and plain insertions inside one burst still gives back one prior.
- */
-export async function insertRichViaPaste(text: string, html: string): Promise<void> {
-  const prior = takePrior();
-  clipboard.write({ text, html });
-  await pasteKeystroke();
-  armRestore(prior);
-}
 
 /**
  * Give the clipboard back NOW instead of losing it (before-quit).
@@ -167,6 +151,13 @@ export async function insertRichViaPaste(text: string, html: string): Promise<vo
  * slightly early is the far smaller cost - the paste keystroke is already in
  * the OS input queue by then.
  */
+// 2026-07-30: `cancelPendingRestore` used to live beside this one. It existed
+// for ONE caller - copying a snippet inside the ~250 ms restore window, where
+// the timer would overwrite the user's copy a quarter second later. Snippets are
+// gone, so nothing can put something on the clipboard on purpose between a
+// dictation and its restore any more, and the rule it encoded has no case left
+// to arbitrate. Deleted rather than kept: an exported function with no caller is
+// how a removed feature quietly grows back.
 export function flushPendingRestore(): void {
   if (!pending) return;
   const { prior, timer } = pending;
@@ -175,32 +166,6 @@ export function flushPendingRestore(): void {
   if (snapshotIsRestorable(describeClip(prior))) restoreClipboard(prior);
 }
 
-/**
- * Drop a restore still in flight WITHOUT writing anything back.
- *
- * U3g (review, major): the restore timer is armed for ~250 ms after a
- * dictation, and it does not know that the user may have put something on the
- * clipboard IN THE MEANTIME on purpose. Clicking "Copy to clipboard" on a
- * snippet right after dictating (a completely ordinary sequence - say a
- * sentence, then grab your signature) wrote the snippet, then watched the timer
- * overwrite it a quarter second later with the pre-dictation clipboard. The
- * copy vanished under the user's fingers, and the app looked broken for a
- * reason nobody could see.
- *
- * The rule this encodes: an EXPLICIT user copy outranks the restore. The
- * restore exists to undo a side effect the user never asked for; the copy is
- * the thing they did ask for, and it is more recent. So the pending value is
- * simply dropped - not restored early (flushPendingRestore's job, for quit),
- * because writing it would be the very clobbering we are avoiding.
- *
- * Returns whether a restore was actually cancelled, so a caller can log it.
- */
-export function cancelPendingRestore(): boolean {
-  if (!pending) return false;
-  clearTimeout(pending.timer);
-  pending = null;
-  return true;
-}
 
 /** The "no editable field" path: just leave the text on the clipboard. */
 export function leaveOnClipboard(text: string): void {

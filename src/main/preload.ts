@@ -46,10 +46,6 @@ import {
   UI_ASSIST_ASK,
   UI_ASSIST_KEEP,
   UI_ASSIST_DISMISS,
-  UI_SNIPPET_LIST,
-  UI_SNIPPET_SAVE,
-  UI_SNIPPET_DELETE,
-  UI_SNIPPET_COPY,
   UI_DICT_LIST,
   UI_DICT_SAVE,
   UI_DICT_DELETE,
@@ -82,8 +78,6 @@ import {
   type ImportStartResult,
   type UiStatePayload,
   type UpdateCheckResult,
-  type SnippetInput,
-  type SnippetsResult,
   type DictInput,
   type DictResult,
   type UiLongStartRequest,
@@ -213,14 +207,6 @@ const ui = {
   getLoginItem: (): Promise<boolean> => ipcRenderer.invoke(UI_GET_LOGIN_ITEM),
   setLoginItem: (on: boolean): Promise<boolean> => ipcRenderer.invoke(UI_SET_LOGIN_ITEM, on),
   checkUpdates: (): Promise<UpdateCheckResult> => ipcRenderer.invoke(UI_CHECK_UPDATES),
-  // ---- snippets (U3): PULL-only, always the WHOLE library back (see
-  // ipcContracts.ts's module note) - snippetDelete and snippetCopy included,
-  // so the page can replace its list with whatever comes back and never be
-  // stale after a write it did not itself make.
-  snippetList: (): Promise<SnippetsResult> => ipcRenderer.invoke(UI_SNIPPET_LIST),
-  snippetSave: (input: SnippetInput): Promise<SnippetsResult> => ipcRenderer.invoke(UI_SNIPPET_SAVE, input),
-  snippetDelete: (id: string): Promise<SnippetsResult> => ipcRenderer.invoke(UI_SNIPPET_DELETE, id),
-  snippetCopy: (id: string): Promise<SnippetsResult> => ipcRenderer.invoke(UI_SNIPPET_COPY, id),
   // ---- dictionary (U6): PULL-only, and all three answer with the WHOLE
   // dictionary - including dictDelete - so the page replaces its list with what
   // comes back rather than mutating its own copy and drifting from disk.
@@ -233,7 +219,7 @@ const ui = {
   dictSave: (input: DictInput): Promise<DictResult> => ipcRenderer.invoke(UI_DICT_SAVE, input),
   dictDelete: (id: string): Promise<DictResult> => ipcRenderer.invoke(UI_DICT_DELETE, id),
   // ---- long-form recorder (U4a): IPC surface only, no page yet. PULL-only
-  // like snippets/state above - the page will poll longTranscript at 1 Hz
+  // like state above - the page will poll longTranscript at 1 Hz
   // rather than have the engine push a growing document every second.
   longState: (): Promise<LongStateSnapshot> => ipcRenderer.invoke(UI_LONG_STATE),
   longStart: (opts: UiLongStartRequest): Promise<LongStartResult> => ipcRenderer.invoke(UI_LONG_START, opts),
@@ -293,7 +279,7 @@ const ui = {
     ipcRenderer.on(UI_STATE_PUSH, handler);
     return () => ipcRenderer.removeListener(UI_STATE_PUSH, handler);
   },
-  // ---- activation hot-path diagnostics (V2, B1): PULL, like snippets above -
+  // ---- activation hot-path diagnostics (V2, B1): PULL -
   // the Diagnostics page polls this on its own schedule rather than riding
   // the 1 Hz UiStatePayload push (see ipcContracts.ts's module note).
   hotpathSnapshot: (): Promise<HotpathSnapshot | null> => ipcRenderer.invoke(UI_HOTPATH_SNAPSHOT),

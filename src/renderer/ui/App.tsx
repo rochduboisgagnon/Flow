@@ -6,7 +6,6 @@ import { Coming } from "./components";
 import { Home } from "./pages/Home";
 import { Diagnostics } from "./pages/Diagnostics";
 import { SettingsPage } from "./pages/Settings";
-import { SnippetsPage } from "./pages/Snippets";
 import { Record } from "./pages/Record";
 import { Notes } from "./pages/Notes";
 import { Dictionary } from "./pages/Dictionary";
@@ -31,10 +30,11 @@ import { Import } from "./pages/Import";
 // what this campaign calls blocking at once - a dead control, and an interface
 // sentence that says something false about the engine.
 //
-// 2026-07-30: `functions` is gone from the rail entirely, along with the voice
-// functions feature itself, at Roch's request. Not hidden, not disabled -
-// removed, down to the shared module and the four IPC channels. Snippet cues,
-// which shared the same entry point on the dictation path, are untouched.
+// 2026-07-30, in two passes and both at Roch's request: `functions` (voice
+// commands) and then `snippets` were removed from the rail AND from the app.
+// Not hidden, not disabled - deleted, down to their shared modules, their
+// stores and their IPC channels. What is left on the dictation path is the
+// shortest thing it has ever been: what you said is what gets inserted.
 const COMING: Partial<Record<Section, { title: string; blurb: string; missing: string; wave: string }>> = {};
 
 export function App() {
@@ -80,7 +80,6 @@ export function App() {
               {section === "notes" ? <Notes s={s} /> : null}
               {section === "stats" ? <Statistics s={s} patch={patch} /> : null}
               {section === "dictionary" ? <Dictionary /> : null}
-              {section === "snippets" ? <SnippetsPage /> : null}
               {section === "settings" ? <SettingsPage s={s} patch={patch} /> : null}
               {coming ? <Coming {...coming} /> : null}
             </section>
