@@ -132,7 +132,7 @@ export function Statistics({ s, patch }: {
                   </p>
                   <div style={{ marginTop: 12 }}>
                     <button className="btn" onClick={() => void setSetting({ statsPerApp: true })}>
-                      Start recording it
+                      Start recording app names
                     </button>
                   </div>
                 </>
@@ -160,9 +160,11 @@ export function Statistics({ s, patch }: {
 
           <div className="stats-foot">
             <p className="sub" style={{ margin: 0, maxWidth: "62ch" }}>
-              One line per day, nothing per dictation, and days older than twelve months are dropped
-              as they age out. Turning counting off erases everything recorded so far, the same way
-              turning application names off erases the names.
+              <b>Two switches, two different things.</b> Counting words is what fills the tiles
+              above; recording app names is what fills &ldquo;Where you dictate&rdquo;, and it is off
+              until you ask for it. Stopping one does not stop the other. One line per day, nothing
+              per dictation, and days older than twelve months are dropped as they age out. Either
+              switch erases what it had already recorded, rather than merely stopping.
               {data.perApp ? " Application names are being recorded right now." : ""}
               {confirmStop ? (
                 <>
@@ -186,7 +188,7 @@ export function Statistics({ s, patch }: {
                   <button className="btn ghost" onClick={() => setConfirmStop(false)}>Cancel</button>
                 </>
               ) : (
-                <button className="btn ghost" onClick={() => setConfirmStop(true)}>Stop counting</button>
+                <button className="btn ghost" onClick={() => setConfirmStop(true)}>Stop counting words</button>
               )}
               {confirmClear ? (
                 <>

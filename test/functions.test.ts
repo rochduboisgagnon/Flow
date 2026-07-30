@@ -246,3 +246,47 @@ test("REVIEW: the colon exemption does NOT reopen the holes it was added beside"
   assert.equal(midSentence.match, null);
   assert.equal(midSentence.reason, "no-trigger-at-head");
 });
+
+// ---------------------------------------------------------------------------
+// 2026-07-30. The human test that found what 1010 unit tests could not.
+//
+// Roch dictated "Resume ceci : le rapport trimestriel montre une hausse des
+// ventes." - the exact phrase the previous fix had been written to allow. What
+// the engine transcribed was "Resume ceci. Le rapport trimestriel montre une
+// hausse des ventes.": a FULL STOP, not a colon.
+//
+// So the rule keyed on the colon was unreachable through a microphone. The
+// feature looked repaired and was dead, and every test in this file agreed with
+// it, because every test fed it a colon by hand. A unit test cannot discover
+// what a speech model actually writes; only speaking into it can.
+//
+// The lesson is bigger than this gate: when a rule keys on PUNCTUATION, the
+// tests must use punctuation the transcriber really produces.
+// ---------------------------------------------------------------------------
+
+test("HUMAN TEST: the sentence as the ENGINE transcribed it fires", () => {
+  const r = detectCommand("Resume ceci. Le rapport trimestriel montre une hausse des ventes.", compiled);
+  assert.ok(r.match, `this is what a microphone produces, and it must work; got reason=${r.reason}`);
+  assert.match(r.match.payload, /rapport trimestriel/);
+});
+
+test("the colon still works - the fix widened the rule, it did not move it", () => {
+  const r = detectCommand("Resume ceci: le rapport trimestriel montre une hausse des ventes.", compiled);
+  assert.ok(r.match);
+});
+
+test("every sentence-ending mark counts, because each one means the speaker paused", () => {
+  for (const mark of [".", "!", "?"]) {
+    const r = detectCommand(`Resume ceci${mark} le rapport trimestriel montre une hausse des ventes.`, compiled);
+    assert.ok(r.match, `${mark} is whisper writing down a pause it heard`);
+  }
+});
+
+test("and the wider mark does NOT reopen what the continuation list closed", () => {
+  // This is the pairing that matters: "Resume ca en trois lignes." ends in a
+  // full stop too. If the punctuation alone were enough, the blocking defect
+  // would be back. It is refused by gate 4b, on "en", exactly as before.
+  assert.equal(refusedPastGateOne("Resume ca en trois lignes."), "payload-continues-the-sentence");
+  assert.equal(refusedPastGateOne("Corrige ca dans la prochaine version."), "payload-continues-the-sentence");
+  assert.equal(refusedPastGateOne("Traduis ca en anglais, s'il te plait."), "payload-continues-the-sentence");
+});

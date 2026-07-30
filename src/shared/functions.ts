@@ -503,7 +503,24 @@ export function detectCommand(text: string, functions: readonly CompiledFunction
   // one where it heard that shape. So a colon in the gap means gate 4b's
   // continuation check has nothing left to protect against, and is skipped.
   // Everything else in gate 4 (the floors, the ceiling) still applies.
-  const explicitObject = gap.includes(":");
+  //
+  // 2026-07-30, corrected by a HUMAN TEST that the unit tests could not have
+  // caught. Dictating "Resume ceci : le rapport trimestriel..." produced the
+  // transcript "Resume ceci. Le rapport trimestriel..." - whisper writes a FULL
+  // STOP where a speaker pauses, and rarely writes a colon at all. The rule
+  // above was therefore unreachable in practice: the feature looked repaired
+  // and was dead, because every test fed it a colon that a microphone never
+  // produces.
+  //
+  // Sentence-ending punctuation carries the same meaning here, and for the same
+  // reason: whisper only writes it where it HEARD a break. That is the acoustic
+  // event this gate is trying to detect - the pause is the evidence, and which
+  // glyph the model chose to spell it with is not.
+  //
+  // It does not reopen what the wider continuation list closed: "Resume ca en
+  // trois lignes." still ends in a full stop AND still starts its payload on
+  // "en", so gate 4b still refuses it. Both are asserted in the tests.
+  const explicitObject = [...gap].some((c) => c === ":" || c === "." || c === "!" || c === "?");
 
   // Gate 4b: a payload that is content.
   const payloadTokens = tokens.length - best.hit.next;
