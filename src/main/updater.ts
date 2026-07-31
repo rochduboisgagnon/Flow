@@ -105,6 +105,17 @@ export class FlowUpdater {
     // exactly the kind of surprise this app cannot afford.
     autoUpdater.autoDownload = true; // fetch in the background; installing is the guarded part
     autoUpdater.autoInstallOnAppQuit = true; // the natural swap: user quits, next launch is new
+    // 2026-07-31, security pass: the same "explicit, not inherited" rule as the
+    // two above, applied to the one default that is a SECURITY property rather
+    // than a strategy. A downgrade is how an attacker who can publish gets a
+    // machine back onto a version whose hole is already patched - the update
+    // channel used in reverse. The library defaults this to false today; that is
+    // exactly why it is written down, because a default nobody states is a
+    // default nobody notices changing.
+    autoUpdater.allowDowngrade = false;
+    // Pre-releases are not a channel this app publishes, and accepting one would
+    // widen what a compromised release page can push onto a machine.
+    autoUpdater.allowPrerelease = false;
 
     autoUpdater.logger = {
       info: (m?: unknown) => this.deps.log(`[updater] ${String(m)}`),

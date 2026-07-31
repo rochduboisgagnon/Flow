@@ -11,6 +11,22 @@ on:
 
 permissions:
   contents: write # electron-builder creates the release and uploads the assets
+  # 2026-07-31, security pass. Build provenance: GitHub signs a statement saying
+  # WHICH workflow, at WHICH commit, produced these exact bytes. Both are needed
+  # for it - a short-lived OIDC identity to sign with, and the right to store the
+  # attestation - and neither grants anything else.
+  #
+  # What it buys, precisely, because overclaiming here would be worse than not
+  # doing it: an installer swapped onto the release page by hand, outside this
+  # workflow, no longer verifies. Anyone can check with
+  # `gh attestation verify Flow-Setup-x.y.z.exe --repo rochduboisgagnon/Flow`.
+  #
+  # What it does NOT buy: someone who can push a tag still gets a genuine,
+  # attested build of whatever they pushed. Provenance proves the OVEN, never
+  # the recipe. Only branch protection and code signing address that, and the
+  # second one cannot be bought with code.
+  id-token: write
+  attestations: write
 
 jobs:
   release:
@@ -118,6 +134,16 @@ jobs:
           grep -q "whisper-server-win32-x64-cpu.exe" ziplist.txt || { echo "MISSING cpu whisper-server"; exit 1; }
           test -f dist-build/latest.yml || { echo "MISSING latest.yml (updater feed manifest)"; exit 1; }
           echo "artifact carries the hook, both speech backends, and the feed manifest"
+
+      # Attested BEFORE publishing, deliberately: the bytes that get signed are
+      # the ones just inspected above, and nothing between here and the upload
+      # can substitute them without the attestation failing.
+      - name: Attest what was built
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist-build/Flow*Setup*.exe
+            dist-build/Flow-*-win.zip
 
       # gh release create publishes a NON-DRAFT release in one step (a draft
       # would be invisible to electron-updater - review A10). Exactly the four
