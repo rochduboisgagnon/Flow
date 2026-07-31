@@ -1,6 +1,6 @@
 {
   "name": "flow",
-  "version": "1.17.0",
+  "version": "1.17.1",
   "description": "Local, on-device voice dictation for any app. Hold a key, speak, release: the text lands at your cursor. Nothing ever leaves your machine, nothing is ever stored.",
   "license": "MIT",
   "author": "AGR Labs",
