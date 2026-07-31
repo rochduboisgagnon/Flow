@@ -22,11 +22,9 @@ import { LiveAssistPanel } from "../LiveAssist";
 
 const POLL_MS = 1000;
 
-type Source = "mic" | "system" | "both";
-
 export function Record({ s }: { s: UiStatePayload }) {
   const [snap, setSnap] = useState<LongStateSnapshot | null>(null);
-  const [source, setSource] = useState<Source>("both");
+  // The capture is always "both": see the note where the selector used to be.
   const [keepAudio, setKeepAudio] = useState(true);
   const [title, setTitle] = useState("");
   const [transcript, setTranscript] = useState("");
@@ -152,20 +150,12 @@ export function Record({ s }: { s: UiStatePayload }) {
   // audio into a long recording at all.
   const nativeReady = s.canLoopback;
 
-  // Review U4c: "System audio" (the PC's sound WITHOUT the microphone) is
-  // refused by the engine unconditionally, because the capture window asks for
-  // the microphone whatever we do - so recording "system only" would silently
-  // record the mic too. The engine is right to refuse; the page was wrong to
-  // offer the choice as if it worked. It is now visibly unavailable, with the
-  // reason, instead of a button that always fails. The day the capture window
-  // can drop the mic, this constant goes away with it.
-  const SYSTEM_ONLY_UNAVAILABLE = "Recording the PC's sound without your microphone is not possible yet: the capture always includes the mic.";
 
   async function start() {
     setBusy(true);
     setError(null);
     try {
-      const r = await window.flowui.longStart({ source, title: title.trim() || undefined, keepAudio });
+      const r = await window.flowui.longStart({ source: "both", title: title.trim() || undefined, keepAudio });
       if (!r.ok) setError(r.error ?? "Flow could not start the recording.");
       // No transcript reset here: the tick below sees a new startedIso and does
       // it. ONE mechanism, which is the point - this page's own start() being
@@ -235,30 +225,12 @@ export function Record({ s }: { s: UiStatePayload }) {
 
       <div className="rec-wrap">
         <div className="rec-side">
-          <div className="card">
-            <span className="lbl">Source</span>
-            <div className="seg" style={{ marginTop: 9 }} role="group" aria-label="Audio source">
-              <SourceButton id="mic" label="Microphone" cur={source} set={setSource} disabled={active || !nativeReady} />
-              <SourceButton
-                id="system"
-                label="System audio"
-                cur={source}
-                set={setSource}
-                disabled
-                title={SYSTEM_ONLY_UNAVAILABLE}
-              />
-              <SourceButton id="both" label="Both" cur={source} set={setSource} disabled={active || !nativeReady} />
-            </div>
-            <p className="sub" style={{ margin: "9px 0 0" }}>
-              {!nativeReady
-                ? "Recording the PC's own audio needs Windows. On this system Flow cannot capture it, so long recordings are unavailable."
-                : "Both mixes what the PC plays with your microphone. No bot joins the call."}
-            </p>
-            {nativeReady ? (
-              <p className="sub" style={{ margin: "6px 0 0", fontSize: 12.4 }}>{SYSTEM_ONLY_UNAVAILABLE}</p>
-            ) : null}
-          </div>
-
+          {/* 2026-07-30: the SOURCE selector is gone, asked for directly. It
+              offered Microphone / System audio / Both, with "System audio"
+              permanently disabled because the capture always includes the mic -
+              so the real choice was between "mic only" and "everything", and
+              nobody wants a meeting recorded without the other half of it.
+              Flow now captures the PC's sound AND your microphone, always. */}
           <div className="card">
             <span className="lbl">This recording</span>
             <div style={{ marginTop: 9, display: "flex", flexDirection: "column", gap: 10 }}>
@@ -522,28 +494,6 @@ function LiveNotesPanel(props: {
         </p>
       ) : null}
     </div>
-  );
-}
-
-function SourceButton({ id, label, cur, set, disabled, title }: {
-  id: Source;
-  label: string;
-  cur: Source;
-  set: (s: Source) => void;
-  disabled: boolean;
-  title?: string;
-}) {
-  return (
-    <button
-      className={cur === id ? "on" : ""}
-      disabled={disabled}
-      title={title}
-      aria-pressed={cur === id}
-      aria-disabled={disabled || undefined}
-      onClick={() => set(id)}
-    >
-      {label}
-    </button>
   );
 }
 

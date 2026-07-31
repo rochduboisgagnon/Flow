@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { LongRecorder, historyRoot, historyRootFor, listHistory, resolveHistoryEntry, readHistoryDoc } from "../src/main/longform";
+import { LongRecorder, historyRoot, historyRootFor, listHistory, deleteHistoryEntry, resolveHistoryEntry, readHistoryDoc } from "../src/main/longform";
 import { dataDir, sanitizeSettings } from "../src/main/settings";
 import { resolveDataDir, runMigration, DATA_DIR_NEW } from "../src/main/migrate";
 import type { WhisperSidecar } from "../src/main/asr/sidecar";
@@ -765,4 +765,74 @@ test("U5a: readHistoryDoc caps an oversized document rather than reading it whol
   assert.equal(doc!.text.length, 5 * 1024 * 1024, "capped at ~5 MB");
 
   fs.rmSync(work, { recursive: true, force: true });
+});
+
+
+// ---------------------------------------------------------------------------
+// 2026-07-30: deleting a capture. Flow's first invariant is that it never
+// deletes a recording it was not managing, and a delete-by-id is precisely
+// where that could go wrong - so these tests are about what it REFUSES.
+// ---------------------------------------------------------------------------
+
+function seedCapture(root: string, date: string, title: string): string {
+  // listHistory only reads a root that carries the marker file - the guard that
+  // stops it walking a folder Flow does not own.
+  fs.mkdirSync(root, { recursive: true });
+  fs.writeFileSync(path.join(root, ".agr-flow-history"), "", "utf8");
+  const dir = path.join(root, date, title);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, title + ".md"), "# " + title + "\n\n[00:00:01] hello\n", "utf8");
+  fs.writeFileSync(path.join(dir, "audio.wav"), "not really audio", "utf8");
+  return dir;
+}
+
+test("deleting a capture removes its folder and nothing beside it", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "flow-del-"));
+  const gone = seedCapture(root, "2026-07-30", "Weekly sync");
+  const kept = seedCapture(root, "2026-07-30", "Client call");
+  const id = listHistory(root).find((i) => i.title === "Weekly sync")!.id;
+
+  const r = deleteHistoryEntry(id, root);
+  assert.equal(r.ok, true);
+  assert.equal(fs.existsSync(gone), false, "the capture is gone, audio included");
+  assert.equal(fs.existsSync(kept), true, "and its neighbour is untouched");
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("a forged id is REFUSED, and refusing says so instead of failing silently", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "flow-del-"));
+  seedCapture(root, "2026-07-30", "Weekly sync");
+  for (const bad of ["", "not-base64", Buffer.from("../../etc", "utf8").toString("base64url")]) {
+    const r = deleteHistoryEntry(bad, root);
+    assert.equal(r.ok, false, `refused: ${JSON.stringify(bad)}`);
+    assert.ok(r.error && r.error.length > 0, "and a user-readable reason, never a silent no-op");
+  }
+  assert.equal(listHistory(root).length, 1, "nothing was removed by any of them");
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("an id that resolves OUTSIDE the recordings folder is refused by the second guard", () => {
+  // The roundtrip check in resolveHistoryEntry already stops this today. The
+  // containment check exists for the day it does not: the failure mode here is
+  // deleting a folder that belongs to someone else, so one guard is not enough.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "flow-del-"));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "flow-other-"));
+  fs.writeFileSync(path.join(outside, "precious.txt"), "someone else's file", "utf8");
+  const id = Buffer.from("../../" + path.basename(outside) + "/x", "utf8").toString("base64url");
+
+  const r = deleteHistoryEntry(id, root);
+  assert.equal(r.ok, false);
+  assert.equal(fs.existsSync(path.join(outside, "precious.txt")), true, "untouched");
+  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(outside, { recursive: true, force: true });
+});
+
+test("deleting one that is already gone reports it rather than pretending it worked", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "flow-del-"));
+  seedCapture(root, "2026-07-30", "Weekly sync");
+  const id = listHistory(root)[0].id;
+  assert.equal(deleteHistoryEntry(id, root).ok, true);
+  const second = deleteHistoryEntry(id, root);
+  assert.equal(second.ok, false, "a user clicking twice must not be told the second one worked");
+  fs.rmSync(root, { recursive: true, force: true });
 });

@@ -36,6 +36,7 @@ import {
   UI_LONG_MARK,
   UI_LONG_TRANSCRIPT,
   UI_HISTORY_LIST,
+  UI_HISTORY_DELETE,
   UI_HISTORY_DOC,
   UI_DOWNLOAD_DOC,
   UI_DOWNLOAD_AUDIO,
@@ -104,6 +105,11 @@ test("every ui:* invoke channel this bridge owns is registered through guarded()
     UI_LONG_MARK,
     UI_LONG_TRANSCRIPT,
     UI_HISTORY_LIST,
+    // 2026-07-30: ui:history-delete removes a meeting recording - transcript,
+    // notes and audio - and is the most destructive channel this bridge owns.
+    // It is deliberately absent from LocalApi: a phone on the local network may
+    // read the archive, never delete from it.
+    UI_HISTORY_DELETE,
     UI_HISTORY_DOC,
     UI_DOWNLOAD_DOC,
     UI_DOWNLOAD_AUDIO,

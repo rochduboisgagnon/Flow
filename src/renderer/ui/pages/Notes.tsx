@@ -33,6 +33,17 @@ export function Notes({ s }: { s: UiStatePayload }) {
   const [docFor, setDocFor] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [note, setNote] = useState<string | null>(null);
+  /** 2026-07-30: which folder the note's button should reveal.
+   *
+   * The button was hard-wired to "downloaded-file", i.e. the last file a
+   * DOWNLOAD wrote. After a passage removal nothing has been downloaded, so it
+   * silently did nothing - reported as "the Show in folder button doesn't work",
+   * and it was right. A note that offers an action has to carry which action. */
+  const [noteTarget, setNoteTarget] = useState<"downloaded-file" | "history">("downloaded-file");
+  /** 2026-07-30: the id awaiting a delete confirmation. Held as an ID rather
+   * than a boolean so a click, a list refresh and a second click cannot end up
+   * deleting a DIFFERENT capture than the one the confirmation named. */
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState<"doc" | "audio" | null>(null);
   const [audioError, setAudioError] = useState(false);
@@ -217,6 +228,23 @@ export function Notes({ s }: { s: UiStatePayload }) {
     setConfirming(false);
   }
 
+  async function doDelete(id: string) {
+    setWorking(true);
+    setError(null);
+    try {
+      const left = await window.flowui.historyDelete(id);
+      setItems(left);
+      setConfirmDelete(null);
+      // `current` is derived from `selected`, so clearing the selection is what
+      // closes the document - leaving a transcript on screen whose file no
+      // longer exists would be the page lying about the disk.
+      setSelected(null);
+      setNote(null);
+    } finally {
+      setWorking(false);
+    }
+  }
+
   async function removePassages() {
     if (!current || !shownDoc || picked.length === 0 || working) return;
     setWorking(true);
@@ -229,6 +257,7 @@ export function Notes({ s }: { s: UiStatePayload }) {
       const targets = picked.map((i) => ({ index: i, startMs: passages[i].startMs }));
       const r = await window.flowui.redactPassages(current.id, targets);
       if (r.ok) {
+        setNoteTarget("history");
         setNote(
           "Passage removed." +
             (r.audioSilenced ? " The matching audio was silenced." : " This capture kept no audio.") +
@@ -262,7 +291,7 @@ export function Notes({ s }: { s: UiStatePayload }) {
       const r = kind === "doc"
         ? await window.flowui.downloadDoc(current.id)
         : await window.flowui.downloadAudio(current.id);
-      if (r.ok && r.path) setNote(`Saved to ${r.path}`);
+      if (r.ok && r.path) { setNoteTarget("downloaded-file"); setNote(`Saved to ${r.path}`); }
       else setError(r.error ?? "Flow could not save that file.");
     } finally {
       setDownloading(null);
@@ -284,7 +313,7 @@ export function Notes({ s }: { s: UiStatePayload }) {
       {note ? (
         <p className="note-saved">
           <span className="mono">{note}</span>
-          <button className="btn ghost" onClick={() => void window.flowui.openPath("downloaded-file")}>
+          <button className="btn ghost" onClick={() => void window.flowui.openPath(noteTarget)}>
             Show in folder
           </button>
         </p>
@@ -402,6 +431,30 @@ export function Notes({ s }: { s: UiStatePayload }) {
                       ) : (
                         <button className="btn ghost" onClick={() => setRemoving(true)}>
                           Remove a passage
+                        </button>
+                      )
+                    ) : null}
+                    {/* 2026-07-30: delete the whole capture. Two steps, and the
+                        confirmation NAMES what disappears - a one-click delete
+                        on a meeting recording is the wrong shape for something
+                        that cannot be undone. */}
+                    {!removing && current ? (
+                      confirmDelete === current.id ? (
+                        <>
+                          <button
+                            className="btn amber"
+                            disabled={working}
+                            onClick={() => void doDelete(current.id)}
+                          >
+                            Delete for good
+                          </button>
+                          <button className="btn ghost" onClick={() => setConfirmDelete(null)}>
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <button className="btn ghost" onClick={() => setConfirmDelete(current.id)}>
+                          Delete
                         </button>
                       )
                     ) : null}

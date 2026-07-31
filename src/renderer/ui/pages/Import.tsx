@@ -32,7 +32,13 @@ const POLL_MS = 700;
 export function Import({ go }: { go: (s: Section) => void }) {
   const [snap, setSnap] = useState<ImportQueueSnapshot | null>(null);
   const [over, setOver] = useState(false);
-  const [keepAudio, setKeepAudio] = useState(false);
+  // 2026-07-30: ON by default. It was off, on the reasoning that the source file
+  // is untouched so a copy is redundant - true on disk, false in use: an import
+  // then appeared in Notes with a transcript and no player, and "we should have
+  // access to the audio AND the transcript" is the obvious expectation. The
+  // source file is still never touched either way; this is about being able to
+  // listen back WITHOUT leaving the app.
+  const [keepAudio, setKeepAudio] = useState(true);
   const [notes, setNotes] = useState(true);
   const [refused, setRefused] = useState<Array<{ fileName: string; reason: string }>>([]);
   const [error, setError] = useState<string | null>(null);
@@ -172,8 +178,8 @@ export function Import({ go }: { go: (s: Section) => void }) {
           <span>
             Keep a copy of the audio
             <span className="sub" style={{ display: "block", margin: 0 }}>
-              Lets you listen back inside Flow. Off by default: your own file is still exactly
-              where it was.
+              Lets you listen back inside Flow, beside the transcript. Your own file is never
+              touched either way.
             </span>
           </span>
         </label>

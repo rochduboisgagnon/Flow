@@ -22,7 +22,7 @@ import { pcmFromWav, encodeWav } from "../shared/wav";
 import { listOllamaModels, summarize, generateShort } from "./llm/ollama";
 import { LiveAssistant } from "./liveAssist";
 import { LocalApi } from "./api";
-import { LongRecorder, historyRoot, stagingRoot, listHistory, resolveHistoryEntry, readHistoryDoc } from "./longform";
+import { LongRecorder, historyRoot, stagingRoot, listHistory, deleteHistoryEntry, resolveHistoryEntry, readHistoryDoc } from "./longform";
 import { LiveNotesStore } from "./liveNotes";
 import { AudioDecodeWindow } from "./audioDecode";
 import { ImportQueue } from "./audioImport";
@@ -496,6 +496,14 @@ if (!app.requestSingleInstanceLock()) {
         // readHistoryDocDep, defined once, just above) - the Notes page's
         // archive view and the HTTP /long/history* routes can never disagree.
         listHistory: listHistoryDep,
+        // Deliberately NOT given to LocalApi, unlike listHistory beside it: a
+        // phone on the local network may READ the archive, and must never be
+        // able to delete a recording from it.
+        deleteHistory: (id: string) => {
+          const r = deleteHistoryEntry(id, historyRoot(), flowLog);
+          if (!r.ok) flowLog(`[history] delete refused: ${r.error}`);
+          return listHistoryDep();
+        },
         readHistoryDoc: readHistoryDocDep,
         // U5c: browser-style downloads (Roch's decision) - main-only, no HTTP
         // equivalent (a remote PWA has no business writing into this

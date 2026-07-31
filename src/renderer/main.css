@@ -396,7 +396,12 @@ textarea.snip-src:focus { outline: 2px solid var(--amber); outline-offset: 1px; 
 }
 
 /* ---- Record (wave U4) ---- */
-.rec-wrap { display: grid; grid-template-columns: 320px 1fr; gap: 14px; align-items: start; }
+/* 2026-07-30: the left column was a fixed 320px, so the timer and the Start
+   button were squeezed into a narrow strip while the right half sat empty.
+   A fraction instead of a pixel count: the side grows with the window, and the
+   transcript still gets the larger share, which is the right ratio for a page
+   you watch rather than read. */
+.rec-wrap { display: grid; grid-template-columns: minmax(340px, 2fr) 3fr; gap: 16px; align-items: start; }
 .rec-side { display: flex; flex-direction: column; gap: 14px; }
 .seg { display: flex; background: var(--panel2); border: 1px solid var(--line2); border-radius: 9px; padding: 3px; gap: 3px; }
 .seg button {

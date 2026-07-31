@@ -33,6 +33,7 @@ import {
   UI_LIVE_NOTES_EDIT,
   UI_LIVE_NOTES_DELETE,
   UI_HISTORY_LIST,
+  UI_HISTORY_DELETE,
   UI_HISTORY_DOC,
   UI_DOWNLOAD_DOC,
   UI_DOWNLOAD_AUDIO,
@@ -135,6 +136,8 @@ export interface UiBridgeDeps {
   // identical closures to LocalApi's (index.ts's listHistoryDep &
   // readHistoryDocDep) - never a second implementation.
   listHistory(): HistoryItem[];
+  /** Deletes a capture, then answers with what is left. */
+  deleteHistory(id: string): HistoryItem[];
   readHistoryDoc(id: string): HistoryDocPayload | null;
 
   // ---- capture downloads (U5c, Roch's decision) ----
@@ -483,6 +486,12 @@ export class UiBridge {
     // the Notes page pulls this on demand, not at 1 Hz under the keyboard hook,
     // and needs the EXACT on-disk state - see ipcContracts.ts's module note.
     this.guarded<[], HistoryItem[]>(UI_HISTORY_LIST, [], () => this.deps.listHistory());
+    // The one channel here that DESTROYS a recording. Behind the same gate as
+    // the rest, and answering with the refreshed list so a refused sender can
+    // never make a page show a capture as gone when it is still on disk.
+    this.guarded<[unknown], HistoryItem[]>(UI_HISTORY_DELETE, [], (id) =>
+      this.deps.deleteHistory(typeof id === "string" ? id : ""),
+    );
     this.guarded<[unknown], HistoryDocPayload | null>(UI_HISTORY_DOC, null, (id) =>
       this.deps.readHistoryDoc(typeof id === "string" ? id : ""),
     );

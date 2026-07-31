@@ -61,6 +61,7 @@ import {
   UI_LIVE_NOTES_EDIT,
   UI_LIVE_NOTES_DELETE,
   UI_HISTORY_LIST,
+  UI_HISTORY_DELETE,
   UI_HISTORY_DOC,
   UI_DOWNLOAD_DOC,
   UI_DOWNLOAD_AUDIO,
@@ -245,6 +246,7 @@ const ui = {
   // `recent` field (see ipcContracts.ts's module note), so the Notes page
   // always sees the exact on-disk archive.
   historyList: (): Promise<HistoryItem[]> => ipcRenderer.invoke(UI_HISTORY_LIST),
+  historyDelete: (id: string): Promise<HistoryItem[]> => ipcRenderer.invoke(UI_HISTORY_DELETE, id),
   historyDoc: (id: string): Promise<HistoryDocPayload | null> => ipcRenderer.invoke(UI_HISTORY_DOC, id),
   // ---- capture downloads (U5c): id in, never a path - main resolves and
   // writes straight into the OS Downloads folder, no dialog.

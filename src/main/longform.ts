@@ -852,6 +852,51 @@ export function resolveHistoryEntry(
  * D2 import pipeline, which files a document and then has to hand the window a
  * way to open the note it just produced. Two encoders would be two chances to
  * disagree with the single decoder. */
+/**
+ * Delete one capture: its folder, and nothing else.
+ *
+ * 2026-07-30. The whole of this function's caution is in what it does NOT do.
+ * Flow's first invariant is that it never deletes a recording it was not
+ * managing, and a delete-by-id is exactly where that could go wrong, so the
+ * path is not trusted from the caller at any point:
+ *
+ *  - the id is resolved through resolveHistoryEntry, whose base64url roundtrip
+ *    check already refuses a forged or truncated id;
+ *  - and the resolved directory is then re-verified to sit UNDER the history
+ *    root, because a resolver that ever grew a traversal bug would otherwise
+ *    hand this function a path anywhere on the disk.
+ *
+ * The second check is redundant today. It is here because "redundant" and
+ * "unnecessary" are different words when the failure mode is deleting someone
+ * else's folder.
+ */
+export function deleteHistoryEntry(
+  id: string,
+  root: string = historyRoot(),
+  log?: (msg: string) => void,
+): { ok: boolean; error?: string } {
+  const found = resolveHistoryEntry(id, root);
+  if (!found) return { ok: false, error: "that capture no longer exists" };
+  const dir = path.resolve(found.dir);
+  const base = path.resolve(root);
+  const inside = dir.startsWith(base + path.sep) && dir !== base;
+  if (!inside) {
+    log?.(`[history] refused to delete ${dir}: outside the recordings folder`);
+    return { ok: false, error: "that capture is not in Flow's recordings folder" };
+  }
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+    log?.(`[history] deleted ${path.basename(path.dirname(dir))}/${path.basename(dir)}`);
+    return { ok: true };
+  } catch (err) {
+    const msg = (err as Error).message;
+    log?.(`[history] could not delete ${dir}: ${msg}`);
+    // Said out loud: a user who clicked delete and saw nothing happen would
+    // believe the recording was gone when it is still on their disk.
+    return { ok: false, error: `could not delete it: ${msg}` };
+  }
+}
+
 export function historyEntryId(dir: string): string {
   const { date, title } = historyEntryLabel(dir);
   return Buffer.from(`${date}/${title}`, "utf8").toString("base64url");

@@ -487,6 +487,12 @@ export type { AssistSnapshot, AssistSuggestion, AssistWait } from "./liveAssist"
 // on-disk state - a page showing a capture that was just downloaded/deleted
 // as if it still matched a few seconds ago would be the wrong kind of stale.
 export const UI_HISTORY_LIST = "ui:history-list";
+/** 2026-07-30: DELETES a capture - its transcript, its notes and its audio.
+ * The most destructive channel on this surface, which is why it is gated like
+ * the rest and why main re-verifies the resolved path before removing anything
+ * (see longform.ts deleteHistoryEntry). Answers with the refreshed list, so the
+ * page replaces its state instead of guessing what is left. */
+export const UI_HISTORY_DELETE = "ui:history-delete";
 export const UI_HISTORY_DOC = "ui:history-doc"; // takes an id, answers one entry's transcript or null
 
 export type { HistoryItem, HistoryDocPayload } from "./longform";
