@@ -1,3 +1,4 @@
+import { childEnv } from "../../shared/childEnv";
 import { spawn, type ChildProcess } from "node:child_process";
 import http from "node:http";
 import net from "node:net";
@@ -160,7 +161,13 @@ export class WhisperSidecar {
     );
     const proc = this.opts.spawnProc
       ? this.opts.spawnProc(bin, args)
-      : spawn(bin, args, { stdio: ["ignore", "ignore", "pipe"], windowsHide: true });
+      : spawn(bin, args, {
+          stdio: ["ignore", "ignore", "pipe"],
+          windowsHide: true,
+          // 2026-07-31: without this the sidecar inherited every credential the
+          // user had exported. A transcription binary has no use for any of them.
+          env: childEnv(),
+        });
     proc.stderr?.on("data", (d: Buffer) => {
       // whisper-server logs to stderr; route the tail to the log (file in prod).
       this.opts.log?.(`[whisper-server] ${String(d).trim().slice(0, 300)}`);

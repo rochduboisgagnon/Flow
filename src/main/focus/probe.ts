@@ -1,3 +1,4 @@
+import { childEnv } from "../../shared/childEnv";
 import { spawn, type ChildProcess } from "node:child_process";
 import readline from "node:readline";
 import { parseFocusLine, type FocusResult } from "../../shared/route";
@@ -40,7 +41,13 @@ export class FocusProbe {
       const proc = spawn(
         "powershell.exe",
         ["-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", this.scriptPath],
-        { stdio: ["pipe", "pipe", "pipe"], windowsHide: true },
+        {
+          stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true,
+          // 2026-07-31: a PowerShell child inheriting the full environment is the
+          // worst of the two spawn sites - it is a general-purpose interpreter.
+          env: childEnv(),
+        },
       );
       this.proc = proc;
       const rl = readline.createInterface({ input: proc.stdout! });

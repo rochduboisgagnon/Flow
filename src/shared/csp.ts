@@ -38,9 +38,23 @@
  * policy at all, and the one window that IS covered has no business running a
  * script it assembled in memory.
  */
+/** The three ports the local API may bind, in order (main/api.ts PORTS).
+ *
+ * 2026-07-31, security pass: the policy used to say `http://127.0.0.1:*`, which
+ * is 65 535 ports for an app that uses one of three. That wildcard let the
+ * renderer reach ANY local service - Ollama, a database, another app's debug
+ * port - which is not something this window has any business doing, and is
+ * exactly the reach an injected script would want.
+ *
+ * Kept in sync with api.ts by a test rather than by intention: two lists that
+ * must agree, and only one of them fails loudly when they drift, is how a
+ * narrowing quietly becomes a blockage the day a port is added. */
+export const API_PORT_ORIGINS = ["http://127.0.0.1:8176", "http://127.0.0.1:8296", "http://127.0.0.1:8396"];
+
 export const MAIN_WINDOW_CSP =
   "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
-  "img-src 'self' data:; media-src 'self' http://127.0.0.1:*; connect-src 'self' http://127.0.0.1:*";
+  `img-src 'self' data:; media-src 'self' ${API_PORT_ORIGINS.join(" ")}; ` +
+  `connect-src 'self' ${API_PORT_ORIGINS.join(" ")}`;
 
 /** The renderer document the main window loads. Its two siblings are
  * overlay.html and capture.html - a different file name is the whole reason

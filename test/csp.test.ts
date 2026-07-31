@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { shouldApplyCsp, isMainWindowDocument, MAIN_WINDOW_CSP } from "../src/shared/csp";
+import { shouldApplyCsp, isMainWindowDocument, MAIN_WINDOW_CSP, API_PORT_ORIGINS } from "../src/shared/csp";
 
 // U3g. The bug this file exists to keep dead: the CSP was installed on
 // session.defaultSession, so it covered the overlay and the hidden capture
@@ -105,9 +105,14 @@ const NOTES_SRC = fs.readFileSync(
 test("the audio player's one dependency: media-src still allows Flow's own local API", () => {
   const media = MAIN_WINDOW_CSP.split(";").map((d) => d.trim()).find((d) => d.startsWith("media-src"));
   assert.ok(media, "the policy must carry a media-src directive of its own: default-src 'self' would refuse the player");
+  // 2026-07-31: this used to require the wildcard `http://127.0.0.1:*`, on the
+  // reasoning that "the port is chosen at boot". True, but too broad by 65 532
+  // ports: it is chosen from THREE. The narrowed policy names them, and this
+  // assertion now checks the property that actually matters - the audio player
+  // can reach whichever one the API bound.
   assert.ok(
-    media.includes("http://127.0.0.1:*"),
-    `media-src must allow Flow's local API on any port (the port is chosen at boot); got "${media}"`,
+    API_PORT_ORIGINS.every((o) => media.includes(o)),
+    `media-src must allow every port the API can bind, or the player breaks on one machine in three; got "${media}"`,
   );
   // Loopback and nothing else: this is the app's own engine, never a third party.
   assert.ok(!/https?:\/\/(?!127\.0\.0\.1)/.test(media), `media-src must name no other origin; got "${media}"`);
@@ -135,4 +140,23 @@ test("index.ts decides through shared/csp.ts, and holds no policy string of its 
     !/["']default-src/.test(INDEX_SRC),
     "a policy string written inline in index.ts is a second source of truth the tests above cannot see",
   );
+});
+
+// 2026-07-31, security pass: the policy allowed `http://127.0.0.1:*` - every
+// local port, for an app that binds one of three. A test rather than a comment,
+// because two lists that must agree will drift, and this is the one that fails
+// loudly when they do.
+test("the CSP names the API's ports exactly, and no wildcard", () => {
+  const api = fs.readFileSync(path.join(__dirname, "..", "src", "main", "api.ts"), "utf8");
+  const m = /const PORTS = \[([^\]]+)\]/.exec(api);
+  assert.ok(m, "api.ts must still declare its candidate ports as a literal list");
+  const ports = m[1].split(",").map((p) => p.trim()).filter(Boolean);
+  for (const port of ports) {
+    assert.ok(
+      MAIN_WINDOW_CSP.includes(`http://127.0.0.1:${port}`),
+      `port ${port} binds the API but the CSP does not allow it - the window could not reach its own audio`,
+    );
+  }
+  assert.equal(API_PORT_ORIGINS.length, ports.length, "one origin per port, no stragglers");
+  assert.doesNotMatch(MAIN_WINDOW_CSP, /127\.0\.0\.1:\*/, "the wildcard must not come back");
 });
