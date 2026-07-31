@@ -323,6 +323,11 @@ export interface UiRecentCapture {
  * progress/error state rather than pretending to be instant (plan A1). */
 export interface UiStatePayload {
   version: string;
+  /** 2026-07-30: what the updater is doing right now, so the Updates row can
+   * SHOW it instead of leaving a stale sentence from the last click. A user who
+   * cannot see that a download is running clicks again, which is exactly the
+   * report this field exists to answer. */
+  update: { phase: string; version: string; pct: number };
   status: string; // the engine status line (same text the HTTP API exposes)
   engineWarm: boolean;
   listening: boolean;

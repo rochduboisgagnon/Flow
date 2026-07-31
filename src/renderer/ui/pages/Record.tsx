@@ -255,7 +255,7 @@ export function Record({ s }: { s: UiStatePayload }) {
                 : "Both mixes what the PC plays with your microphone. No bot joins the call."}
             </p>
             {nativeReady ? (
-              <p className="sub" style={{ margin: "6px 0 0", fontSize: 13.8 }}>{SYSTEM_ONLY_UNAVAILABLE}</p>
+              <p className="sub" style={{ margin: "6px 0 0", fontSize: 12.4 }}>{SYSTEM_ONLY_UNAVAILABLE}</p>
             ) : null}
           </div>
 
@@ -510,12 +510,12 @@ function LiveNotesPanel(props: {
       )}
 
       {active ? (
-        <p className="sub" style={{ margin: "10px 0 0", fontSize: 13.8 }}>
+        <p className="sub" style={{ margin: "10px 0 0", fontSize: 12.4 }}>
           A note is written to disk the moment you add it, so a crash or a power cut keeps every
           one of them. Only a line still sitting in the box above would be lost.
         </p>
       ) : mine.length > 0 ? (
-        <p className="sub" style={{ margin: "10px 0 0", fontSize: 13.8 }}>
+        <p className="sub" style={{ margin: "10px 0 0", fontSize: 12.4 }}>
           {finalizing
             ? "These are going into the document now, above the notes Flow writes from the transcript."
             : "These are in the document, at the top, above the notes Flow wrote from the transcript. Open it from the Notes page."}

@@ -599,6 +599,10 @@ function getUiState(): UiStatePayload {
   // self-contradiction that makes a diagnostic panel worthless.
   const hook = hotkey.health();
   return {
+    update: (() => {
+      const u = updater?.state();
+      return { phase: u?.phase ?? "idle", version: u?.version ?? "", pct: u?.pct ?? 0 };
+    })(),
     version: app.getVersion(),
     status: engineStatus(),
     engineWarm: asrWarm,

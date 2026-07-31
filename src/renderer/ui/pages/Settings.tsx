@@ -363,20 +363,43 @@ function TabUpdates({ s }: { s: UiStatePayload }) {
   return (
     <div className="rows">
       <Row label="Current version" help="Flow updates itself from GitHub Releases. Updates never install while you are dictating or recording.">
-        <b className="num" style={{ fontSize: 18 }}>{s.version}</b>
+        <b className="num" style={{ fontSize: 16.2 }}>{s.version}</b>
       </Row>
-      <Row label="Check for updates" help={msg ?? "Checks GitHub for a newer release."}>
-        <button className="btn amber" disabled={busy} onClick={() => void check()}>{busy ? "Checking..." : "Check now"}</button>
+      {/* 2026-07-30: the row used to show ONE sentence from the last click and
+          then go quiet for up to a minute while the download and the quiet
+          window ran. With nothing moving, the reasonable thing to do is click
+          again - which is the report this fixes. It now reads the live phase. */}
+      <Row label="Check for updates" help={updateHelp(s, msg)}>
+        <button className="btn amber" disabled={busy || s.update.phase === "downloading"} onClick={() => void check()}>
+          {busy ? "Checking..." : s.update.phase === "downloading" ? `${s.update.pct}%` : "Check now"}
+        </button>
       </Row>
+      {s.update.phase === "downloading" ? (
+        <div className="progress" style={{ marginTop: -6 }}><div style={{ width: `${s.update.pct}%` }} /></div>
+      ) : null}
     </div>
   );
+}
+
+/** What the Updates row says, from the LIVE phase rather than the last click. */
+function updateHelp(s: UiStatePayload, msg: string | null): string {
+  switch (s.update.phase) {
+    case "downloading":
+      return `Downloading version ${s.update.version}. Flow restarts on its own when it is done.`;
+    case "downloaded-waiting-quiet":
+      return `Version ${s.update.version} is ready. Flow restarts as soon as you are not dictating or recording.`;
+    case "error":
+      return "The last check failed. Your version keeps working; try again in a moment.";
+    default:
+      return msg ?? "Checks GitHub for a newer release.";
+  }
 }
 
 function TabAbout({ s }: { s: UiStatePayload }) {
   return (
     <div className="rows">
       <Row label="Flow" help="Local, on-device voice transcription. By AGR Labs. MIT license.">
-        <b className="num" style={{ fontSize: 18 }}>{s.version}</b>
+        <b className="num" style={{ fontSize: 16.2 }}>{s.version}</b>
       </Row>
       <Row label="Source code" help="github.com/rochduboisgagnon/Flow">
         <button className="btn" onClick={() => void window.flowui.openPath("repo")}>Open on GitHub</button>

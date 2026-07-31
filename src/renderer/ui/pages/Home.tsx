@@ -94,7 +94,7 @@ export function Home({ s, go }: { s: UiStatePayload; go: (sec: Section) => void 
           <span className="lbl">Speech engine</span>
           <div className="stat-inline" style={{ marginTop: 8 }}>
             <span className={"dot " + (engineErr ? "err" : s.engineWarm ? "on" : "off")} />
-            <b style={{ fontSize: 16.8 }}>{s.status}</b>
+            <b style={{ fontSize: 15.1 }}>{s.status}</b>
           </div>
           <p className="sub" style={{ margin: "5px 0 0" }}>
             {(s.backend ? `Backend: ${s.backend}` : "Backend: selecting...") +
@@ -111,7 +111,7 @@ export function Home({ s, go }: { s: UiStatePayload; go: (sec: Section) => void 
           <span className="lbl">Long recording</span>
           <div className="stat-inline" style={{ marginTop: 8 }}>
             <span className={"dot " + (s.recording ? "on" : "off")} />
-            <b style={{ fontSize: 16.8 }}>{s.recording ? "Recording in progress" : "Idle"}</b>
+            <b style={{ fontSize: 15.1 }}>{s.recording ? "Recording in progress" : "Idle"}</b>
           </div>
           <p className="sub" style={{ margin: "5px 0 0" }}>
             {last

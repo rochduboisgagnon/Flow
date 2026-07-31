@@ -70,6 +70,18 @@ export class FlowUpdater {
   private deps: FlowUpdaterDeps;
   private enabled: boolean;
   private st: UpdaterState = { phase: "idle", version: "", pct: 0, message: "" };
+  /** 2026-07-30: set by checkNow(), i.e. by a HUMAN clicking the button.
+   *
+   * The quiet window exists so a background update never interrupts someone who
+   * did not ask for one. A click is the opposite situation: the user is sitting
+   * in front of the app, asking. Making them then wait through up to a minute of
+   * "continuous inactivity" - with nothing on screen explaining the pause - is
+   * what produced the report that updating "takes two clicks and does not work".
+   * So an update the user ASKED for installs as soon as the engine is free,
+   * without the confirmation pause. It still never interrupts a live dictation
+   * or recording: isBusy() is checked either way, and that is the guarantee
+   * that actually matters. */
+  private userAsked = false;
   private bootTimer: NodeJS.Timeout | undefined;
   private periodicTimer: NodeJS.Timeout | undefined;
   private quietTimer: NodeJS.Timeout | undefined;
@@ -136,6 +148,7 @@ export class FlowUpdater {
       };
     }
     try {
+      this.userAsked = true;
       const result = await autoUpdater.checkForUpdates();
       if (result?.isUpdateAvailable) {
         // autoDownload is on, so the download has already started; from here
@@ -219,7 +232,15 @@ export class FlowUpdater {
     // matter. The quiet window is judged on CONTINUOUS inactivity: the engine
     // must not have done anything for QUIET_CONFIRM_MS already, and still be
     // untouched after one more confirmation pause (review A10).
-    if (this.deps.quietForMs() < QUIET_CONFIRM_MS) return;
+    if (!this.userAsked && this.deps.quietForMs() < QUIET_CONFIRM_MS) return;
+    if (this.userAsked) {
+      // Asked for, and the engine is free: go. No confirmation pause, because
+      // the person who would be interrupted by it is the person who asked.
+      this.deps.log(`[updater] installing version ${this.st.version} - requested by the user`);
+      this.stop();
+      autoUpdater.quitAndInstall(true, true);
+      return;
+    }
     this.confirming = true;
     this.confirmTimer = setTimeout(() => {
       this.confirmTimer = undefined;

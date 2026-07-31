@@ -458,7 +458,7 @@ function HotpathPanel() {
                             Said on the row rather than hidden, because the row
                             is where someone reads a number and believes it. */}
                         {tr.ambiguous ? (
-                          <div className="sub" style={{ fontSize: 13.2 }}>
+                          <div className="sub" style={{ fontSize: 11.9 }}>
                             overlapped another press &#183; timings not attributable
                           </div>
                         ) : null}

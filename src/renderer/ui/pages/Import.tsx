@@ -178,7 +178,7 @@ export function Import({ go }: { go: (s: Section) => void }) {
           </span>
         </label>
       </div>
-      <p className="sub" style={{ margin: "8px 0 0", fontSize: 13.8 }}>
+      <p className="sub" style={{ margin: "8px 0 0", fontSize: 12.4 }}>
         Both apply to what you add next, not to what is already in the queue.
       </p>
 
