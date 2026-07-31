@@ -340,7 +340,9 @@ test("CSRF guard: a browser Origin / Sec-Fetch-Site on a POST is refused (403)",
     const withSecFetch = await postHdr(port, "/settings", { "Sec-Fetch-Site": "cross-site" });
     assert.equal(withSecFetch.code, 403);
     assert.deepEqual(stub.calls, [], "no state-changing dep must run for a refused request");
-    // A GET status stays reachable (reads are not state-changing).
+    // 2026-07-31: a GET from a browser is refused TOO now, unless it carries
+    // this session's token. What used to keep a hostile page from reading the
+    // answer was the browser's same-origin policy, not this file.
     assert.equal((await get(port, "/status")).code, 200);
     // A sibling app (no Origin / Sec-Fetch header) is unaffected.
     assert.equal((await post(port, "/long/stop", new Uint8Array(0))).code, 200);
@@ -419,5 +421,112 @@ test("A10: start() DOES replace a stale discovery file from a dead pid", async (
     assert.equal(now.pid, process.pid, "a dead process's leftover is ours to replace");
   } finally {
     api.stop();
+  }
+});
+
+
+// ---------------------------------------------------------------------------
+// 2026-07-31, security pass. The drive-by guard used to stop at state-changing
+// methods, so GET was open - and GET is what serves /long/history/doc and
+// /long/history/audio: meeting transcripts and their audio. Nothing in this
+// file stopped a page the user happened to visit from requesting them; only the
+// browser's own same-origin policy kept it from READING the answer.
+//
+// The fix could not simply widen the header check, and that is the interesting
+// part: Flow's OWN Notes page plays audio through an <audio> element pointing
+// at this API, which is a browser request and does carry Sec-Fetch-* headers.
+// Widening the check would have killed audio playback - the U3 mistake exactly,
+// a control scoped one notch too far, breaking a feature no test covers.
+// ---------------------------------------------------------------------------
+
+function getHdr(port: number, p: string, extra: Record<string, string>): Promise<Reply> {
+  return new Promise((resolve, reject) => {
+    http
+      .get({ hostname: "127.0.0.1", port, path: p, agent: false, headers: extra }, (res) => {
+        let d = "";
+        res.on("data", (c) => (d += c));
+        res.on("end", () => resolve({ code: res.statusCode ?? 0, body: JSON.parse(d) as Record<string, unknown> }));
+      })
+      .on("error", reject);
+  });
+}
+
+async function tokenApi(): Promise<{ api: LocalApi; port: number; token: string }> {
+  const info = path.join(os.tmpdir(), `agrflow-api-tok-${process.pid}-${Math.random()}.json`);
+  const api = new LocalApi({
+    version: "0.0.0",
+    isListening: () => false,
+    isRecording: () => false,
+    isEngineWarm: () => true,
+    transcribe: () => Promise.resolve({ text: "", ms: 0 }),
+    ...longDepsStub(),
+    infoPathOverride: info,
+  });
+  await api.start();
+  const port = (JSON.parse(fs.readFileSync(info, "utf8")) as { port: number }).port;
+  return { api, port, token: api.sessionToken() };
+}
+
+test("a drive-by page can no longer READ - a GET with browser headers is refused", async () => {
+  const { api, port } = await tokenApi();
+  try {
+    for (const p of ["/status", "/long/history", "/settings"]) {
+      const r = await getHdr(port, p, { "Sec-Fetch-Site": "cross-site" });
+      assert.equal(r.code, 403, `${p} must refuse a browser read without the token`);
+    }
+  } finally {
+    api.stop();
+  }
+});
+
+test("THE ONE THAT WOULD HAVE CAUGHT THE BREAKAGE: Flow's own window still reads", async () => {
+  // The Notes page's <audio> element sends Sec-Fetch-* like any browser. It is
+  // allowed because it carries the token, and this test is the reason the fix
+  // is a token rather than a wider header check.
+  const { api, port, token } = await tokenApi();
+  try {
+    const r = await getHdr(port, `/status?t=${encodeURIComponent(token)}`, { "Sec-Fetch-Site": "cross-site" });
+    assert.equal(r.code, 200, "Flow's own renderer must keep working, headers and all");
+  } finally {
+    api.stop();
+  }
+});
+
+test("a WRONG token is refused, and so is a truncated one", async () => {
+  const { api, port, token } = await tokenApi();
+  try {
+    for (const bad of ["", "x", token.slice(0, -1), token + "x", token.toUpperCase()]) {
+      const r = await getHdr(port, `/status?t=${encodeURIComponent(bad)}`, { Origin: "https://evil.example" });
+      assert.equal(r.code, 403, `refused: ${JSON.stringify(bad)}`);
+    }
+  } finally {
+    api.stop();
+  }
+});
+
+test("the sibling apps are untouched: no browser headers, no token needed", async () => {
+  // AGR Pilot's server and AGR Manager call this API server-to-server. They send
+  // neither Origin nor Sec-Fetch-*, and requiring a token of them would have
+  // been a breaking change disguised as a security fix.
+  const { api, port } = await tokenApi();
+  try {
+    assert.equal((await get(port, "/status")).code, 200);
+    assert.equal((await get(port, "/update-readiness")).code, 200);
+  } finally {
+    api.stop();
+  }
+});
+
+test("two sessions never share a token", async () => {
+  const a = await tokenApi();
+  const b = await tokenApi();
+  try {
+    assert.notEqual(a.token, b.token);
+    assert.ok(a.token.length >= 32, "long enough not to be guessed");
+    const r = await getHdr(a.port, `/status?t=${encodeURIComponent(b.token)}`, { Origin: "https://evil.example" });
+    assert.equal(r.code, 403, "another session's token is just a wrong token");
+  } finally {
+    a.api.stop();
+    b.api.stop();
   }
 });

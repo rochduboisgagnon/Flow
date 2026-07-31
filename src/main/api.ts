@@ -1,5 +1,6 @@
 import http from "node:http";
 import fs from "node:fs";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import path from "node:path";
 import { dataDir } from "./settings";
 import type { HistoryItem, HistoryDocPayload } from "./longform";
@@ -131,9 +132,50 @@ export class LocalApi {
     this.deps = deps;
   }
 
+  /**
+   * 2026-07-31, security pass. A per-session token that Flow's OWN window
+   * carries, and nothing else has.
+   *
+   * The problem it solves: the drive-by guard below refused browser requests on
+   * state-changing methods only, so GET was open - and GET is what returns
+   * `/long/history/doc` and `/long/history/audio`, i.e. meeting transcripts and
+   * their audio. What kept a hostile page from READING those answers was the
+   * browser's own same-origin policy (this API sends no CORS header), never
+   * anything this file did. A defence living entirely in the attacker's runtime
+   * is not a defence.
+   *
+   * Extending the guard to GET was the obvious move and it would have broken
+   * the app: the Notes page plays audio through an <audio> element pointing
+   * here, which IS a browser request and does carry Sec-Fetch-* headers. That is
+   * the U3 mistake exactly - a security control scoped one notch too wide,
+   * killing a feature no test covers.
+   *
+   * So: browser-originated requests must present this token. Flow's window gets
+   * it in the state payload, beside the port it already receives. The sibling
+   * apps (Pilot server, Manager) call server-to-server, send no browser headers,
+   * and are unaffected - which is why the token is required only when those
+   * headers are present.
+   */
+  private token = randomBytes(32).toString("base64url");
+
   /** The bound loopback port (0 until start() succeeds). Shown in Diagnostics. */
   boundPort(): number {
     return this.port;
+  }
+
+  /** Handed to Flow's own renderer through the state payload. Never logged. */
+  sessionToken(): string {
+    return this.token;
+  }
+
+  /** Constant-time compare, so the token cannot be recovered a byte at a time.
+   * Cheap insurance: the threat is far-fetched over loopback, and getting it
+   * right costs one function. */
+  private tokenOk(given: string | null): boolean {
+    if (!given) return false;
+    const a = Buffer.from(given);
+    const b = Buffer.from(this.token);
+    return a.length === b.length && timingSafeEqual(a, b);
   }
 
   async start(): Promise<void> {
@@ -196,8 +238,17 @@ export class LocalApi {
     // call it SERVER-TO-SERVER and never set Origin or any Sec-Fetch-* header; a browser ALWAYS sets
     // them on a cross-origin request (and this API serves no HTML, so every browser request to it is
     // cross-origin). So on any state-changing method we refuse a request that carries either header.
-    if (req.method !== "GET" && req.method !== "HEAD") {
-      if (req.headers["origin"] !== undefined || req.headers["sec-fetch-site"] !== undefined) {
+    //
+    // 2026-07-31: extended to GET, which was open and is what serves transcripts
+    // and audio. A browser request is now allowed ONLY if it carries this
+    // session's token - which Flow's own window has and a drive-by page cannot
+    // obtain. See sessionToken() above for why the token, rather than simply
+    // widening the header check, was necessary.
+    const fromBrowser =
+      req.headers["origin"] !== undefined || req.headers["sec-fetch-site"] !== undefined;
+    if (fromBrowser) {
+      const given = url.searchParams.get("t") ?? (req.headers["x-flow-token"] as string | undefined) ?? null;
+      if (!this.tokenOk(given)) {
         return json(403, { error: "cross-origin request refused (loopback control API)" });
       }
     }

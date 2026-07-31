@@ -649,6 +649,7 @@ function getUiState(): UiStatePayload {
     models: [...AVAILABLE_MODELS],
     canLoopback: NativeCapture.available(),
     apiPort: api?.boundPort() ?? 0,
+    apiToken: api?.sessionToken() ?? "",
     dataDir: dataDir(),
     logPath: path.join(dataDir(), "flow.log"),
     legacyHistory: legacyHistoryForUi(),
@@ -977,6 +978,10 @@ async function gatherSelfCheck(): Promise<SelfCheckReport> {
     modelPresent,
     modelState: lastModelState,
     apiPort: api?.boundPort() ?? 0,
+    // NOT the token: this object is the SELF-CHECK's facts, and a self-check
+    // is a thing you show to someone or paste into a report. The port is
+    // diagnostics; the token is a credential, and the two do not travel
+    // together no matter how adjacent they look at the call site.
     dataDir: dataDir(),
     dataDirWritable: disk.writable,
     dataDirError: disk.error,

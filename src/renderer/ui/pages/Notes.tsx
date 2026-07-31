@@ -471,7 +471,7 @@ export function Notes({ s }: { s: UiStatePayload }) {
                         className="doc-audio"
                         controls
                         preload="none"
-                        src={`http://127.0.0.1:${s.apiPort}/long/history/audio?id=${encodeURIComponent(current.id)}`}
+                        src={`http://127.0.0.1:${s.apiPort}/long/history/audio?id=${encodeURIComponent(current.id)}&t=${encodeURIComponent(s.apiToken)}`}
                         // Review U5, MAJEUR 6: <audio> reports every failure -
                         // a port that moved, a file purged since this list was
                         // read, a CSP that stopped allowing media-src - through

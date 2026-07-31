@@ -383,6 +383,10 @@ export interface UiStatePayload {
   models: ModelChoice[];
   canLoopback: boolean;
   apiPort: number;
+  /** 2026-07-31: this session's API token. Flow's own window is the ONLY browser
+   * allowed to read the loopback API, and this is how it proves it. Same trust
+   * boundary as apiPort beside it - a renderer that can see one can see both. */
+  apiToken: string;
   dataDir: string;
   logPath: string;
   /** U2b/U2c: the recordings folder this machine had configured before the
