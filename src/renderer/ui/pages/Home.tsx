@@ -199,6 +199,9 @@ function when(at: number): string {
   const today = new Date();
   const sameDay = d.toDateString() === today.toDateString();
   if (sameDay) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  // Shorter than the default: a 24-hour clock drops the AM/PM that made this
+  // the widest string in the column, and the year is never useful here - the
+  // whole list is at most a month old by construction.
   return d.toLocaleDateString([], { month: "short", day: "numeric" }) +
-    " " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    " " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 }

@@ -122,8 +122,12 @@ html, body, #root {
 /* ---- body: rail + content ---- */
 .body { display: flex; flex: 1; min-height: 0; }
 
+/* 2026-07-30: `width` became `min-width` after the history row taught the
+   lesson. A fixed pixel column holding TEXT breaks the day the text grows -
+   and the type scale of this app changed twice in one afternoon. The rail now
+   has a floor and grows if a label ever needs it. */
 .rail {
-  width: 212px;
+  min-width: 212px;
   flex: none;
   border-right: 1px solid var(--line);
   padding: 12px 9px 10px;
@@ -269,7 +273,7 @@ select:focus, input:focus, button:focus-visible { outline: 2px solid var(--amber
 table.diag { border-collapse: collapse; width: 100%; }
 table.diag td { padding: 9px 14px 9px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
 table.diag tr:last-child td { border-bottom: 0; }
-table.diag td:first-child { color: var(--ink2); white-space: nowrap; width: 180px; }
+table.diag td:first-child { color: var(--ink2); white-space: nowrap; min-width: 180px; }
 .mono { font-family: Consolas, monospace; font-size: 13px; color: var(--ink2); word-break: break-all; }
 
 /* ---- Settings ---- */
@@ -714,8 +718,12 @@ html.light .heat i.l2 { background: #cf9d55; }
 .hist { display: flex; flex-direction: column; margin-top: 10px; }
 .hrow {
   display: grid;
-  grid-template-columns: 86px 1fr auto;
-  gap: 12px;
+  /* 2026-07-30: this was a fixed 86px. The stamp is `nowrap`, and "Jul 30
+     05:50 PM" is wider than that at any of the font sizes this app has had, so
+     it overflowed its own column and ran UNDER the dictation text. `auto` sizes
+     the column to its widest stamp instead of to a number someone guessed. */
+  grid-template-columns: auto 1fr auto;
+  gap: 14px;
   align-items: baseline;
   padding: 9px 0;
   border-top: 1px solid var(--line);
