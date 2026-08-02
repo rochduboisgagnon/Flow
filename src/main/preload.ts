@@ -33,6 +33,10 @@ import {
   UI_RECORD_SHORTCUT,
   UI_LIST_MICS,
   UI_OLLAMA_MODELS,
+  UI_LLM_PROVIDERS,
+  UI_LLM_RESCAN,
+  UI_LLM_TEST,
+  type LlmProviderStatus,
   UI_OPEN_PATH,
   UI_GET_LOGIN_ITEM,
   UI_SET_LOGIN_ITEM,
@@ -206,6 +210,9 @@ const ui = {
   listMics: (): Promise<Array<{ id: string; label: string }>> =>
     ipcRenderer.invoke(UI_LIST_MICS),
   ollamaModels: (): Promise<string[] | null> => ipcRenderer.invoke(UI_OLLAMA_MODELS),
+  llmProviders: (): Promise<LlmProviderStatus[]> => ipcRenderer.invoke(UI_LLM_PROVIDERS),
+  llmRescan: (): Promise<LlmProviderStatus[]> => ipcRenderer.invoke(UI_LLM_RESCAN),
+  llmTest: (id: string): Promise<{ ok: boolean; detail?: string }> => ipcRenderer.invoke(UI_LLM_TEST, id),
   openPath: (which: "log" | "data" | "history" | "legacy-history" | "repo" | "downloaded-file"): Promise<void> =>
     ipcRenderer.invoke(UI_OPEN_PATH, which),
   getLoginItem: (): Promise<boolean> => ipcRenderer.invoke(UI_GET_LOGIN_ITEM),

@@ -19,7 +19,9 @@ import { runMigration } from "./migrate";
 import { analyzeSpeech, hasSpeech, trimToSpeech } from "../shared/vad";
 import { gateTranscript } from "../shared/textGate";
 import { pcmFromWav, encodeWav } from "../shared/wav";
-import { OllamaProvider, listOllamaModels } from "./llm/provider";
+import { OllamaProvider, listOllamaModels, type LlmProvider } from "./llm/provider";
+import { ClaudeCliProvider } from "./llm/claudeCli";
+import { ProviderRegistry } from "./llm/registry";
 import { LiveAssistant } from "./liveAssist";
 import { LocalApi } from "./api";
 import { LongRecorder, historyRoot, stagingRoot, listHistory, deleteHistoryEntry, resolveHistoryEntry, readHistoryDoc } from "./longform";
@@ -455,6 +457,11 @@ if (!app.requestSingleInstanceLock()) {
         recordShortcut: recordShortcutAndApply,
         listMics: () => listMicsValidated(),
         ollamaModels: () => listOllamaModels(),
+        // P6: the Local AI tab. Opening it is detection moment 1; Re-scan is
+        // moment 3; Test is the ONE place that really runs anything.
+        llmProviders: () => llmRegistry.list(),
+        llmRescan: () => llmRegistry.rescan(),
+        llmTest: (id) => llmRegistry.test(id as "ollama" | "claude-cli" | "codex-cli"),
         historyRootDir: () => historyRoot(),
         // U2b: resolved in MAIN, never passed in by the renderer - the bridge
         // opens fixed destinations only (see UI_OPEN_PATH).
@@ -631,6 +638,7 @@ function getUiState(): UiStatePayload {
       batchModel: settings.batchModel, // F1: "" = batch work shares the dictation engine
       micDeviceId: settings.micDeviceId,
       sounds: settings.sounds,
+      aiProvider: settings.aiProvider, // P5: who writes the notes (never who transcribes)
       summaryModel: settings.summaryModel,
       forceCpu: settings.forceCpu,
       insertMode: settings.insertMode,
@@ -848,10 +856,25 @@ async function warmAsr() {
 // deferred off the keyboard hook's synchronous call stack.
 // P1: one provider for the whole process. Its model resolution is the one that
 // used to be copy-pasted in longform.finalize and audioImport.
-const llmProvider = new OllamaProvider({
+const ollamaProvider = new OllamaProvider({
   preferredModel: () => settings.summaryModel,
   listModels: () => listOllamaModels(),
 });
+// P3: Claude Code, behind the same interface. Its flags are argued in claudeCli.ts.
+const claudeProvider = new ClaudeCliProvider({ log: flowLog });
+// P4: detection lives here, cached, and NEVER runs a binary. See registry.ts.
+const llmRegistry = new ProviderRegistry({ providers: [ollamaProvider, claudeProvider], log: flowLog });
+/** P5: the provider the user chose, or the local one. Read per call, never
+ * captured: a change in Settings has to take effect on the very next summary,
+ * not at the next restart. */
+const llmProvider: LlmProvider = {
+  get id() { return llmRegistry.resolve(settings.aiProvider)!.id; },
+  get locality() { return llmRegistry.resolve(settings.aiProvider)!.locality; },
+  get vendor() { return llmRegistry.resolve(settings.aiProvider)!.vendor; },
+  available: () => llmRegistry.resolve(settings.aiProvider)!.available(),
+  long: (p, o) => llmRegistry.resolve(settings.aiProvider)!.long(p, o),
+  short: (p, o) => llmRegistry.resolve(settings.aiProvider)!.short(p, o),
+};
 
 const overlay = new OverlayWindow(flowLog);
 // C2: the hidden native-capture window (Windows-only). Created at startup so

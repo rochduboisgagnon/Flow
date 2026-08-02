@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import type { UiStatePayload } from "../../../shared/ipcContracts";
+import type { UiStatePayload, LlmProviderStatus } from "../../../shared/ipcContracts";
 import { Toggle, Row } from "../components";
 
 // Settings (wave U1 restyle): the eight tabs' LOGIC is transplanted verbatim
@@ -238,27 +238,135 @@ const LIVE_ASSIST_HELP =
   // The argument now lives in shared/liveAssist.ts; here, the trade in a line.
   "Off by default. A local model reads the last minutes of a meeting and suggests notes or replies. It reads what other people say, and they never agreed to anything. Nothing leaves this machine, and the recording always wins. Needs Ollama - Flow has no model of its own yet.";
 
+/** P5/P6: the same switch, read out loud when the provider leaves the machine.
+ * Switching provider turned it OFF; turning it back on is a decision about what
+ * OTHER people said, so the sentence names the recipient before the benefit. */
+const LIVE_ASSIST_AWAY_HELP = (vendor: string) =>
+  `Off, because you changed who writes your notes. Turning this on sends the last minutes of every meeting to ${vendor || "a third party"}, as it is spoken. It reads what other people say, and they never agreed to anything. The recording always wins.`;
+
+// P6: what each provider is called on the page. The page reads `locality` from
+// the provider itself, never a string decided here - so a provider added later
+// cannot forget to declare where the text goes.
+const PROVIDER_LABEL: Record<string, string> = {
+  "ollama": "Ollama, on this machine",
+  "claude-cli": "Claude Code",
+  "codex-cli": "Codex",
+};
+
 function TabLocalAi({ s, patch }: { s: UiStatePayload; patch: Patch }) {
   const [models, setModels] = useState<string[] | null | "loading">("loading");
+  const [providers, setProviders] = useState<LlmProviderStatus[] | "loading">("loading");
+  const [testing, setTesting] = useState<string | null>(null);
+  const [tested, setTested] = useState<Record<string, string>>({});
+
+  // Detection moment 1: opening this tab. Never at startup - see registry.ts.
   useEffect(() => { void window.flowui.ollamaModels().then((m) => setModels(m)); }, []);
-  const opts = Array.isArray(models) ? models : [];
+  useEffect(() => { void window.flowui.llmProviders().then((p) => setProviders(p)); }, []);
+
+  const chosen = s.settings.aiProvider;
+  const list = providers === "loading" ? [] : providers;
+  const current = list.find((p) => p.id === chosen);
+  const isLocal = !current || current.locality === "on-this-machine";
+
+  async function rescan() {
+    setProviders("loading");
+    setTested({});
+    setProviders(await window.flowui.llmRescan());
+  }
+
+  async function runTest(id: string) {
+    setTesting(id);
+    const r = await window.flowui.llmTest(id);
+    setTested((t) => ({ ...t, [id]: r.ok ? "answered" : (r.detail ?? "no answer") }));
+    setTesting(null);
+    setProviders(await window.flowui.llmProviders());
+  }
+
   return (
     <div className="rows">
-      <Row label="Meeting summary model" help="The local Ollama model that writes meeting summaries after a long recording. Optional: without it, recordings still produce the full timestamped transcript.">
-        {models === "loading" ? <span className="sub" style={{ margin: 0 }}>Checking Ollama...</span>
-          : models === null ? <span className="sub" style={{ margin: 0 }}>Ollama not detected on this machine. Optional.</span>
-          : (
-            <select value={s.settings.summaryModel} onChange={(e) => void patch({ summaryModel: e.target.value })} aria-label="Meeting summary model">
-              <option value="">Automatic (first available)</option>
-              {opts.map((m) => <option key={m} value={m}>{m}</option>)}
-            </select>
-          )}
+      {/* P6: the provider comes FIRST, because it decides what every row below
+          means. The sentence naming the recipient is attached to the control
+          that changes it, not buried further down the page. */}
+      <Row
+        label="Who writes your notes"
+        help="Speech is always transcribed on this machine, by Flow's own engine, whatever you pick here. This choice only decides who writes the meeting NOTES and the live suggestions, from that transcript."
+      >
+        <select
+          value={chosen}
+          aria-label="Who writes your notes"
+          onChange={(e) => void patch({ aiProvider: e.target.value })}
+        >
+          {list.map((p) => (
+            <option key={p.id} value={p.id} disabled={!p.found}>
+              {PROVIDER_LABEL[p.id] ?? p.id}{p.found ? "" : " (not installed)"}
+            </option>
+          ))}
+          {providers === "loading" ? <option value={chosen}>Looking...</option> : null}
+        </select>
       </Row>
-      {/* U8: the most intrusive switch in the app, so it follows PREWARM_HELP's
-          rule to the letter - the COST is stated before the benefit, and the
-          missing piece (Flow embeds no model of its own yet) is named rather
-          than glossed. */}
-      <Row label="Live suggestions while recording" help={LIVE_ASSIST_HELP}>
+
+      {/* The pill: where the text goes, said BEFORE anything is sent, naming the
+          recipient rather than a vague "the cloud". */}
+      {!isLocal && current ? (
+        <p className="note-warn" style={{ margin: "0 0 14px" }}>
+          Your meeting transcripts will be sent to <b>{current.vendor}</b> to be summarised. They
+          leave this computer. Nothing else does: your dictation, and the transcription itself, stay
+          here.
+        </p>
+      ) : null}
+
+      {providers !== "loading" && list.length > 0 ? (
+        <Row
+          label="What is installed"
+          help="Found means the program is on this machine. Answered means a real call really came back: a program can be installed and not signed in, and only a test reveals that."
+        >
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {list.map((p) => (
+              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ minWidth: 170 }}>{PROVIDER_LABEL[p.id] ?? p.id}</span>
+                <span className="sub" style={{ margin: 0, minWidth: 150 }}>
+                  {!p.found
+                    ? "not found"
+                    : tested[p.id]
+                      ? tested[p.id]
+                      : p.responded
+                        ? "found, has answered"
+                        : "found, never answered"}
+                </span>
+                <button className="btn ghost" disabled={!p.found || testing !== null} onClick={() => void runTest(p.id)}>
+                  {testing === p.id ? "Testing..." : "Test"}
+                </button>
+              </div>
+            ))}
+            <div>
+              <button className="btn ghost" onClick={() => void rescan()}>Re-scan</button>
+            </div>
+          </div>
+        </Row>
+      ) : null}
+
+      {/* The Ollama model row exists only when Ollama is the one writing: it is
+          the name of an Ollama model, and it means nothing for a CLI provider,
+          whose model is fixed to Sonnet by design. */}
+      {chosen === "ollama" ? (
+        <Row label="Meeting summary model" help="The local Ollama model that writes meeting summaries after a long recording. Optional: without it, recordings still produce the full timestamped transcript.">
+          {models === "loading" ? <span className="sub" style={{ margin: 0 }}>Checking Ollama...</span>
+            : models === null ? <span className="sub" style={{ margin: 0 }}>Ollama not detected on this machine. Optional.</span>
+            : (
+              <select value={s.settings.summaryModel} onChange={(e) => void patch({ summaryModel: e.target.value })} aria-label="Meeting summary model">
+                <option value="">Automatic (first available)</option>
+                {(Array.isArray(models) ? models : []).map((m) => <option key={m} value={m}>{m}</option>)}
+              </select>
+            )}
+        </Row>
+      ) : null}
+
+      {/* U8: the most intrusive switch in the app, so the COST is stated before
+          the benefit and the missing piece is named rather than glossed.
+          P5: the wording now names the provider, because switching to one that
+          leaves the machine TURNS THIS OFF, and re-enabling it is a decision
+          about somebody else's speech. */}
+      <Row label="Live suggestions while recording" help={isLocal ? LIVE_ASSIST_HELP : LIVE_ASSIST_AWAY_HELP(current?.vendor ?? "")}>
         <Toggle
           label="Live suggestions while recording"
           on={s.settings.liveAssist}

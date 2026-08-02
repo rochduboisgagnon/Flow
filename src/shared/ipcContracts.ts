@@ -180,6 +180,22 @@ export const UI_SET_SETTINGS = "ui:set-settings";
 export const UI_RECORD_SHORTCUT = "ui:record-shortcut";
 export const UI_LIST_MICS = "ui:list-mics";
 export const UI_OLLAMA_MODELS = "ui:ollama-models";
+// P6: what the Local AI tab reads. Three channels and no more - list, re-scan,
+// and a Test that makes ONE real call. Detection itself never runs anything.
+export const UI_LLM_PROVIDERS = "ui:llm-providers";
+export const UI_LLM_RESCAN = "ui:llm-rescan";
+export const UI_LLM_TEST = "ui:llm-test";
+
+/** One provider, as the Local AI tab renders it. `locality` is what the page
+ * reads to say where the text goes - never a string hard-coded in the page. */
+export interface LlmProviderStatus {
+  id: "ollama" | "claude-cli" | "codex-cli";
+  locality: "on-this-machine" | "sent-away";
+  vendor: string;
+  found: boolean;
+  responded: boolean;
+  detail?: string;
+}
 // "log" | "data" | "history" | "legacy-history" | "repo" | "downloaded-file"
 // (U5c: "downloaded-file" reveals the LAST file U5c's downloads wrote, tracked
 // in main - never a path the renderer supplies).
@@ -374,6 +390,9 @@ export interface UiStatePayload {
      * suggestions themselves are PULLED (see UI_ASSIST_POLL) and never ride the
      * heartbeat. */
     liveAssist: boolean;
+    /** P5: who writes the notes. NOT who transcribes speech - that is whisper,
+     * on this machine, always. See main/settings.ts. */
+    aiProvider: "ollama" | "claude-cli" | "codex-cli";
   };
   // U0: settings.theme is the PREFERENCE (what the Settings tab shows/edits);
   // resolvedTheme is what to actually PAINT right now. They diverge exactly

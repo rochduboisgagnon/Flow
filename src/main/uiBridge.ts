@@ -5,6 +5,10 @@ import {
   UI_RECORD_SHORTCUT,
   UI_LIST_MICS,
   UI_OLLAMA_MODELS,
+  UI_LLM_PROVIDERS,
+  UI_LLM_RESCAN,
+  UI_LLM_TEST,
+  type LlmProviderStatus,
   UI_OPEN_PATH,
   UI_GET_LOGIN_ITEM,
   UI_SET_LOGIN_ITEM,
@@ -83,6 +87,9 @@ export interface UiBridgeDeps {
   recordShortcut(): Promise<{ combo: string[] | null; comboLabel?: string }>;
   listMics(): Promise<Array<{ id: string; label: string }>>;
   ollamaModels(): Promise<string[] | null>;
+  llmProviders(): Promise<LlmProviderStatus[]>;
+  llmRescan(): Promise<LlmProviderStatus[]>;
+  llmTest(id: string): Promise<{ ok: boolean; detail?: string }>;
   historyRootDir(): string;
   /** U2b: the pre-1.0.0 recordings folder, or null when there is none. Null is
    * the normal case and makes "legacy-history" a refused destination. U2c: main
@@ -363,6 +370,13 @@ export class UiBridge {
     this.guarded<[], Array<{ id: string; label: string }>>(UI_LIST_MICS, [], () => this.deps.listMics());
 
     this.guarded<[], string[] | null>(UI_OLLAMA_MODELS, null, () => this.deps.ollamaModels());
+    // P6: the Local AI tab. The fallback is an EMPTY list, never a fabricated
+    // "everything is fine" - a page that cannot ask must not claim to know.
+    this.guarded<[], LlmProviderStatus[]>(UI_LLM_PROVIDERS, [], () => this.deps.llmProviders());
+    this.guarded<[], LlmProviderStatus[]>(UI_LLM_RESCAN, [], () => this.deps.llmRescan());
+    this.guarded<[string], { ok: boolean; detail?: string }>(UI_LLM_TEST, { ok: false, detail: "refused" }, (id) =>
+      this.deps.llmTest(id),
+    );
 
     this.guarded<[unknown], void>(UI_OPEN_PATH, undefined, async (which) => {
       // Fixed destinations only: the renderer never passes a path, so a
