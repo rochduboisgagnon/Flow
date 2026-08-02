@@ -35,7 +35,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # Review A10: the tag decides NOTHING by itself - electron-builder ships
       # whatever package.json says. A tag that disagrees with the source would
@@ -62,7 +62,7 @@ jobs:
             echo "A release for $GITHUB_REF_NAME already exists"; exit 1
           fi
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -152,7 +152,7 @@ jobs:
       # the ones just inspected above, and nothing between here and the upload
       # can substitute them without the attestation failing.
       - name: Attest what was built
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: |
             dist-build/Flow*Setup*.exe

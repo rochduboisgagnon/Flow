@@ -16,8 +16,16 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # Security scan (LOW, 2026-08-02): pinned by COMMIT, not by tag. A tag is a
+      # name someone can move; a commit names the bytes. The panel voted this
+      # finding down 1/3 - these are first-party GitHub actions, and moving their
+      # tags means owning GitHub, which already owns the runner, the token and
+      # the signing identity, so the gain is marginal. Applied anyway for one
+      # reason: this repo pins the SHA-256 of every third-party binary it ships,
+      # and a rule that stops at the door it finds inconvenient is not a rule.
+      # The trailing "# v4" is the human-readable half - move BOTH or neither.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm

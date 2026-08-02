@@ -54,6 +54,36 @@ function verify(group, filePath) {
   console.log(`[verify-native-deps] ${name} matches the committed hash`);
 }
 
+/** Verify a file that was EXTRACTED from a pinned archive, against the hash of
+ * the binary itself. F7: the archive is usually gone by the time anyone could
+ * check it (keyspy's postinstall extracts and removes it), so the archive hash
+ * alone leaves the running binary unvouched-for. Same failure discipline as
+ * verify(): an entry missing from the manifest is a FAILURE, never a pass. */
+function verifyExtracted(group, filePath) {
+  const entry = manifest()[group];
+  if (!entry) throw new Error(`native-deps.json has no group "${group}"`);
+  const name = path.basename(filePath);
+  const expected = (entry.extracted || {})[name];
+  if (!expected) {
+    throw new Error(
+      `${name} is not listed under "${group}".extracted in native-deps.json. ` +
+        `Add it with its hash, or this machine runs a binary nobody vouched for.`,
+    );
+  }
+  const actual = sha256(filePath);
+  if (actual !== expected) {
+    throw new Error(
+      `INTEGRITY FAILURE for ${name} (extracted)\n` +
+        `  expected ${expected}\n` +
+        `  actual   ${actual}\n` +
+        `This is the binary that watches every keystroke on this machine. Either the\n` +
+        `upstream release changed (check with the maintainer before trusting it) or\n` +
+        `something replaced it locally. Refusing to use it.`,
+    );
+  }
+  console.log(`[verify-native-deps] ${name} matches the committed extracted hash`);
+}
+
 function get(url) {
   return new Promise((resolve, reject) => {
     https
@@ -93,12 +123,23 @@ async function print() {
   }
 }
 
-const [, , a, b] = process.argv;
+// F7: this file is now REQUIRED by ensure-keyspy.cjs as well as run directly.
+// Without this guard the require() executed the CLI below, printed usage and
+// exited 2 - which the first run of the tampered-binary test caught.
+if (require.main === module) {
+const [, , a, b, c] = process.argv;
 if (a === "--print") {
   print().catch((err) => {
     console.error(String(err.message || err));
     process.exit(1);
   });
+} else if (a === "--extracted" && b && c) {
+  try {
+    verifyExtracted(b, c);
+  } catch (err) {
+    console.error(String(err.message || err));
+    process.exit(1);
+  }
 } else if (a && b) {
   try {
     verify(a, b);
@@ -107,8 +148,9 @@ if (a === "--print") {
     process.exit(1);
   }
 } else {
-  console.error("usage: verify-native-deps.cjs <group> <file> | --print");
+  console.error("usage: verify-native-deps.cjs <group> <file> | --extracted <group> <file> | --print");
   process.exit(2);
 }
+}
 
-module.exports = { verify, sha256 };
+module.exports = { verify, verifyExtracted, sha256 };

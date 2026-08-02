@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import https from "node:https";
+import crypto from "node:crypto";
 import { defaultLocalAppData, resolveModelsRoot } from "../migrate";
 
 // ASR models live in Flow's OWN data folder (%LOCALAPPDATA%\Flow\models),
@@ -27,7 +28,71 @@ import { defaultLocalAppData, resolveModelsRoot } from "../migrate";
 // meeting or an import runs and nobody is waiting.
 
 export const DEFAULT_MODEL_FILE = "ggml-large-v3-turbo-q5_0.bin";
-const HF_BASE = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
+
+// ---------------------------------------------------------------------------
+// Security scan F8 (MEDIUM, 2026-08-02). What decides the bytes this app feeds
+// to a native C++ parser.
+//
+// This used to be `.../resolve/main/`: a BRANCH, which is a moving name, and the
+// only check on the result was "at least 20 MB". Whoever controlled the upstream
+// account, its branch, or any redirect hop chose the exact bytes every install
+// of Flow would hand to the GGML loader - a silent model swap that changes what
+// gets typed at your cursor at the mild end, an exploitable memory bug in native
+// code at the other. The two native binaries beside this file had committed
+// hashes; the largest untrusted blob in the app had a size floor.
+//
+// Pinned to an immutable commit, with a SHA-256 per file, verified before the
+// downloaded file is put in place.
+//
+// PROVENANCE, because a hash nobody can re-derive is a decoration: taken from
+// HuggingFace's own tree API at this revision (the LFS oid IS the content
+// SHA-256), then checked against the two models already on the author's disk -
+// both matched byte for byte. Re-derive with:
+//   curl -s "https://huggingface.co/api/models/ggerganov/whisper.cpp/tree/<REV>"
+// ---------------------------------------------------------------------------
+const HF_REVISION = "5359861c739e955e79d9a303bcbc70fb988958b1";
+const HF_BASE = `https://huggingface.co/ggerganov/whisper.cpp/resolve/${HF_REVISION}/`;
+
+/** SHA-256 of every model this app will download, at HF_REVISION. A file absent
+ * from this table CANNOT be fetched - the same rule as native-deps.json, and for
+ * the same reason: an unlisted asset must be a failure, never a pass, or the
+ * check silently stops applying the day someone adds a seventh model. */
+export const MODEL_SHA256: Readonly<Record<string, string>> = {
+  "ggml-tiny-q5_1.bin": "818710568da3ca15689e31a743197b520007872ff9576237bda97bd1b469c3d7",
+  "ggml-base-q5_1.bin": "422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898",
+  "ggml-small-q5_1.bin": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+  "ggml-medium-q5_0.bin": "19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f",
+  "ggml-large-v3-turbo-q5_0.bin": "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
+  "ggml-large-v3-q5_0.bin": "d75795ecff3f83b5faa89d1900604ad8c780abd5739fae406de19f23ecd98ad1",
+};
+
+/** Exact byte size at HF_REVISION. Not a security control on its own - a size is
+ * trivial to match - but it is the check that is FREE, so it is the one that can
+ * run against an already-installed model at every launch. See ensureModel. */
+export const MODEL_BYTES: Readonly<Record<string, number>> = {
+  "ggml-tiny-q5_1.bin": 32_152_673,
+  "ggml-base-q5_1.bin": 59_707_625,
+  "ggml-small-q5_1.bin": 190_085_487,
+  "ggml-medium-q5_0.bin": 539_212_467,
+  "ggml-large-v3-turbo-q5_0.bin": 574_041_195,
+  "ggml-large-v3-q5_0.bin": 1_081_140_203,
+};
+
+/** F8: where a redirect is allowed to land. HuggingFace bounces model downloads
+ * to a CDN host that varies by region and over time, so this is a suffix rule
+ * rather than a fixed list - but it is still a rule, where before there was
+ * none and any 302 could send the download anywhere. */
+export function redirectAllowed(rawUrl: string): boolean {
+  let u: URL;
+  try {
+    u = new URL(rawUrl);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== "https:") return false; // never step down to http on a redirect
+  const h = u.hostname.toLowerCase();
+  return h === "huggingface.co" || h === "hf.co" || h.endsWith(".huggingface.co") || h.endsWith(".hf.co");
+}
 
 // The models offered for BATCH work (meetings, imports) - all multilingual, all
 // quantized builds shipped upstream by whisper.cpp. Dictation no longer appears
@@ -69,24 +134,47 @@ export async function ensureModel(
   file = DEFAULT_MODEL_FILE,
   onProgress?: (pct: number) => void,
 ): Promise<string> {
+  // F8: a model this table does not name cannot be fetched at all. An unlisted
+  // asset is a failure, never a pass.
+  const expectedHash = MODEL_SHA256[file];
+  if (!expectedHash) {
+    throw new Error(`refusing to fetch "${file}": no committed SHA-256 for it in modelStore.ts`);
+  }
   const dest = modelPath(file);
   if (fs.existsSync(dest)) {
     // R1: an earlier run may have left a truncated .bin (download cut, HTML stub).
     // existsSync used to short-circuit it FOREVER; validate a plausible size first.
+    //
+    // F8, and the limit is worth stating rather than glossing: this checks the
+    // EXACT size now, not merely a floor, but it does not re-hash. Hashing a
+    // gigabyte at every launch would cost seconds on the path to a warm engine,
+    // for a file that was verified when it landed. So a model already on disk is
+    // held to a free check; a model ARRIVING is held to the real one.
     try {
-      if (fs.statSync(dest).size >= MIN_MODEL_BYTES) return dest;
+      const size = fs.statSync(dest).size;
+      const want = MODEL_BYTES[file];
+      if (want ? size === want : size >= MIN_MODEL_BYTES) return dest;
     } catch {
       return dest; // stat failed but the file is there: leave it, don't loop
     }
-    try {
-      fs.unlinkSync(dest);
-    } catch {
-      /* fall through: the download below will overwrite the .part and rename */
-    }
+    // ADVERSE REVIEW OF F8, and this is the correction that mattered: the file
+    // is NOT deleted here.
+    //
+    // The unlink used to fire only under the 20 MB floor - on a file that could
+    // not work anyway. Tightening the check to an EXACT size widened its
+    // trigger to any model from a different upstream revision: a perfectly
+    // working 1.08 GB model, destroyed, and then a download attempted. On a
+    // machine that is offline, or against an upstream 503, the user ends up
+    // with NO model where they had a working one, and the app says "speech
+    // engine unavailable". The .part-then-rename dance below promises
+    // atomicity; deleting the destination first threw that promise away.
+    //
+    // So the old file stays put until a verified replacement is ready to take
+    // its name. The worst case is now a wasted download, not a bricked engine.
   }
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   const tmp = dest + ".part";
-  await download(HF_BASE + file, tmp, onProgress);
+  const gotHash = await download(HF_BASE + file, tmp, onProgress);
   // R1: refuse a suspiciously small result even if the server sent no Content-Length.
   let size = 0;
   try {
@@ -102,18 +190,44 @@ export async function ensureModel(
     }
     throw new Error(`model download too small (${size} bytes): not a usable model, refusing to keep it`);
   }
+  // F8: the check that matters, and it happens BEFORE the rename. Verifying
+  // after would mean the unverified file had already taken the name the engine
+  // loads by - and a failure there would leave it in place.
+  if (gotHash !== expectedHash) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      /* best effort: the .part is ours */
+    }
+    throw new Error(
+      `INTEGRITY FAILURE for ${file}\n  expected ${expectedHash}\n  actual   ${gotHash}\n` +
+        `The bytes served for this model are not the ones pinned in this build. Refusing ` +
+        `to hand them to the speech engine.`,
+    );
+  }
   fs.renameSync(tmp, dest);
   return dest;
 }
 
-function download(url: string, dest: string, onProgress?: (pct: number) => void, redirects = 0): Promise<void> {
+/** Downloads to `dest` and returns the SHA-256 of what was written.
+ *
+ * F8: the digest is computed AS THE BYTES ARRIVE rather than by re-reading the
+ * file afterwards. Not only to avoid reading a gigabyte twice - it also means
+ * the hash is of what this function actually received, which a later re-read
+ * could no longer promise. */
+function download(url: string, dest: string, onProgress?: (pct: number) => void, redirects = 0): Promise<string> {
   return new Promise((resolve, reject) => {
     if (redirects > 5) return reject(new Error("too many redirects downloading the model"));
     https
       .get(url, (res) => {
         if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           res.resume();
-          return resolve(download(res.headers.location, dest, onProgress, redirects + 1));
+          // F8: a 302 used to be followed anywhere at all, http included.
+          const next = new URL(res.headers.location, url).toString();
+          if (!redirectAllowed(next)) {
+            return reject(new Error(`refusing a model redirect off the pinned host: ${next}`));
+          }
+          return resolve(download(next, dest, onProgress, redirects + 1));
         }
         if (res.statusCode !== 200) {
           res.resume();
@@ -121,9 +235,11 @@ function download(url: string, dest: string, onProgress?: (pct: number) => void,
         }
         const total = Number(res.headers["content-length"] ?? 0);
         let got = 0;
+        const hash = crypto.createHash("sha256");
         const out = fs.createWriteStream(dest);
         res.on("data", (c: Buffer) => {
           got += c.length;
+          hash.update(c);
           if (total && onProgress) onProgress(Math.round((got / total) * 100));
         });
         res.pipe(out);
@@ -139,7 +255,7 @@ function download(url: string, dest: string, onProgress?: (pct: number) => void,
               }
               return reject(new Error(`model download truncated: got ${got} of ${total} bytes`));
             }
-            resolve();
+            resolve(hash.digest("hex"));
           }),
         );
         out.on("error", (e) => {

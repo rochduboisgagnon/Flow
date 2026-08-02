@@ -34,6 +34,31 @@
     "version": "1.1.1",
     "assets": {
       "keyspy-win32-x64.tar.gz": "8dc511bfc52ce91dbabb66f375affcbc7ec45b6e9377689e5283e77e74c8f956"
+    },
+    "_extracted_why": [
+      "2026-08-02, security scan F7 (MEDIUM). Pinning the ARCHIVE was not enough,",
+      "for a reason the finding named and the disk confirmed: keyspy's own",
+      "postinstall usually extracts and removes the .tar.gz, so on a real dev",
+      "machine the archive is ABSENT and there is nothing left to check. The exe",
+      "that watches every keystroke on this computer was sitting in node_modules",
+      "vouched for by nobody.",
+      "",
+      "So the hash below is of the EXTRACTED binary, which is what actually runs.",
+      "It covers both routes into runtime/: keyspy's own extraction and ours.",
+      "",
+      "PROVENANCE OF THIS NUMBER, since a hash nobody can re-derive is a decoration:",
+      "the pinned archive was downloaded, matched against the archive hash above,",
+      "extracted, and WinKeyServer.exe hashed from those verified bytes. The copy",
+      "already installed here was byte-identical. Re-derive it the same way with",
+      "To re-derive: download the pinned archive, check it against the archive hash",
+      "above, unpack it, hash the exe. Confirm a local copy with:",
+      "  node scripts/verify-native-deps.cjs --extracted keyspy <path to the exe>",
+      "(The flag named here before this line was rewritten did not exist - caught by",
+      "an adverse review, in the very file that says an un-re-derivable hash is a",
+      "decoration.)"
+    ],
+    "extracted": {
+      "WinKeyServer.exe": "ddd8be723257109a5b27a60d788826ca9c116ade9665d9b2195381eefe6fa793"
     }
   }
 }

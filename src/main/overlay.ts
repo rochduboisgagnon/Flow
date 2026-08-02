@@ -115,6 +115,24 @@ export class OverlayWindow {
   }
 
   /**
+   * Is this IPC message from the overlay, and not from one of the other windows
+   * that share the same preload?
+   *
+   * Security scan (LOW, 2026-08-02): the three CAPTURE_* channels were the only
+   * ipcMain listeners in the app with no sender check - NATIVE_*, DECODE_* and
+   * every UI_* channel have one. The panel voted the finding down 0/3 and it was
+   * right to: there is no first stage today (four windows on fixed local files,
+   * navigation blocked, no innerHTML anywhere in the renderer, a CSP). But
+   * "unreachable today" is a property of the OTHER four defences, not of this
+   * code, and the cost of not depending on them is this one line. A future
+   * renderer bug becomes a contained incident instead of synthetic keystrokes
+   * at the user's cursor.
+   */
+  isFrom(sender: Electron.WebContents): boolean {
+    return !!this.win && !this.win.isDestroyed() && sender === this.win.webContents;
+  }
+
+  /**
    * B2: tell the renderer how to keep the microphone warm - or, with null, to
    * close it and erase its pre-roll now.
    *

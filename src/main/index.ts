@@ -1443,7 +1443,11 @@ function noteCaptureContinuity(capturedMs: number, preRollMs: number): void {
 }
 
 function wireCapture() {
-  ipcMain.on(CAPTURE_DONE, (_ev, payload: CaptureDonePayload) => {
+  // Security scan (LOW, 2026-08-02): these three were the app's only ipcMain
+  // listeners without a sender check. See OverlayWindow.isFrom for why it is
+  // worth one line even though the panel voted the finding down 0/3.
+  ipcMain.on(CAPTURE_DONE, (ev, payload: CaptureDonePayload) => {
+    if (!overlay.isFrom(ev.sender)) return;
     // B1: the WAV genuinely arrived - mark it before any early return, so a
     // too-short clip still closes as an honest (abandoned) trace instead of
     // leaving its open trace to be swept 30 s later as "stale".
@@ -1548,10 +1552,12 @@ function wireCapture() {
   // recorded. Correlation is the same FIFO-by-age rule wavReceived already uses,
   // and a message that finds no matching open trace (a refused press, closed
   // synchronously by onStart) is dropped rather than mis-attributed.
-  ipcMain.on(CAPTURE_TIMING, (_ev, payload: CaptureTimingPayload) => {
+  ipcMain.on(CAPTURE_TIMING, (ev, payload: CaptureTimingPayload) => {
+    if (!overlay.isFrom(ev.sender)) return;
     hotpath.markOverlayTimings(payload.firstPaintMs, payload.firstSampleMs);
   });
-  ipcMain.on(CAPTURE_ERROR, (_ev, message: string) => {
+  ipcMain.on(CAPTURE_ERROR, (ev, message: string) => {
+    if (!overlay.isFrom(ev.sender)) return;
     hotpath.abandon(HOTPATH_ABANDON_REASON.captureError);
     console.error("[capture] failed:", message);
     statusText = "microphone unavailable";

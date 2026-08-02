@@ -1,4 +1,5 @@
 import { childEnv } from "../../shared/childEnv";
+import { socketOwnedBy } from "./portOwner";
 import { spawn, type ChildProcess } from "node:child_process";
 import http from "node:http";
 import net from "node:net";
@@ -79,6 +80,23 @@ const PROBE_TIMEOUT_MS = 30_000;
 // 3 is low enough to self-heal a broken backend after only a couple of dead
 // utterances, yet not so twitchy that a lone fluke demotes a healthy GPU.
 const EMPTY_DEMOTE_STREAK = 3;
+/** How many times to pick a different port when the one we probed was taken
+ * between the probe and the child's own bind. Small: after a few collisions the
+ * cause is not a race, and pretending otherwise would spin. */
+const PORT_STEAL_RETRIES = 3;
+
+/** F4/F5: "the port was taken" is a fact about the port, not about the backend.
+ * Marked on the error so startWith can retry a different port instead of
+ * condemning a perfectly good binary for the rest of the session. */
+const PORT_STOLEN = Symbol.for("flow.portStolen");
+function portStolenError(port: number): Error {
+  const e = new Error(`another process owns port ${port}: refusing to use it as the speech engine`);
+  (e as Error & { [PORT_STOLEN]?: boolean })[PORT_STOLEN] = true;
+  return e;
+}
+export function isPortStolen(err: unknown): boolean {
+  return !!(err as { [PORT_STOLEN]?: boolean } | null)?.[PORT_STOLEN];
+}
 
 export class WhisperSidecar {
   private proc: ChildProcess | null = null;
@@ -152,6 +170,33 @@ export class WhisperSidecar {
    * require it to actually DECODE the probe WAV. During this trial the exit only
    * clears state (no respawn); the respawn watchdog is attached only once trusted. */
   private async startWith(bin: string, probe: boolean): Promise<void> {
+    // Adverse review of F4/F5: a stolen port must NOT condemn the backend.
+    //
+    // The check added below refuses a port whose listening socket belongs to
+    // someone else. The first version turned that into "this backend failed",
+    // which lands it in badBackends - a set that is never emptied. And the most
+    // likely thief is not an attacker at all: Flow runs TWO sidecars (dictation
+    // and the batch engine). One can be holding a port through ten to twenty
+    // seconds of model load while findFreePort hands the SAME number to the
+    // other. The result was a permanent demotion to CPU for the rest of the
+    // session, caused by Flow colliding with itself - and with forceCpu, where
+    // there is no second candidate, dictation dead for the session.
+    //
+    // "Someone else has this port" is a fact about the PORT. So: try another
+    // one. Only a backend that cannot start is a bad backend.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.startOnFreePort(bin, probe);
+      } catch (err) {
+        if (!isPortStolen(err) || attempt >= PORT_STEAL_RETRIES) throw err;
+        this.opts.log?.(
+          `[whisper-server] port ${this.port} was taken by another process; trying a different one`,
+        );
+      }
+    }
+  }
+
+  private async startOnFreePort(bin: string, probe: boolean): Promise<void> {
     this.port = await findFreePort(PORT_START, PORT_END);
     const args = buildServerArgs(
       this.opts.modelPath,
@@ -268,7 +313,33 @@ export class WhisperSidecar {
           resolve(false);
         });
       });
-      if (ok) return;
+      if (ok) {
+        // F4 + F5 (2026-08-02): SOMETHING answered. Before believing it is our
+        // speech engine, ask the OS who owns that listening socket.
+        //
+        // This is what makes the pre-probed port of findFreePort safe. The race
+        // it opens is real and lasts as long as a model takes to load, but
+        // winning it no longer wins anything: whoever answers has to BE the
+        // process we started, or they get nothing - no utterance audio, no
+        // dictionary terms, and no say in what Flow types at the cursor.
+        const owner = await socketOwnedBy(this.port, this.proc?.pid, { log: this.opts.log });
+        if (owner === false) {
+          this.opts.log?.(
+            `[whisper-server] REFUSED: something else owns port ${this.port}. Not sending audio to it.`,
+          );
+          this.hardStopProc();
+          throw portStolenError(this.port);
+        }
+        if (owner === null) {
+          // Said out loud rather than swallowed. A check that could not run has
+          // not passed, and a log line is the difference between a known gap and
+          // a believed guarantee.
+          this.opts.log?.(
+            `[whisper-server] could not confirm that port ${this.port} belongs to the engine we started`,
+          );
+        }
+        return;
+      }
       await new Promise((r) => setTimeout(r, 300));
     }
     // Kill only this proc (NOT this.stop(), which would set stopped and block a
