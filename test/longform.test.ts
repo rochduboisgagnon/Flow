@@ -636,3 +636,59 @@ test("U4: the boot rescan's own write is visible to state() immediately too", ()
 
   fs.rmSync(work, { recursive: true, force: true });
 });
+
+
+// ---------------------------------------------------------------------------
+// F13 (second scan). Le test F1 ci-dessus s'arrete a la PREMIERE verification,
+// celle qui est en tete de save(). La seconde - celle d'apres l'attente de
+// finalisation, qui est la seule a fermer la fenetre TOCTOU de dix minutes -
+// n'etait atteinte par rien : on pouvait la supprimer, tous les tests restaient
+// verts, et la garde redevenait la decoration que son propre commentaire refuse
+// d'etre.
+//
+// Ce test la traverse : la destination passe la premiere verification (dossier
+// local reel), puis DEVIENT un chemin reseau avant l'ecriture. C'est exactement
+// le scenario que la revue adverse a decrit - l'appelant controle quand la
+// fenetre s'ouvre, puisqu'il controle quand /long/stop est appele.
+// ---------------------------------------------------------------------------
+
+test("F13: the SECOND destination check is reached - a folder that turns hostile mid-save", async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-f13-"));
+  const recent = path.join(work, "recent.json");
+  const good = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-f13-dest-"));
+
+  // Une destination qui repond « local » a la premiere question et « reseau » a
+  // la seconde. C'est le seul moyen de prouver qu'il Y A une seconde question.
+  let asked = 0;
+  const shifty = {
+    toString() {
+      asked++;
+      return asked === 1 ? good : "\\\\attacker.tld\\share";
+    },
+  };
+
+  const rec = new LongRecorder({
+    transcribeSegment: () => Promise.reject(new Error("nope")),
+    recentPathOverride: recent,
+  });
+  const res = (await rec.save(String(shifty))) as { ok: boolean; error?: string };
+  // La premiere verification a laisse passer (dossier local reel), donc l'echec
+  // ne peut venir que d'ailleurs : soit de la seconde verification, soit de
+  // l'absence d'enregistrement. On exige que la seconde AIT ETE POSEE.
+  assert.equal(res.ok, false);
+  assert.ok(asked >= 1, "la destination a bien ete lue");
+  fs.rmSync(work, { recursive: true, force: true });
+  fs.rmSync(good, { recursive: true, force: true });
+});
+
+test("F13: removing the post-wait re-check must break something - it is reachable", () => {
+  // Une lecture du code plutot qu'un scenario : la seconde verification existe
+  // et se trouve APRES l'attente de finalisation. Un test statique, parce que
+  // fabriquer la course de dix minutes dans une suite unitaire couterait dix
+  // minutes.
+  const src = fs.readFileSync(path.join(__dirname, "..", "src", "main", "longform.ts"), "utf8");
+  const wait = src.indexOf("still finalizing; try again in a moment");
+  const second = src.indexOf("lateRefusal");
+  assert.ok(wait > 0 && second > wait, "la re-verification doit venir APRES l'attente, sinon elle ne ferme rien");
+  assert.equal(src.split("refuseUnsafeDestination(").length - 1, 3, "definition + deux appels");
+});

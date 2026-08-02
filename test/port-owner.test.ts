@@ -136,3 +136,34 @@ test("F4 second pass: an ordinary failure is still unknown, so a locked-down hos
   });
   assert.equal(r, null, "the tool being absent is not evidence of an attack");
 });
+
+// ---------------------------------------------------------------------------
+// F12 (second scan). Les tests ci-dessus ne prouvaient que l'ANALYSEUR : rien
+// ne pilotait la branche du sidecar qui AGIT sur un refus. On pouvait donc
+// supprimer le « refuser puis reessayer un autre port » sans qu'un seul test
+// tombe.
+//
+// Ce qui est teste ici est le marqueur qui porte cette decision, parce que
+// c'est lui qui distingue « ce port est pris » (essaie ailleurs) de « ce
+// backend est mauvais » (condamne-le pour la session). Confondre les deux etait
+// la regression que la revue des vagues 3-4 avait trouvee.
+//
+// HONNETE SUR CE QUI RESTE NON COUVERT : la branche elle-meme n'a pas de
+// double de test, et c'est un choix. Le faux lanceur des tests demarre un VRAI
+// enfant qui lie vraiment le port, donc le controle y repond `true` comme en
+// production ; fabriquer un `false` demanderait une couture, c'est-a-dire un
+// interrupteur pour eteindre un controle de securite. Cette ligne dit ou est le
+// trou plutot que de le combler par quelque chose de pire.
+// ---------------------------------------------------------------------------
+
+test("F12: a stolen port is marked as a PORT fact, never as a bad backend", async () => {
+  const { isPortStolen } = await import("../src/main/asr/sidecar");
+  const stolen = Object.assign(new Error("another process owns port 8178"), {
+    [Symbol.for("flow.portStolen")]: true,
+  });
+  assert.equal(isPortStolen(stolen), true);
+  assert.equal(isPortStolen(new Error("whisper-server died during startup")), false, "un vrai echec de backend");
+  assert.equal(isPortStolen(null), false);
+  assert.equal(isPortStolen(undefined), false);
+  assert.equal(isPortStolen("une chaine"), false);
+});

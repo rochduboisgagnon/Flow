@@ -131,3 +131,43 @@ test("F3: a missing history file is not created by the purge", () => {
     fs.rmSync(work, { recursive: true, force: true });
   }
 });
+
+
+// ---------------------------------------------------------------------------
+// F9 (second scan). Les tests ci-dessus appellent start() PUIS stop(), et les
+// deux purgent. Aucun ne pouvait donc dire lequel des deux avait fait le
+// travail : supprimer la purge au demarrage laissait la suite entierement
+// verte, alors que c'est precisement le site qui compte pour la machine qu'on
+// ouvre et qu'on n'utilise plus.
+// ---------------------------------------------------------------------------
+
+test("F9: start() ALONE purges - the startup site is the one that matters", () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "flow-f9a-"));
+  const file = path.join(work, "history.json");
+  const now = Date.UTC(2026, 7, 2);
+  seed(file, [1, RETENTION_DAYS + 5], now);
+  try {
+    const store = new DictationHistoryStore({ file: () => file, now: () => now, flushIntervalMs: 3_600_000 });
+    store.start(); // et RIEN d'autre : pas de stop()
+    assert.deepEqual(onDisk(file), ["dictated 1 days ago"], "la purge au demarrage doit suffire a elle seule");
+    store.stop();
+  } finally {
+    fs.rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("F9: stop() ALONE purges too - the two sites are independent", () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "flow-f9b-"));
+  const file = path.join(work, "history.json");
+  const now = Date.UTC(2026, 7, 2);
+  seed(file, [2, RETENTION_DAYS + 9], now);
+  try {
+    const store = new DictationHistoryStore({ file: () => file, now: () => now, flushIntervalMs: 3_600_000 });
+    // On saute start() : seul stop() tourne. Si les deux sites n'etaient pas
+    // reellement independants, ce test tomberait.
+    store.stop();
+    assert.deepEqual(onDisk(file), ["dictated 2 days ago"]);
+  } finally {
+    fs.rmSync(work, { recursive: true, force: true });
+  }
+});

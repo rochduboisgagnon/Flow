@@ -244,7 +244,11 @@ async function main() {
     return;
   }
   try {
-    await getJson(info.port, "/status"); // confirms Flow, not just some other process on that port
+    // F8 (second scan): this probe was left WITHOUT the token when the rest of the
+    // migration landed, so `npm run bench:hotpath` died on its very first call with
+    // a 403 before ever reaching the snapshot. A half-migrated caller is the exact
+    // shape the Pilot relay failed in earlier today.
+    await getJson(info.port, "/status", info.token); // confirms Flow, not some other process on that port
     const snapshot = await getJson<HotpathSnapshot>(info.port, "/diagnostics/hotpath", info.token);
     report(snapshot);
   } catch (e) {
