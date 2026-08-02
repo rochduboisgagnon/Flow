@@ -101,6 +101,23 @@ function pidAlive(pid: number): boolean {
   }
 }
 
+/** F5: can we bind this port right now?
+ *
+ * The question behind it is "is the engine that wrote this discovery file still
+ * alive", and a PID cannot answer it: pidAlive() says true on EPERM, so any
+ * process of another account that inherited that number reads as "the previous
+ * engine". Windows recycles PIDs aggressively.
+ *
+ * A free port answers it honestly. We only try to BIND - never to talk to
+ * whoever might be there, which would be sending a request to a stranger. */
+function portFree(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const probe = http.createServer();
+    probe.once("error", () => resolve(false));
+    probe.listen(port, "127.0.0.1", () => probe.close(() => resolve(true)));
+  });
+}
+
 /** Small JSON body reader (loopback control endpoints only). */
 function readJson(req: http.IncomingMessage): Promise<Record<string, unknown> | null> {
   return new Promise((resolve, reject) => {
@@ -221,8 +238,20 @@ export class LocalApi {
     // old engine, and we run this session without a discovery file - a lesser
     // harm than a folder rename under a running app.
     try {
-      const raw = JSON.parse(fs.readFileSync(info, "utf8")) as { pid?: number };
-      if (typeof raw.pid === "number" && raw.pid !== process.pid && pidAlive(raw.pid)) {
+      const raw = JSON.parse(fs.readFileSync(info, "utf8")) as { pid?: number; port?: number };
+      // F5 (second scan) : `pidAlive` seul ne suffit pas. Il repond VRAI sur
+      // EPERM, donc sur n'importe quel processus d'un autre compte ayant
+      // recupere ce numero - et Windows recycle les PID agressivement. Un
+      // fichier de decouverte perime designant un PID reattribue privait donc
+      // silencieusement la session de son jeton : les applications soeurs
+      // restaient dehors, sans un message, jusqu'au prochain demarrage.
+      //
+      // Le port est ce qui tranche : si le fichier annonce un port et que
+      // PERSONNE n'ecoute dessus, l'ancien moteur est mort quoi qu'en dise le
+      // PID, et le fichier est a nous. On ne parle pas au port (ce serait une
+      // requete a un inconnu) : on essaie seulement de le lier.
+      const stale = typeof raw.port === "number" && raw.port > 0 && (await portFree(raw.port));
+      if (!stale && typeof raw.pid === "number" && raw.pid !== process.pid && pidAlive(raw.pid)) {
         // F2 note (adverse review): this early return now also means "this
         // session's token is never published", so sibling apps cannot reach US.
         // That is the correct outcome rather than a new hole: the port and the
@@ -287,7 +316,20 @@ export class LocalApi {
   }
 
   private async route(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    const url = new URL(req.url ?? "/", "http://127.0.0.1");
+    // F7 (second scan) : `new URL` LEVE sur une cible malformee, et cette ligne
+    // etait au-dessus de tout - au-dessus du controle d'hote, au-dessus du
+    // jeton, au-dessus du try. Comme route() est appelee en `void this.route(...)`,
+    // le rejet n'avait personne pour l'attraper : rejet de promesse non gere,
+    // et surtout une requete qui reste ouverte sans reponse jusqu'a son propre
+    // delai. Un plantage du processus principal, c'est le hook clavier qui tombe.
+    let url: URL;
+    try {
+      url = new URL(req.url ?? "/", "http://127.0.0.1");
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "malformed request target" }));
+      return;
+    }
     const json = (code: number, body: unknown) => {
       const data = JSON.stringify(body);
       res.writeHead(code, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) });

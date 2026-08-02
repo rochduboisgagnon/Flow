@@ -421,10 +421,21 @@ test("transcribe errors surface as 500, never crash the server", async () => {
   }
 });
 
-test("A10: start() never overwrites a discovery file advertising a LIVE foreign pid", async () => {
+test("A10: start() never overwrites a discovery file advertising a LIVE foreign engine", async () => {
   // The migration reads that file to find the old engine; a boot that clobbers
   // it erases the only record of a living process (adversarial review, critical).
+  //
+  // F5 (second scan): "live" now means the PID is alive AND its port is really
+  // taken. A PID alone cannot answer the question - pidAlive() returns true on
+  // EPERM, so any process of another account that inherited that number read as
+  // "the previous engine", and this session then ran with NO discovery file and
+  // therefore no published token. Sibling apps locked out, silently, until the
+  // next restart. So this test holds the port for real.
   const info = path.join(os.tmpdir(), `agrflow-api-keep-${process.pid}.json`);
+  const held = await new Promise<import("node:http").Server>((resolve) => {
+    const srv = http.createServer();
+    srv.listen(65_001, "127.0.0.1", () => resolve(srv));
+  });
   // process.ppid: alive for the whole test run, and definitely not process.pid.
   const foreign = { app: "agr-flow", port: 65_001, pid: process.ppid, version: "0.22.0" };
   fs.writeFileSync(info, JSON.stringify(foreign));
@@ -444,6 +455,7 @@ test("A10: start() never overwrites a discovery file advertising a LIVE foreign 
     assert.equal(kept.pid, process.ppid, "the live foreign engine's record survived our boot");
     assert.equal(kept.port, 65_001);
   } finally {
+    held.close();
     api.stop();
     try { fs.unlinkSync(info); } catch { /* kept on purpose: not ours */ }
   }
@@ -712,5 +724,38 @@ test("a right host on the WRONG port is refused too", async () => {
     assert.equal((await getHost(port, "/status", "127.0.0.1")).code, 403);
   } finally {
     api.stop();
+  }
+});
+
+
+test("F5: a live PID whose port is FREE does not deprive this session of its token", async () => {
+  // The scenario the second scan named: a stale discovery file naming a PID that
+  // Windows has since handed to somebody else. Before this, we read "the
+  // previous engine is alive", published no discovery file, and every sibling
+  // app stayed locked out with no message until the next restart.
+  //
+  // The port is what tells the truth: nobody listening means nobody is there,
+  // whatever the PID says.
+  const info = path.join(os.tmpdir(), `agrflow-api-recycled-${process.pid}.json`);
+  const stale = { app: "agr-flow", port: 65_099, pid: process.ppid, version: "0.22.0" };
+  fs.writeFileSync(info, JSON.stringify(stale));
+  const api = new LocalApi({
+    version: "9.9.9-test",
+    isListening: () => false,
+    isRecording: () => false,
+    isEngineWarm: () => true,
+    transcribe: () => Promise.resolve({ text: "", ms: 0 }),
+    ...longDepsStub(),
+    infoPathOverride: info,
+  });
+  await api.start();
+  auth(api);
+  try {
+    const now = JSON.parse(fs.readFileSync(info, "utf8")) as { pid: number; token?: string };
+    assert.equal(now.pid, process.pid, "the file is ours: the advertised engine was not there");
+    assert.equal(now.token, api.sessionToken(), "and the token IS published, which is the whole point");
+  } finally {
+    api.stop();
+    fs.rmSync(info, { force: true });
   }
 });
