@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { WhisperSidecar } from "../src/main/asr/sidecar";
 
+
 // R1 (reliability): "the animation plays but nothing writes". A Vulkan build that
 // loads but cannot decode must be skipped for CPU - at SELECTION (the decode probe)
 // and at INFERENCE (empty/crash demotion). Proven here with fake whisper-servers,
@@ -39,6 +40,7 @@ test("R1: a GPU that decodes empty is skipped for CPU at selection (decode probe
     binaryPaths: [gpu, cpu],
     modelPath: model,
     probeWav: probe,
+
     spawnProc: spawnerFor({ "fake-vulkan.exe": "empty", "fake-cpu.exe": "text" }),
   });
   try {
@@ -55,6 +57,7 @@ test("R1: a backend that passes the probe then returns empty demotes to CPU", as
     binaryPaths: [gpu, cpu],
     modelPath: model,
     probeWav: probe,
+
     spawnProc: spawnerFor({ "fake-vulkan.exe": "probeok-empty", "fake-cpu.exe": "text" }),
   });
   try {
@@ -75,6 +78,7 @@ test("R1: long-form empties do NOT demote a healthy GPU (allowEmptyDemote:false)
     binaryPaths: [gpu, cpu],
     modelPath: model,
     probeWav: probe,
+
     spawnProc: spawnerFor({ "fake-vulkan.exe": "probeok-empty", "fake-cpu.exe": "text" }),
   });
   try {
@@ -95,6 +99,7 @@ test("R1: a backend that fails at every inference demotes to CPU", async () => {
     probeWav: probe,
     // stateful-fail: 1st inference EVER (the probe) returns text so the GPU is frozen;
     // every later inference (even after the same-backend respawn+retry) answers 500.
+
     spawnProc: spawnerFor({ "fake-vulkan.exe": "stateful-fail", "fake-cpu.exe": "text" }, counter),
   });
   try {
@@ -115,6 +120,7 @@ test("R1: the LAST candidate is trusted on readiness, never probe-bricked", asyn
     binaryPaths: [gpu, cpu],
     modelPath: model,
     probeWav: probe,
+
     spawnProc: spawnerFor({ "fake-vulkan.exe": "empty", "fake-cpu.exe": "empty" }),
   });
   try {
@@ -133,6 +139,7 @@ test("R1: a sole backend is trusted without a probe (a slow CPU is never timed o
     binaryPaths: [cpu],
     modelPath: model,
     probeWav: probe,
+
     spawnProc: spawnerFor({ "fake-cpu.exe": "empty" }),
   });
   try {

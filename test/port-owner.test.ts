@@ -101,3 +101,38 @@ test("F4: an OUTBOUND connection from that port is not a listener", () => {
 test("F4: a port that merely shares a prefix is not a match", () => {
   assert.equal(parseOwningPid(netstat(81780, 4242), 8178), null);
 });
+
+// ---------------------------------------------------------------------------
+// SECOND SCAN (F4, 3/3, 2026-08-02). The fix above did not hold, and it failed
+// the same way the first scan's target had: the control sat on the nominal path
+// and an attacker walked around it.
+//
+// The TCP table is printed whole. With Node's default 1 MiB maxBuffer, a local
+// process that opens enough sockets pushes the output past the cap, execFile
+// errors, and "could not tell" was returned - after which the caller sent the
+// audio anyway. That is a security control an attacker can switch off on
+// demand, which is worse than none, because it is believed.
+// ---------------------------------------------------------------------------
+
+test("F4 second pass: an output too large to read is a FAILURE, not a shrug", async () => {
+  const seen: string[] = [];
+  const r = await socketOwnedBy(8178, 4242, {
+    platform: "win32",
+    run: async () => {
+      throw new Error("spawnSync netstat.exe ENOBUFS stdout maxBuffer length exceeded");
+    },
+    log: (m) => seen.push(m),
+  });
+  assert.equal(r, false, "an attacker-forced overflow must refuse, never resolve to unknown");
+  assert.match(seen.join(" "), /REFUSED/, "and it must be said loudly, not logged as a shrug");
+});
+
+test("F4 second pass: an ordinary failure is still unknown, so a locked-down host is not bricked", async () => {
+  const r = await socketOwnedBy(8178, 4242, {
+    platform: "win32",
+    run: async () => {
+      throw new Error("spawn netstat.exe ENOENT");
+    },
+  });
+  assert.equal(r, null, "the tool being absent is not evidence of an attack");
+});

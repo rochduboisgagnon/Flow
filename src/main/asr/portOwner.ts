@@ -57,6 +57,22 @@ import { childEnv } from "../../shared/childEnv";
  * answer, so this is short on purpose. */
 const OWNER_TIMEOUT_MS = 3_000;
 
+/**
+ * Second scan (F4, 3/3): how much netstat output we accept.
+ *
+ * This started as Node's default `maxBuffer`, which is 1 MiB - and that turned
+ * an unknowable into an ATTACKER-CONTROLLED one. The whole TCP table is printed
+ * here; a local process that opens enough sockets pushes it past the cap,
+ * execFile errors, we return "could not tell", and the caller sends the audio
+ * anyway. A security control an attacker can switch off on demand is worse than
+ * no control, because it is believed.
+ *
+ * 16 MiB is roughly 200 000 connections. The real table on this machine is
+ * 22 KB. Overflowing this is not a busy computer; see the caller for what we do
+ * about it.
+ */
+const MAX_TABLE_BYTES = 16 * 1024 * 1024;
+
 export interface PortOwnerDeps {
   /** Test seam. Resolves with the raw stdout of the ownership query. */
   run?(cmd: string, args: string[]): Promise<string>;
@@ -69,7 +85,7 @@ function defaultRun(cmd: string, args: string[]): Promise<string> {
     execFile(
       cmd,
       args,
-      { timeout: OWNER_TIMEOUT_MS, windowsHide: true, env: childEnv() },
+      { timeout: OWNER_TIMEOUT_MS, windowsHide: true, env: childEnv(), maxBuffer: MAX_TABLE_BYTES },
       (err, stdout) => (err ? reject(err) : resolve(String(stdout))),
     );
   });
@@ -119,7 +135,18 @@ export async function socketOwnedBy(
     if (owner === null) return null;
     return owner === pid;
   } catch (err) {
-    deps.log?.(`[whisper-server] could not determine port ownership: ${(err as Error).message}`);
+    const msg = (err as Error).message || "";
+    // F4: distinguish "the tool is not there" from "somebody made the answer too
+    // big to read". The first is a locked-down machine; the second is the shape
+    // of an attack on this very check, and it must not read as a shrug.
+    if (/maxBuffer/i.test(msg)) {
+      deps.log?.(
+        "[whisper-server] REFUSED: the TCP table was too large to read, which is not a normal " +
+          "condition and is exactly how this check would be attacked. Treating it as a failure.",
+      );
+      return false;
+    }
+    deps.log?.(`[whisper-server] could not determine port ownership: ${msg}`);
     return null;
   }
 }

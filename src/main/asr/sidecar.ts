@@ -101,6 +101,19 @@ export function isPortStolen(err: unknown): boolean {
 export class WhisperSidecar {
   private proc: ChildProcess | null = null;
   private port = 0;
+  /**
+   * Second scan (F4, 3/3): has THIS port been verified as belonging to the child
+   * we spawned?
+   *
+   * Without it, ensureStarted() below returned as soon as `proc` and `port` were
+   * assigned - which happens BEFORE waitReady runs the ownership check. So a
+   * dictation pressed during the ten to thirty seconds of model load found the
+   * engine "started", posted the raw WAV to a socket nobody had verified, and
+   * typed the answer at the cursor. The check was on the nominal path and not on
+   * the real one, which is the exact shape the first scan had already caught
+   * once. A guard that a race walks around is not a guard.
+   */
+  private verified = false;
   private starting: Promise<void> | null = null;
   private stopped = false;
   private respawns: number[] = []; // timestamps of recent auto-respawns
@@ -120,7 +133,8 @@ export class WhisperSidecar {
 
   /** Idempotent warm-up; concurrent callers share the same startup. */
   ensureStarted(): Promise<void> {
-    if (this.proc && this.port) return Promise.resolve();
+    // F4: `verified` and not merely `proc && port`. See the field.
+    if (this.proc && this.port && this.verified) return Promise.resolve();
     if (!this.starting) {
       this.starting = this.start().finally(() => {
         this.starting = null;
@@ -264,6 +278,7 @@ export class WhisperSidecar {
     if (this.proc !== proc) return;
     this.proc = null;
     this.port = 0;
+    this.verified = false; // F4: the respawn must re-verify its new port
     if (this.stopped) return;
     // R1: a demotion cleared binPath and is driving the switch to the next backend;
     // do NOT eagerly respawn the (now bad) one here.
@@ -293,6 +308,7 @@ export class WhisperSidecar {
     }
     this.proc = null;
     this.port = 0;
+    this.verified = false; // F4: a dead proc has verified nothing
   }
 
   private async waitReady(): Promise<void> {
@@ -322,6 +338,11 @@ export class WhisperSidecar {
         // winning it no longer wins anything: whoever answers has to BE the
         // process we started, or they get nothing - no utterance audio, no
         // dictionary terms, and no say in what Flow types at the cursor.
+        // No test seam here, and that is deliberate: the fake spawner used by
+        // test/sidecar-fallback.test.ts spawns a REAL child that really binds
+        // the port, so this check answers `true` there exactly as it does in
+        // production. A seam would have been a switch for turning a security
+        // control off, bought for nothing.
         const owner = await socketOwnedBy(this.port, this.proc?.pid, { log: this.opts.log });
         if (owner === false) {
           this.opts.log?.(
@@ -330,6 +351,15 @@ export class WhisperSidecar {
           this.hardStopProc();
           throw portStolenError(this.port);
         }
+        // F4: the port is verified HERE, the moment the question is answered -
+        // not at the end of startWith.
+        //
+        // Setting it later looked tidier and was a recursion: startWith runs the
+        // decode probe after this, decodeProbe calls inferOnce, and inferOnce
+        // awaits ensureStarted() - which, with `verified` still false, started
+        // yet another sidecar. The suite hung for two minutes instead of
+        // failing, which is the worst way for a mistake to present itself.
+        this.verified = true;
         if (owner === null) {
           // Said out loud rather than swallowed. A check that could not run has
           // not passed, and a log line is the difference between a known gap and

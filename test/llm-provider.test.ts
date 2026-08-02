@@ -32,17 +32,15 @@ test("P1: the source tree no longer names Ollama outside the provider module", (
   assert.deepEqual(offenders, ["main/llm/provider.ts"], "only the provider module may know the word");
 });
 
-test("P1: the model resolution is the one that used to be copy-pasted, exactly", () => {
+test("P1: the model resolution is the one that used to be copy-pasted, exactly", async () => {
   // Preferred wins; absent, the first installed; absent, nothing. These three
   // lines lived identically in longform.finalize AND audioImport.
   const withPref = new OllamaProvider({ preferredModel: () => "gemma3:12b", listModels: async () => ["a", "b"] });
   const noPref = new OllamaProvider({ preferredModel: () => "", listModels: async () => ["first", "second"] });
   const nothing = new OllamaProvider({ preferredModel: () => "", listModels: async () => null });
-  return Promise.all([
-    withPref.resolveModel().then((m) => assert.equal(m, "gemma3:12b")),
-    noPref.resolveModel().then((m) => assert.equal(m, "first")),
-    nothing.resolveModel().then((m) => assert.equal(m, "")),
-  ]);
+  assert.equal(await withPref.resolveModel(), "gemma3:12b");
+  assert.equal(await noPref.resolveModel(), "first");
+  assert.equal(await nothing.resolveModel(), "");
 });
 
 test("P1: no model installed means available() says so, and long/short return null WITHOUT calling out", async () => {
