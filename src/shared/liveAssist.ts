@@ -168,6 +168,20 @@ export interface AssistSnapshot {
   /** The local model a round would actually use, "" when there is none. Shown
    * verbatim: the user is entitled to know WHICH model read their meeting. */
   model: string;
+  /**
+   * P10, revue adverse (FAILLE 1). Le panneau Record DEDUISAIT « c'est local »
+   * de la presence d'un nom de modele, et ecrivait mot pour mot « running on
+   * this computer through Ollama. Nothing about this meeting leaves the
+   * machine ». Avec un fournisseur distant choisi et le cache de sonde encore
+   * chaud, cette phrase s'affichait pendant que la reunion partait chez
+   * Anthropic. C'est la cible numero un du plan, et le pire defaut possible.
+   *
+   * La localite et le destinataire voyagent donc AVEC l'instantane, dits par le
+   * fournisseur lui-meme. Aucune surface ne les rededuit.
+   */
+  locality: "on-this-machine" | "sent-away";
+  /** "" quand c'est local. Le nom que le panneau doit prononcer sinon. */
+  vendor: string;
   /** A capture is running - the only state in which a suggestion can be kept. */
   recording: boolean;
   wait: AssistWait;
@@ -191,6 +205,8 @@ export const ASSIST_UNAVAILABLE: AssistSnapshot = {
   enabled: false,
   modelReady: false,
   model: "",
+  locality: "on-this-machine",
+  vendor: "",
   recording: false,
   wait: "off",
   suggestions: [],

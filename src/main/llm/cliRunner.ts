@@ -173,6 +173,21 @@ export function runCli(opts: CliRunOptions): Promise<CliRunResult> {
       env: childEnv(),
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
+      // P10, revue adverse (CASSE 4), REPRODUITE en bac a sable : sans ceci,
+      // Node applique le quotage MSVCRT a la ligne que nous venons de quoter
+      // nous-memes pour cmd.exe, et echappe nos guillemets en \\" - une forme
+      // que cmd.exe ne comprend pas. Le shim npm .cmd echouait donc a 100 %,
+      // avec « is not recognized as an internal or external command »,
+      // silencieusement classe llm-spawn-failed.
+      //
+      // Invisible sur cette machine (claude y est un .exe natif) et fatal
+      // partout ou claude est installe par npm - c'est-a-dire le cas usuel,
+      // que resolveOnPath essaie d'ailleurs EN PREMIER, avec le commentaire
+      // « it is usually what exists ».
+      //
+      // Ne s'applique QUE a la branche cmd.exe : sur un binaire natif, c'est
+      // Node qui doit quoter, et le lui interdire casserait ce qui marche.
+      windowsVerbatimArguments: isCmd,
     });
 
     let out = "";

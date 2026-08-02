@@ -685,13 +685,24 @@ export class ImportQueue {
    * never an error, never an empty "## Notes" section. */
   private async addNotes(job: Job): Promise<void> {
     if (!this.deps.summarize) return;
+    // P10, revue adverse (CASSE 3) : ces trois lignes resolvaient un nom de
+    // modele OLLAMA et refusaient d'ecrire des notes quand il n'y en avait
+    // pas. Sur une machine sans Ollama mais avec Claude Code choisi, un
+    // import sortait donc sans notes, en journalisant « no local model
+    // available » - alors qu'un fournisseur parfaitement utilisable etait
+    // configure. C'etait le troisieme des quatre sites que P1 devait unifier,
+    // et le seul que le test mecanique de P1 ne pouvait pas voir : il
+    // resolvait Ollama SANS importer le module.
     let model = "";
     try {
       model = (this.deps.summaryModel?.() || "") || (await this.deps.ollamaModels?.())?.[0] || "";
     } catch {
       model = "";
     }
-    if (!model) {
+    // Le fournisseur decide s'il peut ecrire, pas la presence d'un nom de
+    // modele Ollama. `model` ne sert plus qu'a la ligne de journal ci-dessous.
+    const canWrite = this.deps.summarize !== undefined;
+    if (!canWrite) {
       this.deps.log?.("[import] no local model available: transcript only, no notes");
       return;
     }

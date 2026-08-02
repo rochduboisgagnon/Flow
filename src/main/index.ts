@@ -1268,7 +1268,7 @@ const liveAssist = new LiveAssistant({
   providerStatus: async () => {
     const p = llmRegistry.resolve(settings.aiProvider)!;
     const av = await p.available();
-    return { found: av.found, local: p.locality === "on-this-machine" };
+    return { found: av.found, local: p.locality === "on-this-machine", vendor: p.vendor };
   },
   // The SAME snapshot the Record page and GET /long/state read.
   longState: () => longRec.state(),

@@ -143,6 +143,24 @@ export class ClaudeCliProvider implements LlmProvider {
     this.deps = deps;
   }
 
+  /**
+   * P10, revue adverse (CASSE 5) : oublier ou se trouve le binaire.
+   *
+   * Le memo de `resolved` etait A VIE, et le Re-scan du registre ne vidait
+   * que sa propre Map. Consequence : Flow ouvert sans Claude Code, on
+   * l'installe, on clique Re-scan... et il reste « not found » jusqu'au
+   * prochain demarrage - precisement ce que le registre promet d'eviter
+   * (« a stale cache then costs exactly one click »).
+   *
+   * Deux tests decrivaient ENSEMBLE un comportement impossible sans que ni
+   * l'un ni l'autre ne le voie : l'un prouvait le re-scan avec un faux
+   * fournisseur sans memo, l'autre verrouillait le memo sur vingt appels.
+   * Chacun vert, la paire fausse.
+   */
+  forget(): void {
+    this.resolved = undefined;
+  }
+
   private bin(): string | null {
     if (this.resolved === undefined) {
       this.resolved = this.deps.resolve ? this.deps.resolve() : resolveOnPath("claude");

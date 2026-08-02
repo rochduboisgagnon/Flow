@@ -266,7 +266,11 @@ function TabLocalAi({ s, patch }: { s: UiStatePayload; patch: Patch }) {
   const chosen = s.settings.aiProvider;
   const list = providers === "loading" ? [] : providers;
   const current = list.find((p) => p.id === chosen);
-  const isLocal = !current || current.locality === "on-this-machine";
+  // P10 (mineur adjacent) : pendant le chargement, `current` etait undefined
+  // et isLocal valait true - donc la pastille « votre transcript part chez X »
+  // manquait au moment ou la page s'ouvre, y compris avec un fournisseur
+  // distant choisi. On se fie au REGLAGE tant que la liste n'est pas la.
+  const isLocal = current ? current.locality === "on-this-machine" : chosen === "ollama";
 
   async function rescan() {
     setProviders("loading");
@@ -297,7 +301,13 @@ function TabLocalAi({ s, patch }: { s: UiStatePayload; patch: Patch }) {
           onChange={(e) => void patch({ aiProvider: e.target.value })}
         >
           {list.map((p) => (
-            <option key={p.id} value={p.id} disabled={!p.found}>
+            /* P10, revue adverse (CASSE 6) : `disabled={!p.found}` enfermait
+               l'utilisateur dehors. OllamaProvider rend found:false quand aucun
+               modele n'est installe, donc sur une machine neuve on pouvait
+               choisir Claude Code et ne plus JAMAIS revenir a « on this
+               machine » - or c'est exactement le profil de machine qui choisit
+               Claude. Une entree non installee reste selectionnable, et le dit. */
+            <option key={p.id} value={p.id}>
               {PROVIDER_LABEL[p.id] ?? p.id}{p.found ? "" : " (not installed)"}
             </option>
           ))}

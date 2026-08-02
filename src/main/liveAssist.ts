@@ -65,7 +65,7 @@ export interface LiveAssistDeps {
    * "there is no local model" - a sentence that would send someone to install
    * Ollama to fix a problem that is not theirs.
    */
-  providerStatus?(): Promise<{ found: boolean; local: boolean }>;
+  providerStatus?(): Promise<{ found: boolean; local: boolean; vendor?: string }>;
   /** The recorder's own snapshot - the SAME one the Record page and the HTTP
    * /long/state route read (index.ts's longStateDep), never a second view. */
   longState(): LongStateSnapshot;
@@ -139,6 +139,10 @@ export class LiveAssistant {
 
   // ---- the local-model probe, cached (see ASSIST_MODEL_PROBE_MS) ----
   private modelReady: boolean | null | "provider-unavailable" = null;
+  /** P10 : ce que le panneau doit dire sur la destination du texte. Pose
+   * par la meme sonde qui pose modelReady, donc jamais en retard sur lui. */
+  private locality: "on-this-machine" | "sent-away" = "on-this-machine";
+  private vendor = "";
   private model = "";
   private probedAt = 0;
   private probing = false;
@@ -335,6 +339,8 @@ export class LiveAssistant {
       void this.deps
         .providerStatus()
         .then(async (st) => {
+          this.locality = st.local ? "on-this-machine" : "sent-away";
+          this.vendor = st.vendor ?? "";
           if (!st.local) {
             this.model = "";
             this.modelReady = st.found ? true : "provider-unavailable";
@@ -378,8 +384,20 @@ export class LiveAssistant {
   }
 
   private async runRound(st: LongStateSnapshot): Promise<void> {
+    // P10, revue adverse (CASSE 2) : ce garde etait `if (!model) return`,
+    // et il sortait AVANT le try/finally. Pour un fournisseur distant,
+    // `model` vaut "" par construction (un CLI n'a pas de liste de
+    // modeles), donc l'assistance live etait MORTE - et pire que morte :
+    // sans passer par le finally, `lastRoundAt` n'etait jamais pose, donc
+    // aucun refroidissement, donc un tour relance toutes les deux secondes
+    // pour l'eternite. Aucune suggestion, aucune erreur, aucun `wait`
+    // explicatif : exactement le panneau muet que P7 pretend avoir
+    // supprime.
+    //
+    // Le nom du modele n'est plus une condition. Le fournisseur decide
+    // quoi faire d'une chaine vide, et il rend `null` s'il ne peut pas -
+    // le contrat que tous les appelants traitent deja.
     const model = this.model;
-    if (!model) return;
     // Claim the round BEFORE the first await: two polls a fraction of a second
     // apart must not both get past the `generating` gate.
     const ac = new AbortController();
@@ -446,6 +464,11 @@ export class LiveAssistant {
       enabled,
       modelReady: enabled ? this.modelReady : false,
       model: enabled ? this.model : "",
+      // P10 : dits par le fournisseur, jamais deduits d'un nom de modele. Ils
+      // vivent sur l'INSTANTANE (ce que la page lit) et pas sur l'entree de
+      // decideAssist, qui reste pure et sans notion de fournisseur.
+      locality: this.locality,
+      vendor: this.vendor,
       recording: st.active,
       wait: this.wait,
       // Copied out: the page must never hold a reference this class mutates

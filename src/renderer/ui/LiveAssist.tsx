@@ -111,9 +111,18 @@ export function LiveAssistPanel() {
           only when the feature is on: an off panel has no provenance to state. */}
       {enabled ? (
         <p className="assist-src">
-          {snap?.model
-            ? `Written by ${snap.model}, running on this computer through Ollama. Nothing about this meeting leaves the machine.`
-            : "Flow does not embed its own model yet: suggestions come from Ollama running on this computer. Nothing leaves the machine either way."}
+          {/* P10, revue adverse (FAILLE 1) : ces deux phrases etaient choisies
+              sur la PRESENCE d'un nom de modele, et affirmaient toutes les deux
+              que rien ne quitte la machine. Avec un fournisseur distant et le
+              cache de sonde encore chaud, la premiere s'affichait pendant que la
+              reunion partait chez Anthropic. La localite est desormais dite par
+              le fournisseur et voyage dans l'instantane ; aucune surface ne la
+              rededuit. */}
+          {snap?.locality === "sent-away"
+            ? `Written by ${snap.vendor || "a third party"}. The last few minutes of this meeting are sent there, as they are spoken.`
+            : snap?.model
+              ? `Written by ${snap.model}, running on this computer through Ollama. Nothing about this meeting leaves the machine.`
+              : "Flow does not embed its own model yet: suggestions come from Ollama running on this computer. Nothing leaves the machine either way."}
         </p>
       ) : null}
 

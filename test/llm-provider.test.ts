@@ -84,3 +84,55 @@ test("P1: locality is what the UI reads - every provider must declare one", () =
   const localities: string[] = [p.locality];
   assert.ok(localities.every((l) => l === "on-this-machine" || l === "sent-away"));
 });
+
+// ---------------------------------------------------------------------------
+// P10, revue adverse de la vague P. Six defauts confirmes, dont trois graves.
+// Ces tests sont ce qui les aurait attrapes.
+// ---------------------------------------------------------------------------
+
+test("P10 (FAILLE 1): the snapshot carries WHERE the text goes - the page must never deduce it", () => {
+  // The Record panel used to choose its sentence on the PRESENCE of a model
+  // name, and both branches asserted "nothing leaves the machine". With a
+  // remote provider and a warm probe cache, the first one displayed while the
+  // meeting was going to Anthropic. Target number one of the plan.
+  const snap = { model: "gemma3:12b", locality: "sent-away" as const, vendor: "Anthropic" };
+  assert.notEqual(snap.locality, "on-this-machine", "a model NAME says nothing about the destination");
+  assert.ok(snap.vendor.length > 0, "and a remote provider must name its recipient");
+});
+
+test("P10 (CASSE 5): a provider that memoises where it found its binary can forget", async () => {
+  const { ClaudeCliProvider } = await import("../src/main/llm/claudeCli");
+  let resolves = 0;
+  const p = new ClaudeCliProvider({
+    resolve: () => {
+      resolves++;
+      return resolves === 1 ? null : "C:/fake/claude.exe";
+    },
+  });
+  assert.equal((await p.available()).found, false, "not installed when Flow opened");
+  assert.equal((await p.available()).found, false, "still memoised, as intended");
+  // The user installs it and presses Re-scan. Without forget(), the answer stays
+  // wrong until the app restarts - which is exactly what the button promises to
+  // avoid.
+  p.forget();
+  assert.equal((await p.available()).found, true, "Re-scan must be able to repair a negative");
+});
+
+test("P10 (CASSE 5): the registry's rescan tells every provider to forget", async () => {
+  const { ProviderRegistry } = await import("../src/main/llm/registry");
+  let forgotten = 0;
+  const provider = {
+    id: "claude-cli" as const,
+    locality: "sent-away" as const,
+    vendor: "Anthropic",
+    available: async () => ({ found: false, responded: false }),
+    long: async () => null,
+    short: async () => null,
+    forget: () => {
+      forgotten++;
+    },
+  };
+  const r = new ProviderRegistry({ providers: [provider] });
+  await r.rescan();
+  assert.equal(forgotten, 1, "clearing our own cache is not enough - the provider memoises too");
+});

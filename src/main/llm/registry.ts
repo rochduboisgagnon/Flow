@@ -119,6 +119,13 @@ export class ProviderRegistry {
   /** Moment 3: the Re-scan button. Empties the cache and asks again. */
   async rescan(): Promise<ProviderStatus[]> {
     this.cache.clear();
+    // P10 (CASSE 5) : vider NOTRE cache ne suffit pas. Un fournisseur qui
+    // memorise ou il a trouve son binaire doit oublier aussi, sinon un
+    // « not found » d'il y a une heure survit a l'installation du programme,
+    // et le bouton ne repare rien.
+    for (const p of this.deps.providers) {
+      (p as { forget?: () => void }).forget?.();
+    }
     this.deps.log?.("[llm] re-scanning providers");
     return this.list(true);
   }
