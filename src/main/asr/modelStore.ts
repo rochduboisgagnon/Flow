@@ -78,6 +78,32 @@ export const MODEL_BYTES: Readonly<Record<string, number>> = {
   "ggml-large-v3-q5_0.bin": 1_081_140_203,
 };
 
+/**
+ * P9 : le modele de REDACTION embarque. Pas un modele de dictee - la parole reste
+ * transcrite par whisper, sans condition.
+ *
+ * Epingle sur une revision immuable avec son empreinte, exactement comme les six
+ * modeles vocaux ci-dessus, et pour la meme raison : c'est le plus gros bloc de
+ * donnees non fiables que l'application confie a un analyseur natif.
+ *
+ * POURQUOI CE POIDS, et le §16.5 du plan doit etre lu avec cette correction :
+ * il justifiait un 3-4B par la cohabitation VRAM avec whisper. Mesure du
+ * 2026-08-02 : whisper coute environ 800 MiB, il n'est donc PAS le poste qui
+ * contraint. Ce qui contraint est la carte des autres gens. 1,93 Go tient sur
+ * une carte de 8 Go a cote de whisper et du bureau.
+ *
+ * REGLE NON NEGOCIABLE : ce fichier n'est JAMAIS telecharge parce qu'une reunion
+ * vient de finir. Uniquement sur pression d'un bouton. Deux gigaoctets qui
+ * demarrent tout seuls a la fin d'une reunion sont le pire moment possible.
+ */
+export const NOTES_MODEL = {
+  repo: "bartowski/Qwen2.5-3B-Instruct-GGUF",
+  revision: "f302c64a2269a69fb27b2f9473b362f5bb8e78d8",
+  file: "Qwen2.5-3B-Instruct-Q4_K_M.gguf",
+  sha256: "9c9f56a391a3abbd5b89d0245bf6106081bcc3173119d4229235dd9d23253f94",
+  bytes: 1_929_903_264,
+} as const;
+
 /** F8: where a redirect is allowed to land. HuggingFace bounces model downloads
  * to a CDN host that varies by region and over time, so this is a suffix rule
  * rather than a fixed list - but it is still a rule, where before there was

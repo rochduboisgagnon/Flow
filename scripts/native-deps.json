@@ -29,6 +29,25 @@
       "whisper-server-win32-x64-cpu.zip": "ce1b83352c848c7cdc717abd2ac1eb1024d8475c60f8418e106799b3af615ed0"
     }
   },
+  "llama": {
+    "_why": [
+      "P9 (2026-08-02). Le TROISIEME binaire natif tiers de ce produit, apres",
+      "whisper-server et WinKeyServer. Il recoit le transcript ENTIER d'une reunion",
+      "pour la resumer, donc il merite exactement la discipline que la campagne de",
+      "securite de ce matin a posee pour les deux autres : empreinte commitee,",
+      "verifiee AVANT extraction, et empreinte de l'executable extrait en plus de",
+      "celle de l'archive.",
+      "",
+      "MESURE, pas deduite : llama-server b10234 build Vulkan, avec",
+      "Qwen2.5-3B-Instruct-Q4_K_M, a produit de vraies notes de reunion en 8,9 s",
+      "en laissant 11,1 Go de VRAM libres."
+    ],
+    "repo": "ggml-org/llama.cpp",
+    "version": "b10234",
+    "assets": {
+      "llama-b10234-bin-win-vulkan-x64.zip": "32cd77784f7a8ff052a0ac7e8d53cf295c43e89de3a5c47c8b22fa9aeaf1c7f6"
+    }
+  },
   "keyspy": {
     "repo": "teomyth/keyspy",
     "version": "1.1.1",
