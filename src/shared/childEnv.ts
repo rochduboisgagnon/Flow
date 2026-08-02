@@ -68,7 +68,21 @@ export const STRIPPED_CHILD_ENV = [
 
 /** Prefixes stripped wholesale, because these families grow faster than a list
  * can be maintained and a missed one is a credential in a child process. */
-export const STRIPPED_CHILD_ENV_PREFIXES = ["npm_config_", "AWS_", "AZURE_"] as const;
+export const STRIPPED_CHILD_ENV_PREFIXES = [
+  "npm_config_",
+  "AWS_",
+  "AZURE_",
+  // P2 (vague P, 2026-08-02): the two families that decide WHO PAYS for a
+  // `claude` this app spawns, as prefixes rather than as names.
+  //
+  // The exact list above already had five of them and still missed
+  // ANTHROPIC_CUSTOM_HEADERS - which is the whole argument for prefixes made
+  // concrete: an enumerated list of a growing family is a list that is wrong
+  // the day the family grows, and being wrong here means silently billing a
+  // machine key instead of the subscription.
+  "ANTHROPIC_",
+  "CLAUDE_CODE_USE_",
+] as const;
 
 /**
  * The environment to hand a spawned child.

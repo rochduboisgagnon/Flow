@@ -83,3 +83,36 @@ test("and no OTHER spawn site was added without one", () => {
     assert.match(src, /childEnv\(\)/, `${rel} spawns a child and must scrub its environment`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// P2 (vague P, 2026-08-02). The wave spawns `claude`, and an inherited billing
+// variable there does not merely leak - it silently bills a machine key instead
+// of the subscription. The exact list had five of the family and missed
+// ANTHROPIC_CUSTOM_HEADERS, which is the argument for prefixes made concrete.
+// ---------------------------------------------------------------------------
+
+test("P2: the whole ANTHROPIC_ family is stripped, including names nobody enumerated", () => {
+  const out = childEnv({
+    PATH: "keep-me",
+    SystemRoot: "keep-me-too",
+    ANTHROPIC_API_KEY: "k",
+    ANTHROPIC_CUSTOM_HEADERS: "h", // the one the exact list missed
+    ANTHROPIC_SOMETHING_INVENTED_LATER: "x", // and the ones nobody has written yet
+    CLAUDE_CODE_USE_BEDROCK: "1",
+    CLAUDE_CODE_USE_VERTEX: "1",
+    ELECTRON_RUN_AS_NODE: "1",
+  } as NodeJS.ProcessEnv);
+  assert.deepEqual(Object.keys(out).sort(), ["PATH", "SystemRoot"]);
+});
+
+test("P2: the prefix rule is case-insensitive, like Windows itself", () => {
+  const out = childEnv({ PATH: "x", anthropic_base_url: "b", Claude_Code_Use_Vertex: "1" } as NodeJS.ProcessEnv);
+  assert.deepEqual(Object.keys(out), ["PATH"], "lowercase must not walk through a list written in capitals");
+});
+
+test("P2: PATH survives, because a child that cannot find its own tools is not safer", () => {
+  const out = childEnv({ PATH: "C:/tools", SystemRoot: "C:/Windows", TEMP: "C:/t" } as NodeJS.ProcessEnv);
+  assert.equal(out.PATH, "C:/tools");
+  assert.equal(out.SystemRoot, "C:/Windows");
+  assert.equal(out.TEMP, "C:/t");
+});
