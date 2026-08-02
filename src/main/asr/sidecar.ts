@@ -119,6 +119,18 @@ export class WhisperSidecar {
   private respawns: number[] = []; // timestamps of recent auto-respawns
   private binPath = ""; // the backend that became ready (frozen for respawns); "" while (re)selecting
   private badBackends = new Set<string>(); // R1: backends that failed the probe or degraded at inference
+  /**
+   * Second scan F3 (3/3): how many times a backend has ACTUALLY served an
+   * utterance. Zero means every failure so far happened during startup, and a
+   * startup failure is not evidence that a binary is broken - it is very often
+   * evidence that something interrupted its model load.
+   *
+   * `badBackends` has an `add` and no clear for the life of the sidecar, so one
+   * transient incident used to cost the GPU backend for the whole session: a
+   * several-fold slowdown, silent, with no visible cause. This counter is what
+   * lets a backend that has proven itself once be forgiven a later stumble.
+   */
+  private servedUtterances = 0;
   private emptyStreak = 0; // R1: consecutive empty results on the frozen backend
   private opts: SidecarOptions;
 
@@ -173,7 +185,12 @@ export class WhisperSidecar {
         return;
       } catch (e) {
         lastErr = e;
-        this.badBackends.add(bin); // do not retry a backend that could not start or decode
+        // F3: a backend that has ALREADY served utterances is not condemned by a
+        // single failed restart. It proved it works; something transient broke
+        // this attempt, and a permanent demotion would be a silent speed
+        // regression the user cannot explain and cannot undo without a restart.
+        if (this.servedUtterances === 0) this.badBackends.add(bin);
+        else this.opts.log?.(`[whisper-server] ${path.basename(bin)} failed to restart, but it has worked before: not condemning it`);
         this.opts.log?.(`[whisper-server] ${path.basename(bin)} unavailable (${e}); trying next backend`);
       }
     }
@@ -394,6 +411,9 @@ export class WhisperSidecar {
     let r: { text: string; ms: number };
     try {
       r = await this.attemptInfer(wav);
+      // F3: this backend has now DONE the job at least once. From here on, a
+      // failed restart is a transient incident and not a verdict on the binary.
+      this.servedUtterances++;
     } catch (err) {
       if (this.stopped || !this.hasFallbackBackend()) throw err;
       this.demote(`inference failed (${err})`);

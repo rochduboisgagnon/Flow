@@ -690,6 +690,13 @@ function focusProbeScript(): string {
 // own data folder, outside the install), whisper-server spawned once, model
 // loaded once. Dictating while the warm-up is still running simply queues on
 // ensureStarted() inside transcribe().
+//
+// Second scan F3 (3/3): that sentence was FALSE when it was written and is true
+// again now. ensureStarted() returned early on `proc && port`, both of which are
+// assigned before the model has loaded - so an early utterance POSTed to a port
+// nothing was listening on yet, the refusal killed the loading child, and the
+// GPU backend landed in badBackends for the whole session. A several-fold
+// slowdown, silent, with no visible cause. The gate is now `verified`.
 // Review B10 (major): the self-check and the UI used to read `sidecar !== null`
 // as "the engine is warm". The object is assigned BEFORE ensureStarted() is
 // awaited, so a backend that FAILED to start still answered "Warm" - the one
