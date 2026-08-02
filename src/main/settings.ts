@@ -32,6 +32,19 @@ export interface FlowSettings {
   micDeviceId: string; // "" = system default microphone
   sounds: boolean; // audible start/stop cues
   summaryModel: string; // Ollama model for meeting summaries; "" = first installed model
+  /**
+   * P5: who writes the notes and the live suggestions. NOT who transcribes
+   * speech - that is whisper, on this machine, always, and it is not a setting.
+   *
+   * The ONE setting this wave adds. Two settings and two whole features were
+   * removed from this app in a week for being surface nobody needed, so the bar
+   * for a second one is very high and this design does not clear it: "which
+   * provider for live assistance" would be a second provider setting, and the
+   * real question there is not "which one" but "may the one that leaves the
+   * machine read the meeting live". That is a yes or no, and it travels on the
+   * switch that already exists (liveAssist). See applySettings.
+   */
+  aiProvider: "ollama" | "claude-cli" | "codex-cli";
   forceCpu: boolean; // R1: escape hatch for capricious GPUs (skip the Vulkan backend)
   insertMode: "paste" | "type"; // how dictation lands in an editable field: clipboard paste (default) or typed keystrokes for paste-hostile apps
   theme: ThemePref; // U0: "system" | "dark" | "light", resolved in index.ts against nativeTheme
@@ -100,6 +113,9 @@ export const SETTINGS_DEFAULTS: FlowSettings = {
   micDeviceId: "",
   sounds: false, // v5 c5: no audible cues at all
   summaryModel: "", // "" = the first installed Ollama model
+  // P5: the default is the machine. It is never a remote provider, not even
+  // when one is installed and the local one is not.
+  aiProvider: "ollama",
   forceCpu: false, // R1: Vulkan first by default; on = CPU only
   insertMode: "paste", // clipboard paste + restore; "type" keystrokes the text (paste-hostile apps, never touches the clipboard)
   theme: "system", // U1: follow Windows now that both themes exist; dark stays one click away
@@ -200,6 +216,13 @@ export function sanitizeSettings(raw: unknown): FlowSettings {
   // retired setting.
   if (typeof r.sounds === "boolean") out.sounds = r.sounds;
   if (typeof r.forceCpu === "boolean") out.forceCpu = r.forceCpu;
+  // P5: a malformed or unknown value falls back to the LOCAL provider, never to
+  // a remote one. This is the same reasoning that already refuses to let a
+  // corrupt file switch liveAssist on: a file nobody vouched for must not be
+  // able to start sending meetings to a third party.
+  if (r.aiProvider === "claude-cli" || r.aiProvider === "codex-cli" || r.aiProvider === "ollama") {
+    out.aiProvider = r.aiProvider;
+  }
   if (typeof r.summaryModel === "string" && /^[\w.:-]*$/.test(r.summaryModel)) {
     out.summaryModel = r.summaryModel;
   }
@@ -255,4 +278,36 @@ export function saveSettings(s: FlowSettings): void {
   const tmp = settingsPath() + ".tmp";
   fs.writeFileSync(tmp, JSON.stringify(s, null, 2));
   fs.renameSync(tmp, settingsPath());
+}
+
+/**
+ * P5: the one real product decision of this wave.
+ *
+ * SWITCHING TO A PROVIDER THAT LEAVES THE MACHINE TURNS LIVE ASSISTANCE OFF.
+ * Not greyed out, not warned about: off.
+ *
+ * The argument in one sentence: the consent was given for a local model, and it
+ * does not transfer. A switch whose meaning changes in silence is no longer a
+ * consent. Live assistance reads what THIRD PARTIES say in a meeting - people
+ * who installed nothing and accepted nothing - which is a different act from
+ * summarising a file you imported yourself.
+ *
+ * SYMMETRIC RULE: coming back to the local provider does NOT switch it back on.
+ * Nothing ever switches that on except a person. This mirrors what settings.ts
+ * already does when it refuses to let a malformed file enable it.
+ *
+ * Deliberately NOT a second provider setting. The question is not "which
+ * provider for live assistance"; it is "may the one that leaves the machine
+ * read the meeting live", which is a yes or no and travels on the switch that
+ * already exists. Cost: one line here, one sentence in the UI, two tests. New
+ * settings added: one.
+ *
+ * Pure on purpose: the whole rule is visible in four lines and testable without
+ * an app.
+ */
+export function applyProviderTransition(prev: FlowSettings, next: FlowSettings): FlowSettings {
+  const wasLocal = prev.aiProvider === "ollama";
+  const nowRemote = next.aiProvider !== "ollama";
+  if (wasLocal && nowRemote && next.liveAssist) return { ...next, liveAssist: false };
+  return next;
 }

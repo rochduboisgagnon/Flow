@@ -14,7 +14,7 @@ import { FocusProbe } from "./focus/probe";
 import { insertViaPaste, insertTyped, leaveOnClipboard, flushPendingRestore } from "./insert";
 import { decideRoute } from "../shared/route";
 import { comboLabel } from "../shared/combo";
-import { loadSettings, saveSettings, sanitizeSettings, dataDir, type FlowSettings } from "./settings";
+import { loadSettings, saveSettings, sanitizeSettings, applyProviderTransition, dataDir, type FlowSettings } from "./settings";
 import { runMigration } from "./migrate";
 import { analyzeSpeech, hasSpeech, trimToSpeech } from "../shared/vad";
 import { gateTranscript } from "../shared/textGate";
@@ -1674,7 +1674,11 @@ function applyTheme(pref: FlowSettings["theme"]): void {
  * to the next utterance, model swapped (with download), mic/sounds picked up
  * by the next capture. Persisted atomically. */
 function applySettings(patch: Partial<FlowSettings>): FlowSettings {
-  const next = sanitizeSettings({ ...settings, ...patch });
+  // P5: the transition rule runs BEFORE anything else reads `next`. Switching to
+  // a provider that leaves the machine turns live assistance off, because the
+  // consent was given for a local model and it does not transfer. See
+  // applyProviderTransition for the whole argument.
+  const next = applyProviderTransition(settings, sanitizeSettings({ ...settings, ...patch }));
   const comboChanged = JSON.stringify(next.combo) !== JSON.stringify(settings.combo);
   const modelChanged = next.model !== settings.model;
   const langChanged = next.language !== settings.language;
