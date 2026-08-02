@@ -185,3 +185,38 @@ test("P4: a successful Test refreshes the cache - it IS the event that proves 'r
   // Frozen clock: only the cache invalidation inside test() can make this true.
   assert.equal((await r.status("claude-cli"))!.responded, true);
 });
+
+// ---------------------------------------------------------------------------
+// P8 (vague P). Codex is NOT shipped: it is not installed on this machine, so
+// nothing about it could be verified, and a provider written without ever
+// running the program would be a guess dressed as code. The full reasoning is
+// in docs/codex-2026-08-02.md.
+//
+// Its acceptance criterion said the entry must DISAPPEAR from the dropdown
+// rather than sit there dead. These tests pin that it disappears by
+// CONSTRUCTION - the page renders the registry, not a hard-coded list - so
+// nobody has to remember to hide it.
+// ---------------------------------------------------------------------------
+
+test("P8: a provider that is not registered appears nowhere", async () => {
+  const r = new ProviderRegistry({
+    providers: [fake("ollama", { found: true, responded: true }), fake("claude-cli", { found: true, responded: true })],
+  });
+  const list = await r.list();
+  assert.deepEqual(list.map((p) => p.id), ["ollama", "claude-cli"]);
+  assert.equal(await r.status("codex-cli"), null, "the registry does not invent one");
+});
+
+test("P8: choosing an unregistered provider degrades to the LOCAL one, never to a remote", () => {
+  const r = new ProviderRegistry({
+    providers: [fake("ollama", { found: true, responded: true }), fake("claude-cli", { found: true, responded: true })],
+  });
+  // This is what makes keeping "codex-cli" in the type harmless: a settings file
+  // naming it lands on the machine, not on somebody else's computer.
+  assert.equal(r.resolve("codex-cli")?.locality, "on-this-machine");
+});
+
+test("P8: testing an unregistered provider fails cleanly and calls nothing", async () => {
+  const r = new ProviderRegistry({ providers: [fake("ollama", { found: true, responded: true })] });
+  assert.deepEqual(await r.test("codex-cli"), { ok: false, detail: "unknown-provider" });
+});
