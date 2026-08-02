@@ -244,6 +244,35 @@ export class LocalApi {
     // session's token - which Flow's own window has and a drive-by page cannot
     // obtain. See sessionToken() above for why the token, rather than simply
     // widening the header check, was necessary.
+    //
+    // ---------------------------------------------------------------------
+    // 2026-08-02, security scan (HIGH): the token check BELOW was bypassable,
+    // and this Host check is what actually closes it.
+    //
+    // The bypass is DNS rebinding, and it works because the check below asks
+    // the request whether it is browser-issued - a question the attacker
+    // answers by OMISSION. Per Fetch Metadata, `Sec-Fetch-*` is only appended
+    // for a "potentially trustworthy" URL. `http://127.0.0.1:8176` qualifies;
+    // `http://attacker.tld:8176` does not, EVEN WHEN IT RESOLVES TO 127.0.0.1.
+    // So a page served from a rebound hostname, reloaded on this port, becomes
+    // same-origin with this API, sends neither Origin (same-origin GET) nor
+    // Sec-Fetch-Site, is judged "not a browser", is never asked for a token -
+    // and same-origin policy then lets it READ every response: the meeting
+    // list, every transcript, every .wav, and the live transcript of a meeting
+    // being recorded right now.
+    //
+    // The Host header is what the two cases cannot share. A real local client
+    // sends `Host: 127.0.0.1:<port>`; a rebound page sends the attacker's own
+    // hostname, because that is the name it asked for. Checking it defeats
+    // rebinding regardless of which headers a browser decides to attach - which
+    // is the property the check below lacked.
+    // ---------------------------------------------------------------------
+    const host = String(req.headers["host"] ?? "");
+    const hostOk = host === `127.0.0.1:${this.port}` || host === `localhost:${this.port}`;
+    if (!hostOk) {
+      return json(403, { error: "refused: this API answers only to 127.0.0.1" });
+    }
+
     const fromBrowser =
       req.headers["origin"] !== undefined || req.headers["sec-fetch-site"] !== undefined;
     if (fromBrowser) {
@@ -314,8 +343,25 @@ export class LocalApi {
         // v6 c7: dir is OPTIONAL now. Absent/empty -> the engine records into an
         // app-owned staging folder and the destination is chosen at Stop.
         const body = await readJson(req);
+        // 2026-08-02, security scan (MEDIUM): `dir` used to be passed through to
+        // the recorder, which only checked that the path existed before writing
+        // a .md and a .wav into it. A local process running as a DIFFERENT user
+        // could therefore make Flow - running as this user - create files
+        // wherever this user can write, the Startup folder included, using
+        // privileges the caller does not have.
+        //
+        // Refused outright rather than sanitized, because nothing legitimately
+        // sends it: the Record page never passes a dir (it records into the
+        // app-owned staging folder and the destination is chosen at Stop), and
+        // neither sibling app calls this route. A parameter with no caller is
+        // not a feature to protect, it is a hole to close.
+        if (typeof body?.dir === "string" && body.dir.length > 0) {
+          return json(400, {
+            ok: false,
+            error: "dir is not accepted here: recordings are staged in Flow's own folder",
+          });
+        }
         return json(200, this.deps.longStart({
-          dir: typeof body?.dir === "string" ? body.dir : undefined,
           title: typeof body?.title === "string" ? body.title : undefined,
           keepAudio: body?.keepAudio === true,
         }));

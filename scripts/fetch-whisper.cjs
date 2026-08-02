@@ -80,7 +80,14 @@ function downloadTo(url, dest, redirects = 0) {
     console.log("[fetch-whisper] both builds already present:", OUT_DIR);
     process.exit(0);
   }
-  const tagged = process.env.WHISPER_CPP_VERSION;
+  // 2026-08-02, security scan (HIGH): this used to fall through to /releases/latest
+  // when WHISPER_CPP_VERSION was unset - which is what CI did. The release job
+  // therefore packaged whatever a third-party fork had published most recently,
+  // unverified, and the provenance attestation signed the result as genuine.
+  // The pinned version now comes from the committed manifest, and the env var is
+  // an override for local experiments only.
+  const pinned = JSON.parse(fs.readFileSync(path.join(__dirname, "native-deps.json"), "utf8"));
+  const tagged = process.env.WHISPER_CPP_VERSION || pinned.whisper.version;
   const release = await getJson(
     tagged
       ? `https://api.github.com/repos/${REPO}/releases/tags/${tagged}`
@@ -95,6 +102,11 @@ function downloadTo(url, dest, redirects = 0) {
     const zipPath = path.join(OUT_DIR, zip);
     console.log(`[fetch-whisper] ${release.tag_name} / ${zip} (${(asset.size / 1048576).toFixed(1)} MB) ...`);
     await downloadTo(asset.browser_download_url, zipPath);
+    // BEFORE extraction, never after: an archive that fails this check must not
+    // have had the chance to write a single file into resources/bin.
+    execSync(`node "${path.join(__dirname, "verify-native-deps.cjs")}" whisper "${zipPath}"`, {
+      stdio: "inherit",
+    });
     // Windows 10+ ships bsdtar (System32), which reads zips. The ABSOLUTE path
     // matters: Git Bash puts GNU tar first, which reads neither zips nor "C:\".
     execSync(`"${sysTar}" -xf "${zip}"`, { stdio: "inherit", cwd: OUT_DIR });

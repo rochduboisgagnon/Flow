@@ -1,0 +1,39 @@
+{
+  "_why": [
+    "2026-08-02, security scan finding (HIGH x2). Flow ships two native binaries it",
+    "does not build: the whisper speech engine and WinKeyServer.exe, the process that",
+    "watches every keystroke on the machine. Both were fetched from third-party GitHub",
+    "repositories with NO integrity check at all, and one of them resolved 'latest'",
+    "rather than a pinned tag.",
+    "",
+    "The attack was not hypothetical and it did not need Flow to be compromised at all.",
+    "Someone who took over the upstream account publishes a trojaned asset; the next",
+    "time a v* tag is pushed here, CI downloads it, packages it, and - this is the part",
+    "that stings - the build-provenance attestation added the day before faithfully",
+    "signs the result as a genuine Flow build. Every install auto-updates. The malicious",
+    "binary is then spawned as the speech engine, or IS the keyboard hook.",
+    "",
+    "Pinning a VERSION is not enough on its own: GitHub lets a release asset be replaced",
+    "in place, so a tag names a file, never its bytes. Only a hash names the bytes.",
+    "",
+    "TO UPDATE ONE OF THESE: change the version, run scripts/verify-native-deps.cjs",
+    "--print to get the new hashes, and commit them in the SAME change. A hash bump",
+    "without a version bump, or the reverse, is what this file exists to make visible",
+    "in a diff."
+  ],
+  "whisper": {
+    "repo": "OpenWhispr/whisper.cpp",
+    "version": "0.0.8",
+    "assets": {
+      "whisper-server-win32-x64-vulkan.zip": "d5f6188bb6561e66a9b7886ca0448d5927cb9713a02d311b87a20e33eb038222",
+      "whisper-server-win32-x64-cpu.zip": "ce1b83352c848c7cdc717abd2ac1eb1024d8475c60f8418e106799b3af615ed0"
+    }
+  },
+  "keyspy": {
+    "repo": "teomyth/keyspy",
+    "version": "1.1.1",
+    "assets": {
+      "keyspy-win32-x64.tar.gz": "8dc511bfc52ce91dbabb66f375affcbc7ec45b6e9377689e5283e77e74c8f956"
+    }
+  }
+}

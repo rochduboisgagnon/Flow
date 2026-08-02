@@ -222,7 +222,11 @@ test("long-form routes reach their deps with parsed arguments", async () => {
     const port = (JSON.parse(fs.readFileSync(info, "utf8")) as { port: number }).port;
     assert.equal((await get(port, "/long/state")).code, 200);
     const startBody = Buffer.from(JSON.stringify({ dir: "C:\\tmp", keepAudio: true }));
-    assert.equal((await post(port, "/long/start", startBody)).code, 200);
+    // 2026-08-02, security scan (MEDIUM): a caller-supplied `dir` is REFUSED.
+    // It let a process running as another local user make Flow write a .md
+    // and a .wav wherever THIS user can write - the Startup folder included -
+    // with privileges the caller did not have. Nothing legitimately sent it.
+    assert.equal((await post(port, "/long/start", startBody)).code, 400, "a caller-named directory is refused");
     // v6 c7: no dir is valid now (the engine stages) -> 200, reaches the dep.
     assert.equal((await post(port, "/long/start", Buffer.from("{}"))).code, 200, "missing dir -> stages");
     assert.equal((await post(port, "/long/mark", new Uint8Array(0))).code, 200);
@@ -235,7 +239,10 @@ test("long-form routes reach their deps with parsed arguments", async () => {
     assert.equal((await post(port, "/long/save", Buffer.from(JSON.stringify({ dir: "D:\\Notes" })))).code, 200);
     assert.equal((await post(port, "/long/save", Buffer.from("{}"))).code, 400, "save without a dir -> 400");
     assert.deepEqual(stub.calls, [
-      "state", "start:C:\\tmp:audio", "start:stage:noaudio", "mark", "chunk:100", "gap:4.2", "stop", "save:D:\\Notes",
+      // No "start:C:\\tmp:audio": the refused request never reached the
+      // dep at all, which is the property that matters - the guard is at the
+      // door, not inside the room.
+      "state", "start:stage:noaudio", "mark", "chunk:100", "gap:4.2", "stop", "save:D:\\Notes",
     ]);
     // A long recording flips the quiet window (plan 8).
     assert.equal((await get(port, "/update-readiness")).body.ready, false);
@@ -528,5 +535,87 @@ test("two sessions never share a token", async () => {
   } finally {
     a.api.stop();
     b.api.stop();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 2026-08-02, security scan (HIGH). The session token added the day before was
+// BYPASSABLE, and this is the test that would have said so.
+//
+// The bypass is DNS rebinding. The token was only demanded when a request
+// looked browser-issued - which the attacker answers by OMISSION. Per Fetch
+// Metadata, `Sec-Fetch-*` is appended only for a "potentially trustworthy" URL:
+// http://127.0.0.1:8176 qualifies, http://attacker.tld:8176 does not, EVEN WHEN
+// IT RESOLVES TO 127.0.0.1. A page served from a rebound hostname and reloaded
+// on this port becomes same-origin with the API, sends neither Origin (it is a
+// same-origin GET) nor Sec-Fetch-Site, is judged "not a browser", is never
+// asked for a token - and same-origin policy then lets it READ every response:
+// the meeting list, every transcript, every .wav, and the live transcript of a
+// meeting being recorded at that moment.
+//
+// The Host header is the one thing the two cases cannot share. That is why the
+// fix is a Host allowlist and not another header check.
+// ---------------------------------------------------------------------------
+
+function getHost(port: number, p: string, hostHeader: string): Promise<Reply> {
+  return new Promise((resolve, reject) => {
+    http
+      .get({ hostname: "127.0.0.1", port, path: p, agent: false, headers: { Host: hostHeader } }, (res) => {
+        let d = "";
+        res.on("data", (c) => (d += c));
+        res.on("end", () => resolve({ code: res.statusCode ?? 0, body: JSON.parse(d) as Record<string, unknown> }));
+      })
+      .on("error", reject);
+  });
+}
+
+test("DNS REBINDING: a rebound hostname is refused, with no token and no browser headers", async () => {
+  const { api, port } = await tokenApi();
+  try {
+    // Exactly the request the rebinding page makes: no Origin, no Sec-Fetch-*,
+    // and a Host that is the attacker's own name. Before the fix this reached
+    // every read route.
+    for (const p of ["/long/history", "/status", "/settings", "/long/transcript?since=0"]) {
+      const r = await getHost(port, p, "rebind.attacker.example:" + port);
+      assert.equal(r.code, 403, `${p} must refuse a rebound Host`);
+    }
+  } finally {
+    api.stop();
+  }
+});
+
+test("and the token alone would NOT have saved it - the guard never asked for one", async () => {
+  // The point of the finding: a request shaped like this was judged
+  // "not a browser", so the token check was skipped entirely. This asserts the
+  // Host check fires even when the request is otherwise indistinguishable from
+  // a legitimate sibling app's call.
+  const { api, port } = await tokenApi();
+  try {
+    const r = await getHost(port, "/long/history", "evil.example");
+    assert.equal(r.code, 403);
+  } finally {
+    api.stop();
+  }
+});
+
+test("the real local clients still pass: 127.0.0.1 and localhost, on the bound port", async () => {
+  const { api, port } = await tokenApi();
+  try {
+    assert.equal((await getHost(port, "/status", `127.0.0.1:${port}`)).code, 200);
+    assert.equal((await getHost(port, "/status", `localhost:${port}`)).code, 200);
+  } finally {
+    api.stop();
+  }
+});
+
+test("a right host on the WRONG port is refused too", async () => {
+  // Rebinding aside, a Host naming another port means the request was not meant
+  // for this server, and answering it would be answering someone else's mail.
+  const { api, port } = await tokenApi();
+  try {
+    assert.equal((await getHost(port, "/status", "127.0.0.1:9999")).code, 403);
+    assert.equal((await getHost(port, "/status", "127.0.0.1")).code, 403);
+  } finally {
+    api.stop();
   }
 });

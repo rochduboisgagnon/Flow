@@ -48,9 +48,15 @@ jobs:
             echo "Tag $GITHUB_REF_NAME does not match package.json ($PKG)"; exit 1
           fi
       - name: Guard version not already released
+        # 2026-08-02: the token travels by env, like every other step here. It
+        # used to be expanded into the script BODY, which GitHub writes to disk
+        # on the runner before executing - so the credential sat in a temp file
+        # and on a command line rather than only in the process environment.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Authorization: Bearer $GH_TOKEN" \
             "https://api.github.com/repos/${{ github.repository }}/releases/tags/$GITHUB_REF_NAME")
           if [ "$CODE" = "200" ]; then
             echo "A release for $GITHUB_REF_NAME already exists"; exit 1
@@ -101,6 +107,13 @@ jobs:
             KV=$(node -p "require('./node_modules/keyspy/package.json').version")
             mkdir -p "$RT"
             gh release download "v$KV" --repo teomyth/keyspy --pattern "keyspy-win32-x64.tar.gz" --dir "$RT" --clobber
+            # 2026-08-02, security scan (HIGH): verified BEFORE extraction. This
+            # archive contains WinKeyServer.exe - the process that watches every
+            # keystroke on the machine - and it used to be unpacked on the word
+            # of a third-party release page. Pinning the version is not enough:
+            # GitHub lets an asset be REPLACED in place, so a tag names a file,
+            # never its bytes. Only the hash names the bytes.
+            node scripts/verify-native-deps.cjs keyspy "$RT/keyspy-win32-x64.tar.gz"
             "/c/Windows/System32/tar.exe" -xzf "$RT/keyspy-win32-x64.tar.gz" -C "$RT"
           fi
           ls "$RT"
