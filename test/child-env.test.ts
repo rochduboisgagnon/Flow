@@ -116,3 +116,43 @@ test("P2: PATH survives, because a child that cannot find its own tools is not s
   assert.equal(out.SystemRoot, "C:/Windows");
   assert.equal(out.TEMP, "C:/t");
 });
+
+// ---------------------------------------------------------------------------
+// P10 (vague P), adverse review of target 6. The plan named SIX billing
+// variables and childEnv listed three of them by name. The missing one that
+// mattered was ANTHROPIC_CUSTOM_HEADERS: it injects arbitrary headers into API
+// requests, which is an Authorization header, which is an API key by another
+// door. A prefix replaces the list, because this family grows faster than a
+// list is maintained.
+// ---------------------------------------------------------------------------
+
+test("P10: the six billing variables the plan names are ALL stripped", () => {
+  const env = {
+    ANTHROPIC_API_KEY: "sk-x",
+    ANTHROPIC_AUTH_TOKEN: "t",
+    ANTHROPIC_BASE_URL: "https://evil",
+    ANTHROPIC_CUSTOM_HEADERS: "Authorization: Bearer sk-x",
+    CLAUDE_CODE_USE_BEDROCK: "1",
+    CLAUDE_CODE_USE_VERTEX: "1",
+    PATH: "C:/Windows",
+  };
+  const out = childEnv(env);
+  for (const k of Object.keys(env)) {
+    if (k === "PATH") continue;
+    assert.equal(out[k], undefined, `${k} must never reach a child Flow spawns`);
+  }
+  assert.equal(out.PATH, "C:/Windows", "and a working environment survives");
+});
+
+test("P10: a variable this family has not invented yet is stripped too", () => {
+  // The point of the prefix: the next ANTHROPIC_* does not need a code change.
+  const out = childEnv({ ANTHROPIC_SOMETHING_NEW: "x", CLAUDE_CODE_USE_WHATEVER: "1", HOME: "/h" });
+  assert.equal(out.ANTHROPIC_SOMETHING_NEW, undefined);
+  assert.equal(out.CLAUDE_CODE_USE_WHATEVER, undefined);
+  assert.equal(out.HOME, "/h");
+});
+
+test("P10: the prefix is case-insensitive, like Windows environment names", () => {
+  const out = childEnv({ anthropic_custom_headers: "Authorization: Bearer sk-x" });
+  assert.equal(out.anthropic_custom_headers, undefined);
+});
