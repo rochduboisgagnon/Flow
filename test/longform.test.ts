@@ -17,7 +17,7 @@ import {
   RECENT_MAX,
   type RecentEntry,
 } from "../src/shared/longform";
-import { LongRecorder, RECENT_STATE_CACHE_MS } from "../src/main/longform";
+import { LongRecorder, RECENT_STATE_CACHE_MS, refuseUnsafeDestination } from "../src/main/longform";
 import type { WhisperSidecar } from "../src/main/asr/sidecar";
 
 const SR = 16_000;
@@ -331,6 +331,55 @@ test("v6 c7: save() refuses a missing destination and an empty recent list", asy
   assert.equal(((await rec.save(path.join(work, "nope"))) as { ok: boolean }).ok, false, "a missing dir is refused");
   fs.writeFileSync(recent, "[]");
   assert.equal(((await rec.save(work)) as { ok: boolean }).ok, false, "no finished recording is refused");
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// Security scan F1 (MEDIUM, 3/3, 2026-08-02). `/long/save` passed the caller's
+// folder to statSync and nothing else. The dangerous case is not an odd local
+// folder - it is a UNC path, which turns "file my recording" into "copy the
+// meeting off this machine, and authenticate to the attacker's host on the way".
+// ---------------------------------------------------------------------------
+
+test("F1: a UNC or device destination is refused before anything is created", () => {
+  for (const bad of [
+    "\\\\attacker.tld\\share",
+    "\\\\attacker.tld\\share\\drop",
+    "//attacker.tld/share", // forward slashes: Windows accepts these too
+    "\\\\?\\C:\\Windows",
+    "\\\\.\\pipe\\anything",
+  ]) {
+    const why = refuseUnsafeDestination(bad);
+    assert.ok(why, `${bad} must be refused`);
+    assert.match(why, /network path/, "and the refusal must say why, not just fail");
+  }
+});
+
+test("F1: a relative destination is refused (it would resolve against Flow's cwd)", () => {
+  for (const bad of ["notes", "./notes", "..\\..\\somewhere"]) {
+    assert.ok(refuseUnsafeDestination(bad), `${bad} must be refused`);
+  }
+});
+
+test("F1: an ordinary local folder is still accepted - the fix must not remove the feature", () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-f1-"));
+  try {
+    assert.equal(refuseUnsafeDestination(work), null, "a real local folder is a normal destination");
+    // The point of NOT confining to the home directory: saving to another
+    // volume is a thing a person does, and must not be called suspicious.
+    assert.equal(refuseUnsafeDestination("D:\\Recordings"), null);
+  } finally {
+    fs.rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test("F1: save() itself refuses a UNC destination, not just the helper", async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-f1b-"));
+  const recent = path.join(work, "recent.json");
+  const rec = new LongRecorder({ transcribeSegment: () => Promise.reject(new Error("nope")), recentPathOverride: recent });
+  const res = (await rec.save("\\\\attacker.tld\\share")) as { ok: boolean; error?: string };
+  assert.equal(res.ok, false);
+  assert.match(String(res.error), /network path/, "refused for the RIGHT reason, not for 'folder not found'");
   fs.rmSync(work, { recursive: true, force: true });
 });
 

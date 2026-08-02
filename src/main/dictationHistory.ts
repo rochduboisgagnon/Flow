@@ -168,7 +168,40 @@ export class DictationHistoryStore {
     return { entries: [] };
   }
 
+  /**
+   * Security scan F3 (MEDIUM, 3/3, 2026-08-02). Apply the retention to the FILE,
+   * on open, whether or not anything new was dictated.
+   *
+   * The comment on flush() already claimed "the retention is a property of the
+   * FILE, not a filter the page applies afterwards". It was not true. The purge
+   * lived only inside mergeEntries, which only flush() reached, and flush()
+   * returns on its first line when nothing is dirty. So an installation that
+   * stopped being used kept every transcription forever - word for word, in
+   * clear text, in every backup taken afterwards - while the Home page showed
+   * the list correctly purged, because read() applies the cutoff in memory and
+   * never writes. The user was looking at a promise the disk was not keeping.
+   *
+   * StatsStore already did this at startup. This is the missing twin.
+   *
+   * Honest limit: this runs when Flow runs. Nothing in this file can purge a
+   * profile on a machine where Flow is never launched again - only uninstalling
+   * with data removal does that, and it is off by default.
+   */
+  private purgeOnOpen(): void {
+    const file = this.ensureLoaded();
+    // Same overwrite guard as flush(): a file we could not parse is never
+    // rewritten from what we THINK it said.
+    if (this.loadError) return;
+    const kept = mergeEntries(file.entries, [], this.now());
+    if (kept.length === file.entries.length) return; // nothing aged out: no write
+    const next: HistoryFile = { version: HISTORY_VERSION, entries: kept };
+    if (!this.write(next)) return; // a failed write retries at the next flush
+    this.loaded = next;
+    this.deps.log?.(`[history] retention: dropped ${file.entries.length - kept.length} expired entries`);
+  }
+
   start(): void {
+    this.purgeOnOpen();
     this.timer = setInterval(() => this.flush(), this.deps.flushIntervalMs ?? FLUSH_INTERVAL_MS);
     this.timer.unref?.();
   }
@@ -178,5 +211,9 @@ export class DictationHistoryStore {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
     this.flush();
+    // F3: a session where nothing was dictated leaves flush() a no-op, so the
+    // purge has to be asked for separately here too. Quitting is the other
+    // moment the file is in our hands.
+    this.purgeOnOpen();
   }
 }

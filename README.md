@@ -30,9 +30,18 @@ Two things make it different from the tools it is inspired by:
 
   - **Your dictations, as text, for a rolling month.** They are listed on the
     Home page, they are stored in `history.json` under Flow's own data folder,
-    and anything older than 31 days is dropped when the file is written - not
+    and anything older than 31 days is dropped from the file itself - not
     filtered out when it is displayed. One click erases the lot, and that
     erase deletes the file rather than emptying it.
+
+    *Corrected on 2026-08-02, and worth saying out loud because the old wording
+    was the bug.* This used to read "dropped when the file is written", and a
+    security scan showed that sentence was doing the lying: the file was only
+    ever written after a NEW dictation, so an installation that stopped being
+    used kept everything forever while the Home page showed it correctly
+    purged. The retention now runs every time Flow opens and closes the file,
+    whether or not you dictated. The honest remaining limit: this happens when
+    Flow runs. Nothing purges a machine where Flow is never launched again.
   - **The audio is still never written.** A dictation's sound exists for
     exactly one utterance and reaches no file, ever. Only the long-recording
     mode writes audio, and only into the folder you picked.

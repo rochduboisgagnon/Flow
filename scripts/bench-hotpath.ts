@@ -39,19 +39,24 @@ const HELP =
   "produces a real abandoned trace with hook/overlay/WAV timings), and run\n" +
   "`npm run bench:hotpath` again.";
 
-function readApiInfo(): { port: number } | null {
+// F2 (2026-08-02): the local API requires its session token on every request,
+// and publishes it in this same file. A bench that reads only the port gets a
+// 403 on every call - which is how this script was left by the first pass, and
+// how the adverse review found it.
+function readApiInfo(): { port: number; token: string } | null {
   try {
-    const raw = JSON.parse(fs.readFileSync(apiInfoPath(), "utf8")) as { port?: number; app?: string };
+    const raw = JSON.parse(fs.readFileSync(apiInfoPath(), "utf8")) as { port?: number; app?: string; token?: string };
     if (typeof raw.port !== "number") return null;
-    return { port: raw.port };
+    return { port: raw.port, token: typeof raw.token === "string" ? raw.token : "" };
   } catch {
     return null;
   }
 }
 
-function getJson<T>(port: number, path: string): Promise<T> {
+function getJson<T>(port: number, path: string, token = ""): Promise<T> {
   return new Promise((resolve, reject) => {
-    const req = http.get({ hostname: "127.0.0.1", port, path, timeout: 3000 }, (res) => {
+    const headers = token ? { "X-Flow-Token": token } : {};
+    const req = http.get({ hostname: "127.0.0.1", port, path, timeout: 3000, headers }, (res) => {
       let data = "";
       res.on("data", (c) => (data += c));
       res.on("end", () => {
@@ -240,7 +245,7 @@ async function main() {
   }
   try {
     await getJson(info.port, "/status"); // confirms Flow, not just some other process on that port
-    const snapshot = await getJson<HotpathSnapshot>(info.port, "/diagnostics/hotpath");
+    const snapshot = await getJson<HotpathSnapshot>(info.port, "/diagnostics/hotpath", info.token);
     report(snapshot);
   } catch (e) {
     console.error(HELP);

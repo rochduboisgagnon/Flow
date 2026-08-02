@@ -391,17 +391,45 @@ export function locateWavData(head: Uint8Array, fileBytes: number): WavData | { 
   return { error: "this recording's audio has no readable sample data" };
 }
 
+/** Security scan F6 (MEDIUM, 3/3, 2026-08-02): how much later than its printed
+ * stamp a passage can really end.
+ *
+ * Passage bounds are rebuilt from the `[HH:MM:SS]` stamps in the transcript, and
+ * those are written truncated to the whole second (shared/longform.ts hms), while
+ * the real segment offsets are arbitrary milliseconds. A passage's end is taken
+ * from the NEXT passage's stamp, so the audio being removed genuinely runs up to
+ * one second past that number: silencing to the stamp left the last fraction of
+ * a second audible - the end of the sentence, the last digits of the card number
+ * - under a tombstone stating the range had been silenced. A reader who trusts
+ * the tombstone never listens back, which is what made this worth fixing rather
+ * than documenting. */
+export const STAMP_TRUNCATION_SLACK_MS = 1000;
+
 /** The byte range `[from, to)` of the PCM payload that a time range owns.
  * Clamped to the payload, so a range that runs past the end of a shorter-
  * than-expected file silences to its end instead of aiming past it. An
  * `endMs` of null means "to the end", which is the deliberate over-removal
- * described on RedactionRange. */
+ * described on RedactionRange.
+ *
+ * F6: the END is pushed out by the truncation slack above; the START is not,
+ * because a truncated start stamp already sits at or BEFORE the real one, so it
+ * over-removes on its own.
+ *
+ * THE COST, said plainly: this silences up to one second of the FOLLOWING
+ * passage - the opening of whatever was said next, which nobody asked to remove.
+ * That is the trade this module already declares it makes ("in doubt, remove
+ * more"), and it is the right way round: a second of unnecessary silence is a
+ * blemish, while a second of a passage someone destroyed is the thing they were
+ * promised was gone. The clean fix is to persist real millisecond offsets beside
+ * each segment; until the document format carries them, no arithmetic here can
+ * recover a precision the file never wrote down. */
 export function byteRangeFor(range: RedactionRange, data: WavData): { from: number; to: number } {
   const at = (ms: number) => {
     const sample = Math.floor((Math.max(0, ms) / 1000) * REDACT_SAMPLE_RATE);
     return Math.min(data.dataBytes, sample * BYTES_PER_SAMPLE);
   };
   const from = at(range.startMs);
-  const to = range.endMs === null ? data.dataBytes : Math.max(from, at(range.endMs));
+  const to =
+    range.endMs === null ? data.dataBytes : Math.max(from, at(range.endMs + STAMP_TRUNCATION_SLACK_MS));
   return { from: data.dataOffset + from, to: data.dataOffset + to };
 }

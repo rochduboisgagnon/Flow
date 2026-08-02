@@ -312,6 +312,54 @@ function isDangerousPurgeRoot(p: string): boolean {
   return false;
 }
 
+/** Security scan F1 (MEDIUM, 3/3, 2026-08-02): `/long/save` took the caller's
+ * destination folder raw - `statSync` said "is it a directory", nothing said
+ * "should we be writing there". That is a write-anywhere-this-user-can-write
+ * primitive, and worse, a UNC destination turns a local save into an outbound
+ * copy plus an SMB/NTLM authentication to a host the caller names.
+ *
+ * WHAT THIS REFUSES, and why each one rather than a blanket allowlist:
+ *
+ *  - Anything not absolute. A relative path resolves against Flow's cwd, which
+ *    is a coincidence, never an intention.
+ *  - UNC and device paths (`\\host\share`, `\\?\`, `\\.\`). This is the one that
+ *    matters: it is the difference between "a file lands in an odd folder" and
+ *    "the recording leaves the machine and takes a credential handshake with
+ *    it". No legitimate Save flow has ever passed one.
+ *  - A junction or symlink that lands on either of the above once resolved -
+ *    checked on the REAL path, because otherwise the check is decoration.
+ *
+ * WHAT IT DELIBERATELY DOES NOT DO: confine the destination to the user's
+ * profile. Saving a recording to D:\Recordings is a thing a person does, and
+ * this function must not decide it is suspicious. With F2 landed the caller is
+ * authenticated - Flow itself or a sibling app - so "writes to an unusual local
+ * folder" is a choice, while "writes to a remote host" is an exfiltration.
+ * Drawing the line there is the honest place to draw it, and saying so beats
+ * implying this returns the destination to a sandbox. */
+export function refuseUnsafeDestination(dir: string): string | null {
+  const looksRemote = (p: string): boolean => {
+    const s = p.replace(/\//g, "\\");
+    return s.startsWith("\\\\"); // UNC \\host\share, and the \\?\ and \\.\ prefixes
+  };
+  if (looksRemote(dir)) {
+    return "refused: recordings are saved to a local folder, never to a network path";
+  }
+  if (!path.isAbsolute(dir)) {
+    return "refused: the destination folder must be an absolute path";
+  }
+  try {
+    // Follows junctions and symlinks. A folder that does not exist yet fails
+    // here and is reported by the caller's own statSync a moment later, so an
+    // unreadable path is never silently treated as safe.
+    if (looksRemote(fs.realpathSync(dir))) {
+      return "refused: that folder resolves to a network path";
+    }
+  } catch {
+    /* not resolvable: statSync in the caller reports it as "not found" */
+  }
+  return null;
+}
+
 /** Review C10 F1 (marker gate): the purge only ever operates on a folder AGR
  * Flow itself established as a history root. fileIntoHistory drops this marker
  * when it creates the root; purgeHistoryDirs bails when it is absent. A
@@ -1550,6 +1598,8 @@ export class LongRecorder {
     if (this.active) return { ok: false, error: "a recording is still in progress" };
     const dir = (destDir || "").trim();
     if (!dir) return { ok: false, error: "no destination folder" };
+    const refusal = refuseUnsafeDestination(dir);
+    if (refusal) return { ok: false, error: refusal };
     let stat: fs.Stats;
     try {
       stat = fs.statSync(dir);
@@ -1573,6 +1623,23 @@ export class LongRecorder {
     // the retention purge removed it (a staged recording nobody saved within
     // the window) - either way, refuse cleanly rather than half-committing.
     if (!fs.existsSync(entry.docPath)) return { ok: false, error: "the recording is no longer available (already saved, or removed by the history purge)" };
+    // F1, adverse review: check the destination AGAIN, here, immediately before
+    // anything is created.
+    //
+    // The check at the top of this function is not enough on its own, and the
+    // reason is the wait above it: finalize can hold this call for up to ten
+    // minutes. That is not a microsecond race - it is a comfortable window, and
+    // the caller is the one who decides when it opens, because the caller is who
+    // called /long/stop. Pass a real local folder, let the check pass, then swap
+    // that folder for a junction to \\host\share while save() waits. Without this
+    // second look the guard would be exactly the decoration its own comment says
+    // it refuses to be.
+    //
+    // The first check stays: it refuses an obviously bad destination before the
+    // ten-minute wait rather than after it, which is the difference between a
+    // clear error and a mysterious pause.
+    const lateRefusal = refuseUnsafeDestination(dir);
+    if (lateRefusal) return { ok: false, error: lateRefusal };
     // Two-phase commit so a mid-way failure never orphans the recording:
     // (1) COPY the document (and the .wav if it really exists) into the chosen
     //     folder; on ANY error, delete the copies made and leave staging

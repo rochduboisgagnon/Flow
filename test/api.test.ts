@@ -15,13 +15,24 @@ interface Reply {
   body: Record<string, unknown>;
 }
 
+// Security scan F2 (2026-08-02): the API now requires its session token on
+// EVERY request, not only on ones that admit to being browser-issued. So these
+// helpers carry it by default, and `auth(api)` is called right after start() in
+// each test - a reader can see at a glance that these requests are
+// authenticated. A test exercising the REFUSAL passes "" explicitly, which
+// makes the omission visible at the call site instead of being the default.
+let TOKEN = "";
+function auth(api: LocalApi): void {
+  TOKEN = api.sessionToken();
+}
+
 // agent:false on every call: Node's default agent keeps sockets alive, and a
 // pooled socket from a previous (closed) server on the same port would die
 // with ECONNRESET instead of reconnecting.
-function get(port: number, p: string): Promise<Reply> {
+function get(port: number, p: string, token: string = TOKEN): Promise<Reply> {
   return new Promise((resolve, reject) => {
     http
-      .get({ hostname: "127.0.0.1", port, path: p, agent: false }, (res) => {
+      .get({ hostname: "127.0.0.1", port, path: p, agent: false, headers: token ? { "X-Flow-Token": token } : {} }, (res) => {
         let d = "";
         res.on("data", (c) => (d += c));
         res.on("end", () =>
@@ -32,7 +43,7 @@ function get(port: number, p: string): Promise<Reply> {
   });
 }
 
-function post(port: number, p: string, body: Uint8Array): Promise<Reply> {
+function post(port: number, p: string, body: Uint8Array, token: string = TOKEN): Promise<Reply> {
   return new Promise((resolve, reject) => {
     const req = http.request(
       {
@@ -41,7 +52,11 @@ function post(port: number, p: string, body: Uint8Array): Promise<Reply> {
         path: p,
         method: "POST",
         agent: false,
-        headers: { "Content-Type": "audio/wav", "Content-Length": body.length },
+        headers: {
+          "Content-Type": "audio/wav",
+          "Content-Length": body.length,
+          ...(token ? { "X-Flow-Token": token } : {}),
+        },
       },
       (res) => {
         let d = "";
@@ -152,6 +167,7 @@ test("local API: status, readiness, transcribe, discovery file", async () => {
     infoPathOverride: info,
   });
   await api.start();
+  auth(api);
   try {
     const disco = JSON.parse(fs.readFileSync(info, "utf8"));
     assert.equal(disco.app, "agr-flow");
@@ -218,6 +234,7 @@ test("long-form routes reach their deps with parsed arguments", async () => {
     infoPathOverride: info,
   });
   await api.start();
+  auth(api);
   try {
     const port = (JSON.parse(fs.readFileSync(info, "utf8")) as { port: number }).port;
     assert.equal((await get(port, "/long/state")).code, 200);
@@ -268,6 +285,7 @@ test("U5a: /long/history/doc returns the readHistoryDoc dep's payload as-is, and
     infoPathOverride: info,
   });
   await api.start();
+  auth(api);
   try {
     const port = (JSON.parse(fs.readFileSync(info, "utf8")) as { port: number }).port;
     const ok = await get(port, "/long/history/doc?id=good-id");
@@ -296,6 +314,7 @@ test("U5a: /long/history returns listHistory()'s items wrapped as { items }", as
     infoPathOverride: info,
   });
   await api.start();
+  auth(api);
   try {
     const port = (JSON.parse(fs.readFileSync(info, "utf8")) as { port: number }).port;
     const res = await get(port, "/long/history");
@@ -325,7 +344,12 @@ function postHdr(port: number, p: string, extra: Record<string, string>): Promis
   });
 }
 
-test("CSRF guard: a browser Origin / Sec-Fetch-Site on a POST is refused (403)", async () => {
+// Renamed after the adverse review of F2: the old name ("CSRF guard: a browser
+// Origin / Sec-Fetch-Site on a POST is refused") described a control that no
+// longer exists. Those two headers are not read anywhere in api.ts now; the
+// requests below are refused for want of a token, and a test whose name points
+// at the wrong control is how a suite starts lying while staying green.
+test("the drive-by page is refused - and it is the TOKEN that refuses it, not the headers", async () => {
   const info = path.join(os.tmpdir(), `agrflow-api-csrf-${process.pid}.json`);
   const stub = longDepsStub();
   const api = new LocalApi({
@@ -338,6 +362,7 @@ test("CSRF guard: a browser Origin / Sec-Fetch-Site on a POST is refused (403)",
     infoPathOverride: info,
   });
   await api.start();
+  auth(api);
   try {
     const port = (JSON.parse(fs.readFileSync(info, "utf8")) as { port: number }).port;
     // A drive-by page: fetch() always attaches Origin cross-origin -> refused, dep never runs.
@@ -347,13 +372,25 @@ test("CSRF guard: a browser Origin / Sec-Fetch-Site on a POST is refused (403)",
     const withSecFetch = await postHdr(port, "/settings", { "Sec-Fetch-Site": "cross-site" });
     assert.equal(withSecFetch.code, 403);
     assert.deepEqual(stub.calls, [], "no state-changing dep must run for a refused request");
-    // 2026-07-31: a GET from a browser is refused TOO now, unless it carries
-    // this session's token. What used to keep a hostile page from reading the
-    // answer was the browser's same-origin policy, not this file.
+
+    // F2 (2026-08-02): what refuses those two is now the MISSING TOKEN, not the
+    // headers - and this test has to prove that, or it is green for a reason it
+    // no longer states. Same request, same headers, WITH the token: accepted.
+    // A hostile page cannot reach this line, because it cannot read the
+    // discovery file the token lives in.
+    const withOriginAndToken = await postHdr(port, "/settings", {
+      "Sec-Fetch-Site": "cross-site",
+      "X-Flow-Token": api.sessionToken(),
+    });
+    assert.equal(withOriginAndToken.code, 200, "the header is not what refuses; the missing token is");
+    assert.deepEqual(stub.calls, ["setSettings:"], "and the dep DID run this time");
+    // ...and the token is also accepted in the query string, for Flow's own
+    // <audio> element - the one caller that cannot set a header.
+    assert.equal((await get(port, `/status?t=${encodeURIComponent(api.sessionToken())}`, "")).code, 200);
     assert.equal((await get(port, "/status")).code, 200);
-    // A sibling app (no Origin / Sec-Fetch header) is unaffected.
+    // A sibling app (no Origin / Sec-Fetch header) now needs the token too.
     assert.equal((await post(port, "/long/stop", new Uint8Array(0))).code, 200);
-    assert.deepEqual(stub.calls, ["stop"]);
+    assert.deepEqual(stub.calls, ["setSettings:", "stop"]);
   } finally {
     api.stop();
   }
@@ -371,6 +408,7 @@ test("transcribe errors surface as 500, never crash the server", async () => {
     infoPathOverride: info,
   });
   await api.start();
+  auth(api);
   try {
     const port = (JSON.parse(fs.readFileSync(info, "utf8")) as { port: number }).port;
     const r = await post(port, "/transcribe", encodeWav(new Int16Array(100)));
@@ -400,6 +438,7 @@ test("A10: start() never overwrites a discovery file advertising a LIVE foreign 
     infoPathOverride: info,
   });
   await api.start();
+  auth(api);
   try {
     const kept = JSON.parse(fs.readFileSync(info, "utf8"));
     assert.equal(kept.pid, process.ppid, "the live foreign engine's record survived our boot");
@@ -423,6 +462,7 @@ test("A10: start() DOES replace a stale discovery file from a dead pid", async (
     infoPathOverride: info,
   });
   await api.start();
+  auth(api);
   try {
     const now = JSON.parse(fs.readFileSync(info, "utf8"));
     assert.equal(now.pid, process.pid, "a dead process's leftover is ours to replace");
@@ -470,6 +510,7 @@ async function tokenApi(): Promise<{ api: LocalApi; port: number; token: string 
     infoPathOverride: info,
   });
   await api.start();
+  auth(api);
   const port = (JSON.parse(fs.readFileSync(info, "utf8")) as { port: number }).port;
   return { api, port, token: api.sessionToken() };
 }
@@ -511,14 +552,65 @@ test("a WRONG token is refused, and so is a truncated one", async () => {
   }
 });
 
-test("the sibling apps are untouched: no browser headers, no token needed", async () => {
-  // AGR Pilot's server and AGR Manager call this API server-to-server. They send
-  // neither Origin nor Sec-Fetch-*, and requiring a token of them would have
-  // been a breaking change disguised as a security fix.
+// ---------------------------------------------------------------------------
+// F2 (MEDIUM, 3/3, security scan 2026-08-02). The test that used to live here
+// asserted the OPPOSITE - that sibling apps need no token - and called requiring
+// one "a breaking change disguised as a security fix". The scan showed that
+// sentence was the vulnerability: a control that only questions callers who
+// admit to being browsers questions nobody, because omitting a header is free.
+//
+// These two tests are the pair. The first is the exploit, and it must fail
+// against today's code. The second is the reason the first can be closed
+// without breaking the phone.
+// ---------------------------------------------------------------------------
+
+test("F2: the bypass - a plain local client with no browser headers is refused", async () => {
   const { api, port } = await tokenApi();
   try {
-    assert.equal((await get(port, "/status")).code, 200);
-    assert.equal((await get(port, "/update-readiness")).code, 200);
+    // Byte for byte the request in the scan's exploit scenario: a valid Host,
+    // no Origin, no Sec-Fetch-*, no token. It used to return every one of these.
+    for (const p of [
+      "/status",
+      "/long/history", // the meeting index
+      "/long/state",
+      "/long/transcript", // a meeting being recorded RIGHT NOW
+      "/settings",
+    ]) {
+      const r = await get(port, p, "");
+      assert.equal(r.code, 403, `${p} must refuse an unauthenticated local caller`);
+    }
+    // And the state-changing ones, which is where it stops being a read.
+    assert.equal((await post(port, "/long/start-native", new Uint8Array(0), "")).code, 403, "must not start a mic capture");
+    assert.equal((await post(port, "/long/notes-splice", new Uint8Array(0), "")).code, 403, "F10 rides on F2");
+    assert.equal((await post(port, "/quit", new Uint8Array(0), "")).code, 403);
+  } finally {
+    api.stop();
+  }
+});
+
+test("F2: the discovery file publishes the token, which is what keeps the phone working", async () => {
+  // The sibling apps (AGR Pilot's server drives the whole /long/* recording flow
+  // from the phone) already read this file for the port. Requiring a token is
+  // only survivable because the token is in the same file, one field over.
+  const info = path.join(os.tmpdir(), `agrflow-api-disco-${process.pid}-${Math.random()}.json`);
+  const api = new LocalApi({
+    version: "0.0.0",
+    isListening: () => false,
+    isRecording: () => false,
+    isEngineWarm: () => true,
+    transcribe: () => Promise.resolve({ text: "", ms: 0 }),
+    ...longDepsStub(),
+    infoPathOverride: info,
+  });
+  await api.start();
+  try {
+    const disco = JSON.parse(fs.readFileSync(info, "utf8")) as { port: number; token: string };
+    assert.equal(typeof disco.token, "string");
+    assert.ok(disco.token.length >= 32, "a published token still has to be unguessable");
+    assert.equal(disco.token, api.sessionToken(), "the file must carry THIS session's token");
+    // A sibling app doing exactly what Pilot does: read the file, send the token.
+    assert.equal((await get(disco.port, "/status", disco.token)).code, 200);
+    assert.equal((await get(disco.port, "/long/history", disco.token)).code, 200);
   } finally {
     api.stop();
   }
@@ -557,10 +649,13 @@ test("two sessions never share a token", async () => {
 // fix is a Host allowlist and not another header check.
 // ---------------------------------------------------------------------------
 
+// Carries the token (F2), so that what these tests prove is the HOST check and
+// nothing else. A rebinding request refused for want of a token would be a green
+// test measuring the wrong control.
 function getHost(port: number, p: string, hostHeader: string): Promise<Reply> {
   return new Promise((resolve, reject) => {
     http
-      .get({ hostname: "127.0.0.1", port, path: p, agent: false, headers: { Host: hostHeader } }, (res) => {
+      .get({ hostname: "127.0.0.1", port, path: p, agent: false, headers: { Host: hostHeader, "X-Flow-Token": TOKEN } }, (res) => {
         let d = "";
         res.on("data", (c) => (d += c));
         res.on("end", () => resolve({ code: res.statusCode ?? 0, body: JSON.parse(d) as Record<string, unknown> }));

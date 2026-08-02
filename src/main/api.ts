@@ -155,6 +155,27 @@ export class LocalApi {
    * apps (Pilot server, Manager) call server-to-server, send no browser headers,
    * and are unaffected - which is why the token is required only when those
    * headers are present.
+   *
+   * ---------------------------------------------------------------------------
+   * 2026-08-02, security scan F2 (MEDIUM, 3/3): the paragraph above was wrong,
+   * and it was wrong in the way that matters - it made a control sound like a
+   * boundary when it was a courtesy.
+   *
+   * "Required only when those headers are present" means required only of
+   * callers who VOLUNTEER that they are browsers. A local process omits Origin
+   * and Sec-Fetch-Site, is judged not-a-browser, and is never asked for
+   * anything. It then reads every meeting transcript, downloads every .wav,
+   * follows a meeting being recorded right now, starts a mic + system capture
+   * under the OS consent granted to Flow, rewrites settings and quits the
+   * engine. The Host allowlist below does not help: Host is a header the caller
+   * writes itself.
+   *
+   * The token is now required on EVERY request, unconditionally. What the
+   * conditional bought - sibling apps working without changes - is bought
+   * instead by publishing the token in the discovery file those apps already
+   * read for the port. See start() for why that file is the right place and for
+   * the exact boundary it does and does not draw.
+   * ---------------------------------------------------------------------------
    */
   private token = randomBytes(32).toString("base64url");
 
@@ -202,16 +223,56 @@ export class LocalApi {
     try {
       const raw = JSON.parse(fs.readFileSync(info, "utf8")) as { pid?: number };
       if (typeof raw.pid === "number" && raw.pid !== process.pid && pidAlive(raw.pid)) {
+        // F2 note (adverse review): this early return now also means "this
+        // session's token is never published", so sibling apps cannot reach US.
+        // That is the correct outcome rather than a new hole: the port and the
+        // token travel in the same file, so a sibling reaches whichever engine
+        // OWNS that file, holding that engine's token. The pair stays coherent.
+        // What remains wrong here is older than F2 - pidAlive() answers true on
+        // EPERM, so a recycled PID belonging to another account reads as "the
+        // previous engine is alive" and we quietly run without discovery.
         this.deps.log?.(`[api] not overwriting ${info}: it advertises live pid ${raw.pid} (the previous engine)`);
         return;
       }
     } catch {
       /* absent or unreadable: ours to write */
     }
-    fs.writeFileSync(
-      info,
-      JSON.stringify({ app: "agr-flow", port: this.port, pid: process.pid, version: this.deps.version }),
-    );
+    // F2: the discovery file now carries the session token as well as the port.
+    //
+    // This is what lets the token be mandatory without breaking the sibling apps
+    // (the Pilot server drives the whole /long/* recording flow from the phone).
+    // They already read this file to find the port; they now read one more field
+    // and send it back. A token they can fetch is not a secret from them - it is
+    // not meant to be. It is meant to be a secret from everyone who cannot read
+    // this file.
+    //
+    // WHICH IS EXACTLY THE BOUNDARY THIS DRAWS, and it is worth being precise
+    // rather than reassuring:
+    //
+    //  - Another LOCAL USER ACCOUNT cannot read it. The file lives under the
+    //    user's profile, which Windows ACLs already close to other non-admin
+    //    accounts. That is the attacker F2 describes, and this closes them out.
+    //  - A process running AS THIS USER can read it, and no file permission can
+    //    change that. It is also not a meaningful loss: that process can already
+    //    read history.json and the recordings folder directly. The API stops
+    //    being a shortcut, which is all a token was ever going to achieve.
+    //
+    // The mode is set for POSIX (tests and any future port). On Windows it only
+    // touches the read-only bit and the profile ACL above is the real control -
+    // saying so beats implying a guarantee this line does not give.
+    const payload = JSON.stringify({
+      app: "agr-flow",
+      port: this.port,
+      pid: process.pid,
+      version: this.deps.version,
+      token: this.token,
+    });
+    fs.writeFileSync(info, payload, { mode: 0o600 });
+    try {
+      fs.chmodSync(info, 0o600); // writeFileSync only applies mode when CREATING
+    } catch {
+      /* best effort: a pre-existing file we cannot chmod is still ACL-protected */
+    }
   }
 
   private listen(port: number): Promise<void> {
@@ -273,13 +334,22 @@ export class LocalApi {
       return json(403, { error: "refused: this API answers only to 127.0.0.1" });
     }
 
-    const fromBrowser =
-      req.headers["origin"] !== undefined || req.headers["sec-fetch-site"] !== undefined;
-    if (fromBrowser) {
-      const given = url.searchParams.get("t") ?? (req.headers["x-flow-token"] as string | undefined) ?? null;
-      if (!this.tokenOk(given)) {
-        return json(403, { error: "cross-origin request refused (loopback control API)" });
-      }
+    // F2 (2026-08-02): the token is required of EVERY caller, with no exception
+    // and no sniffing of what kind of caller this is. The previous version asked
+    // only requests that carried Origin or Sec-Fetch-Site - which is to say, only
+    // callers honest enough to admit being browsers. Omitting both headers was a
+    // complete bypass, and omitting a header costs an attacker nothing.
+    //
+    // Two accepted forms, and both are needed:
+    //  - `X-Flow-Token`, for anything that can set a header (the sibling apps).
+    //  - `?t=`, for the ONE caller that cannot: the <audio> element on the Notes
+    //    page, whose src is a URL and nothing else. Dropping the query form to
+    //    look stricter would silently kill playback - the U3 mistake, again.
+    const given = url.searchParams.get("t") ?? (req.headers["x-flow-token"] as string | undefined) ?? null;
+    if (!this.tokenOk(given)) {
+      return json(403, {
+        error: "refused: this API requires the session token from Flow's discovery file",
+      });
     }
     try {
       if (req.method === "GET" && url.pathname === "/status") {
