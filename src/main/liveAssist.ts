@@ -63,8 +63,11 @@ export interface LiveAssistDeps {
   dictating(): boolean;
   /** An audio import or a model download owns the engine. */
   otherEngineWork(): boolean;
-  /** One short, abortable local generation (main/llm/ollama.ts's
-   * generateShort). null on any failure. */
+  /** One short, abortable generation (LlmProvider.short). null on any failure.
+   *
+   * P1: this used to name Ollama. It does not any more, and the `model`
+   * argument is now vestigial - the provider decides which model it uses,
+   * because for a CLI provider there is nothing to choose. */
   generate(
     model: string,
     prompt: string,

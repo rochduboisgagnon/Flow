@@ -19,7 +19,7 @@ import { runMigration } from "./migrate";
 import { analyzeSpeech, hasSpeech, trimToSpeech } from "../shared/vad";
 import { gateTranscript } from "../shared/textGate";
 import { pcmFromWav, encodeWav } from "../shared/wav";
-import { listOllamaModels, summarize, generateShort } from "./llm/ollama";
+import { OllamaProvider, listOllamaModels } from "./llm/provider";
 import { LiveAssistant } from "./liveAssist";
 import { LocalApi } from "./api";
 import { LongRecorder, historyRoot, stagingRoot, listHistory, deleteHistoryEntry, resolveHistoryEntry, readHistoryDoc } from "./longform";
@@ -839,6 +839,13 @@ async function warmAsr() {
 // convention below) so the overlay's own best-effort catches stop being
 // invisible too - see overlay.ts's startCapture for how the log write is
 // deferred off the keyboard hook's synchronous call stack.
+// P1: one provider for the whole process. Its model resolution is the one that
+// used to be copy-pasted in longform.finalize and audioImport.
+const llmProvider = new OllamaProvider({
+  preferredModel: () => settings.summaryModel,
+  listModels: () => listOllamaModels(),
+});
+
 const overlay = new OverlayWindow(flowLog);
 // C2: the hidden native-capture window (Windows-only). Created at startup so
 // getDisplayMedia is instant on the first native recording; idle until asked.
@@ -1126,8 +1133,10 @@ const longRec = new LongRecorder({
   // this dep made before. `allowEmptyDemote: false` moved inside it, because both
   // batch callers passed it for the same reason (see BatchEngine.transcribe).
   transcribeSegment: (wav) => batchEngine.transcribe(wav),
-  summaryModel: () => settings.summaryModel,
-  ollamaModels: () => listOllamaModels(),
+  // P1: the recorder no longer knows which model, nor whose. It asks the
+  // provider, and the provider is the only thing in the process that had to
+  // learn a second implementation exists.
+  llm: llmProvider,
   // U2c: read lazily, so the Settings button that resumes cleanup takes effect
   // on the very next purge instead of needing a restart.
   historyPurgeSuspended: () => settings.historyPurgeSuspended,
@@ -1200,7 +1209,7 @@ const importQueue = new ImportQueue({
   stagingRoot: () => stagingRoot(),
   summaryModel: () => settings.summaryModel,
   ollamaModels: () => listOllamaModels(),
-  summarize: (model, prompt) => summarize(model, prompt),
+  summarize: (_model, prompt) => llmProvider.long(prompt),
   log: flowLog,
 });
 
@@ -1227,7 +1236,7 @@ const liveAssist = new LiveAssistant({
   longState: () => longRec.state(),
   dictating: () => listening || utterancesInFlight > 0,
   otherEngineWork: () => importQueue.isBusy || modelTransfers > 0,
-  generate: (model, prompt, opts) => generateShort(model, prompt, opts),
+  generate: (_model, prompt, opts) => llmProvider.short(prompt, opts),
   // The recorder writes it: the document has exactly ONE writer.
   keepInDocument: (text, contextUpToMs) => longRec.keepSuggestion(text, contextUpToMs),
   log: flowLog,

@@ -5,7 +5,7 @@ import { dataDir } from "./settings";
 import { encodeWav } from "../shared/wav";
 import { analyzeSpeech } from "../shared/vad";
 import { gateTranscript } from "../shared/textGate";
-import { summarize } from "./llm/ollama";
+import type { LlmProvider } from "./llm/provider";
 // U8: the ONE line format a kept live suggestion takes in the document. It lives
 // in the feature's own pure module (with the gate and the prompt) rather than in
 // shared/longform.ts, and is imported here exactly the way markLine is.
@@ -110,12 +110,15 @@ export interface LongDeps {
    *    import pipeline passed it with the same comment for the same reason. One
    *    fact, one place. */
   transcribeSegment(wav: Uint8Array): Promise<{ text: string; ms: number }>;
-  /** settings.summaryModel: the Ollama model used for meeting summaries.
-   * "" (or absent) falls back to the first installed model. */
-  summaryModel?(): string;
-  /** Installed Ollama models, used to auto-pick a summary model when the user
-   * did not configure one. Injectable so tests don't hit a real Ollama. */
-  ollamaModels?: () => Promise<string[] | null>;
+  /** P1: who writes the summary. Absent means nobody does, and the document
+   * ships as the transcript alone - which is already the behaviour on a machine
+   * with no local model, so nothing new had to be taught to the callers.
+   *
+   * This module used to import Ollama by name and resolve the model itself.
+   * Both moved behind the provider: "which model" is a question only the local
+   * provider has, and asking it here is what made a second implementation mean
+   * editing this file. */
+  llm?: LlmProvider;
   /** settings.historyPurgeSuspended, read LAZILY (this module never imports
    * settings state - only dataDir()): true means the fixed history folder holds
    * an archive Flow was not managing, so the retention purge must not run at
@@ -1934,20 +1937,23 @@ export class LongRecorder {
       const mine = this.deps.liveNotes?.read(this.startedIso) ?? [];
       const mineBlock = renderMyNotes(mine);
       let generated = "";
-      const model =
-        (this.deps.summaryModel?.() || "") ||
-        (this.deps.ollamaModels ? (await this.deps.ollamaModels())?.[0] : undefined) ||
-        "";
+      // P1: ask the provider whether anything can write a summary at all, before
+      // reading the document. The gate is kept (rather than letting long() just
+      // return null) because reading a whole transcript to then discover nobody
+      // will summarise it is work done for nothing on every recording made on a
+      // machine with no model - which is the campaign's own default case.
+      const llm = this.deps.llm;
+      const canSummarize = llm ? (await llm.available()).found : false;
       let doc = "";
       let body = "";
-      if (model || mineBlock) {
+      if (canSummarize || mineBlock) {
         doc = fs.readFileSync(this.transcriptPath, "utf8");
         body = doc.startsWith(this.headerStr) ? doc.slice(this.headerStr.length) : doc;
       }
-      if (model) {
+      if (canSummarize && llm) {
         const parts = chunkTranscript(body);
         if (parts.length === 1) {
-          generated = (await summarize(model, summaryPrompt(parts[0], this.marks, mineBlock))) ?? "";
+          generated = (await llm.long(summaryPrompt(parts[0], this.marks, mineBlock))) ?? "";
         } else {
           // Map-reduce: summarize each chunk, then the joined summaries. The
           // user's notes go to the REDUCE step only, not to every chunk: a note
@@ -1956,11 +1962,11 @@ export class LongRecorder {
           // budget on the part of the work that needs it least.
           const partials: string[] = [];
           for (const p of parts) {
-            const x = await summarize(model, summaryPrompt(p, []));
+            const x = await llm.long(summaryPrompt(p, []));
             if (x) partials.push(x);
           }
           generated =
-            (await summarize(model, summaryPrompt(partials.join("\n\n---\n\n"), this.marks, mineBlock))) ??
+            (await llm.long(summaryPrompt(partials.join("\n\n---\n\n"), this.marks, mineBlock))) ??
             partials.join("\n\n---\n\n");
         }
         if (generated) {
@@ -1973,7 +1979,7 @@ export class LongRecorder {
           const checked = verifyCitations(generated, transcriptStamps(body));
           if (checked.dropped > 0) {
             this.deps.log?.(
-              `[long] notes provenance: kept ${checked.kept} citation(s), dropped ${checked.dropped} the model made up (model ${model})`,
+              `[long] notes provenance: kept ${checked.kept} citation(s), dropped ${checked.dropped} the model made up (provider ${llm.id})`,
             );
           }
           generated = checked.text;
