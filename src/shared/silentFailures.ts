@@ -100,6 +100,31 @@ export const SILENT_FAILURE = {
   // that does not work, and there was no surface that could tell the difference.
   // Settings > Engine names the failure in words; this is the tally.
   batchEngineFallback: "batch-engine-fallback",
+
+  // ---- P7 (vague P) : les six facons dont « qui reflechit » peut echouer.
+  //
+  // Chacune porte un NOM et un compte, jamais un message ni un chemin. C'est la
+  // discipline de retention zero de ce module, et elle compte double ici : le
+  // texte d'erreur d'un CLI contient des chemins, et parfois des fragments du
+  // prompt - c'est-a-dire de la reunion.
+  //
+  // Et chacune doit permettre de repondre a la question qui compte pour
+  // quelqu'un dont la reunion vient d'echouer : est-ce que quelque chose est
+  // PARTI ? Les trois premieres : non, rien n'a quitte la machine. Les trois
+  // dernieres : oui, l'appel a eu lieu.
+
+  /** Le fournisseur choisi n'est pas sur cette machine. RIEN n'est parti. */
+  llmProviderMissing: "llm-provider-missing",
+  /** Le programme est la, mais pas connecte. RIEN n'est parti. */
+  llmNotSignedIn: "llm-not-signed-in",
+  /** Le processus n'a meme pas demarre. RIEN n'est parti. */
+  llmSpawnFailed: "llm-spawn-failed",
+  /** L'appel a eu lieu et n'est pas revenu a temps. Quelque chose EST parti. */
+  llmTimeout: "llm-timeout",
+  /** L'appel a eu lieu et a rendu du vide. Quelque chose EST parti. */
+  llmEmptyAnswer: "llm-empty-answer",
+  /** On a tue l'appel (abandon, ou le moteur avait la priorite). Il etait parti. */
+  llmKilled: "llm-killed",
 } as const;
 
 export type SilentFailureName = (typeof SILENT_FAILURE)[keyof typeof SILENT_FAILURE];

@@ -370,3 +370,51 @@ test("REVIEW: summaryPrompt warns the model that suggestion lines were spoken by
   const clean = summaryPrompt("[00:00:01] Bonjour tout le monde.\n", []);
   assert.doesNotMatch(clean, /Flow suggestion kept at/);
 });
+
+// ---------------------------------------------------------------------------
+// P7 (vague P). The fourth wait state.
+//
+// "no-model" would tell a lie in the one case that matters most: you picked
+// Claude Code and it is not on this machine. That sentence sends someone to
+// install Ollama to fix a problem that is not theirs.
+//
+// The fourth state enters through modelReady, which was already tri-state,
+// rather than through a new `provider` argument to decideAssist - that function
+// is pure and tested branch by branch, and a provider argument would turn a
+// dozen tests into a matrix. The plan says so and it is right.
+// ---------------------------------------------------------------------------
+
+test("P7: a chosen provider that is not usable says so, and does NOT say 'no local model'", () => {
+  const d = decideAssist({
+    ...clear(),
+    enabled: true,
+    modelReady: "provider-unavailable",
+  });
+  assert.equal(d.run, false);
+  assert.equal(d.wait, "provider-unavailable");
+  assert.notEqual(d.wait, "no-model", "that sentence would send someone to install the wrong thing");
+});
+
+test("P7: the three existing model states are untouched", () => {
+  assert.equal(decideAssist({ ...clear({ enabled: true }), modelReady: null }).wait, "checking");
+  assert.equal(decideAssist({ ...clear({ enabled: true }), modelReady: false }).wait, "no-model");
+  assert.equal(decideAssist({ ...clear({ enabled: true }), modelReady: true }).run, true);
+});
+
+test("P7: the text for the fourth state says WHAT is wrong and that NOTHING LEFT", () => {
+  const t = ASSIST_WAIT_TEXT["provider-unavailable"];
+  assert.match(t, /Settings > Local AI/, "it points at the thing that fixes it");
+  assert.match(t, /[Nn]othing was sent/, "someone whose meeting just failed needs to know this");
+  assert.match(t, /transcrib/i, "and that the meeting itself is still being transcribed in full");
+  assert.ok(!t.includes("—"), "no em-dash in anything a user reads");
+});
+
+test("P7: every wait state has a sentence - a silent panel is never acceptable", () => {
+  const states: AssistWait[] = [
+    "off", "checking", "no-model", "provider-unavailable", "idle", "finishing",
+    "dictation", "transcribing", "engine", "thinking", "cooldown", "waiting-speech",
+  ];
+  for (const s of states) {
+    assert.ok(ASSIST_WAIT_TEXT[s] && ASSIST_WAIT_TEXT[s].length > 20, `${s} has no sentence`);
+  }
+});

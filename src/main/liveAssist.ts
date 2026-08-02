@@ -56,6 +56,16 @@ export interface LiveAssistDeps {
   /** Installed local model names, or null when no local model server answers.
    * Injectable so tests never reach for a real Ollama. */
   listModels(): Promise<string[] | null>;
+  /**
+   * P7: who is actually going to write the suggestions, and is it usable.
+   *
+   * Optional so every existing test keeps working untouched: absent, the probe
+   * below behaves exactly as it did, which is the Ollama-only reading. Present,
+   * it is what lets the panel say "the thing you PICKED is not here" instead of
+   * "there is no local model" - a sentence that would send someone to install
+   * Ollama to fix a problem that is not theirs.
+   */
+  providerStatus?(): Promise<{ found: boolean; local: boolean }>;
   /** The recorder's own snapshot - the SAME one the Record page and the HTTP
    * /long/state route read (index.ts's longStateDep), never a second view. */
   longState(): LongStateSnapshot;
@@ -128,7 +138,7 @@ export class LiveAssistant {
   private wait: AssistWait = "off";
 
   // ---- the local-model probe, cached (see ASSIST_MODEL_PROBE_MS) ----
-  private modelReady: boolean | null = null;
+  private modelReady: boolean | null | "provider-unavailable" = null;
   private model = "";
   private probedAt = 0;
   private probing = false;
@@ -317,6 +327,35 @@ export class LiveAssistant {
     if (this.probing) return;
     if (this.modelReady !== null && Date.now() - this.probedAt < ASSIST_MODEL_PROBE_MS) return;
     this.probing = true;
+    // P7: a provider that is not local is not asked for a model list - it has
+    // none. Its question is simply "are you here", and the answer travels as the
+    // fourth value of modelReady rather than as a new argument to decideAssist
+    // (which is pure and tested branch by branch; see the plan).
+    if (this.deps.providerStatus) {
+      void this.deps
+        .providerStatus()
+        .then(async (st) => {
+          if (!st.local) {
+            this.model = "";
+            this.modelReady = st.found ? true : "provider-unavailable";
+            return;
+          }
+          const models = await this.deps.listModels();
+          const preferred = this.deps.preferredModel();
+          const list = models ?? [];
+          this.model = preferred ? (list.includes(preferred) ? preferred : "") : (list[0] ?? "");
+          this.modelReady = this.model !== "";
+        })
+        .catch(() => {
+          this.model = "";
+          this.modelReady = false;
+        })
+        .finally(() => {
+          this.probing = false;
+          this.probedAt = Date.now();
+        });
+      return;
+    }
     void this.deps
       .listModels()
       .then((models) => {

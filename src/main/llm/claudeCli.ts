@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { dataDir } from "../settings";
 import { resolveOnPath, runCli, type CliRunResult } from "./cliRunner";
 import type { Availability, LlmProvider, Locality } from "./provider";
+import { silentFailures, SILENT_FAILURE, type SilentFailureName } from "../../shared/silentFailures";
 
 // ---------------------------------------------------------------------------
 // P3 (vague P) : Claude Code comme fournisseur de notes.
@@ -102,15 +103,28 @@ export interface ClaudeCliDeps {
  * environment scrubbing failed and a machine API key got billed. Sending
  * someone to top up an account they should not be using would hide our own bug.
  */
-export function classifyClaudeError(stderr: string, code: number | null, killed: boolean): string {
+export function classifyClaudeError(
+  stderr: string,
+  code: number | null,
+  killed: boolean,
+): SilentFailureName {
   const s = (stderr || "").toLowerCase();
-  if (killed) return "llm-killed";
-  if (/credit balance|insufficient credit/.test(s)) return "llm-billing-env-leak";
-  if (/not logged in|unauthenticated|please run .*login|authentication/.test(s)) return "llm-not-signed-in";
-  if (/usage limit|rate limit|too many requests/.test(s)) return "llm-usage-limit";
-  if (/enoent|not recognized|cannot find/.test(s)) return "llm-provider-missing";
-  if (code !== 0) return "llm-spawn-failed";
-  return "llm-empty-answer";
+  // P7: every branch returns a name from the CLOSED vocabulary of
+  // shared/silentFailures.ts, so the value can be counted and shown in
+  // Diagnostics without any of them ever carrying the error text.
+  if (killed) return SILENT_FAILURE.llmKilled;
+  // NOT a billing problem. On an OAuth subscription this message means OUR
+  // environment scrubbing let a machine API key through, so it is counted as
+  // the spawn fault it is rather than sending someone to top up an account
+  // they should not be using.
+  if (/credit balance|insufficient credit/.test(s)) return SILENT_FAILURE.llmSpawnFailed;
+  if (/not logged in|unauthenticated|please run .*login|authentication/.test(s))
+    return SILENT_FAILURE.llmNotSignedIn;
+  if (/usage limit|rate limit|too many requests/.test(s)) return SILENT_FAILURE.llmEmptyAnswer;
+  if (/enoent|not recognized|cannot find/.test(s)) return SILENT_FAILURE.llmProviderMissing;
+  if (/timed out|timeout/.test(s)) return SILENT_FAILURE.llmTimeout;
+  if (code !== 0) return SILENT_FAILURE.llmSpawnFailed;
+  return SILENT_FAILURE.llmEmptyAnswer;
 }
 
 export class ClaudeCliProvider implements LlmProvider {
@@ -174,7 +188,12 @@ export class ClaudeCliProvider implements LlmProvider {
 
   private async call(prompt: string, timeoutMs: number, signal?: AbortSignal): Promise<string | null> {
     const bin = this.bin();
-    if (!bin) return null;
+    if (!bin) {
+      // P7: not reaching the binary is a named failure too, and the one where
+      // it matters most that nothing left the machine.
+      silentFailures.increment(SILENT_FAILURE.llmProviderMissing);
+      return null;
+    }
     const run = this.deps.run ?? runCli;
     const r = await run({
       bin,
@@ -189,7 +208,12 @@ export class ClaudeCliProvider implements LlmProvider {
       this.everResponded = true;
       return text;
     }
-    this.deps.log?.(`[claude-cli] ${classifyClaudeError(r.stderr, r.code, r.killed)}`);
+    // P7: named, counted, and visible in Diagnostics - with no message and no
+    // path travelling with it. A CLI writes paths to stderr, and sometimes
+    // fragments of its prompt, which here is the meeting.
+    const why = classifyClaudeError(r.stderr, r.code, r.killed);
+    silentFailures.increment(why);
+    this.deps.log?.(`[claude-cli] ${why}`);
     return null;
   }
 

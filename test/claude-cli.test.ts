@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { ClaudeCliProvider, classifyClaudeError } from "../src/main/llm/claudeCli";
 import type { CliRunResult } from "../src/main/llm/cliRunner";
+import { SILENT_FAILURE } from "../src/shared/silentFailures";
 
 // ---------------------------------------------------------------------------
 // P3 (vague P). Claude Code as a notes provider.
@@ -184,15 +185,41 @@ test("P3: every failure returns null and is named, never an exception", async ()
   assert.match(seen.join(" "), /llm-not-signed-in/);
 });
 
-test("P3: 'credit balance too low' is OUR bug, not the user's account", () => {
-  // On an OAuth subscription this message means the environment scrubbing let a
-  // machine API key through. Telling someone to top up an account they should
-  // not be using would hide our own mistake.
-  assert.equal(classifyClaudeError("Credit balance is too low", 1, false), "llm-billing-env-leak");
+test("P3/P7: 'credit balance too low' is OUR bug, and is never reported as an account problem", () => {
+  // On an OAuth subscription this message means our environment scrubbing let a
+  // machine API key through. It is counted as the spawn fault it is; telling
+  // someone to top up an account they should not be using would hide our bug.
+  assert.equal(classifyClaudeError("Credit balance is too low", 1, false), "llm-spawn-failed");
   assert.equal(classifyClaudeError("Not logged in", 1, false), "llm-not-signed-in");
-  assert.equal(classifyClaudeError("usage limit reached", 1, false), "llm-usage-limit");
   assert.equal(classifyClaudeError("", null, true), "llm-killed");
+  assert.equal(classifyClaudeError("request timed out", 1, false), "llm-timeout");
+  assert.equal(classifyClaudeError("ENOENT", 1, false), "llm-provider-missing");
   assert.equal(classifyClaudeError("", 0, false), "llm-empty-answer");
+});
+
+test("P7: every name it can return is in the closed vocabulary, so Diagnostics can count it", () => {
+  const allowed = new Set<string>([
+    SILENT_FAILURE.llmProviderMissing,
+    SILENT_FAILURE.llmNotSignedIn,
+    SILENT_FAILURE.llmSpawnFailed,
+    SILENT_FAILURE.llmTimeout,
+    SILENT_FAILURE.llmEmptyAnswer,
+    SILENT_FAILURE.llmKilled,
+  ]);
+  const samples: Array<[string, number | null, boolean]> = [
+    ["", 0, false],
+    ["", 1, false],
+    ["", null, true],
+    ["Credit balance is too low", 1, false],
+    ["Not logged in", 1, false],
+    ["usage limit reached", 1, false],
+    ["ENOENT no such file", 1, false],
+    ["request timed out", 1, false],
+    ["a totally unexpected message", 3, false],
+  ];
+  for (const [err, code, killed] of samples) {
+    assert.ok(allowed.has(classifyClaudeError(err, code, killed)), `${err || "(empty)"} escaped the vocabulary`);
+  }
 });
 
 test("P3: the failure name carries no path and no error text", () => {

@@ -86,6 +86,11 @@ export type AssistWait =
   | "off" // the setting is off (the default)
   | "checking" // still finding out whether a local model exists
   | "no-model" // no local model on this machine
+  // P7: a FOURTH state, distinct from "no-model", because "no-model" would tell
+  // a lie in the one case that matters most - "you chose Claude Code and it is
+  // not here". Saying "no local model" there sends someone to install Ollama to
+  // fix a problem that is not theirs.
+  | "provider-unavailable" // the CHOSEN provider is not usable
   | "idle" // no recording is running
   | "finishing" // the recording is being finalized
   | "dictation" // a dictation (or the phone-mic endpoint) owns the speech engine
@@ -103,6 +108,12 @@ export type AssistWait =
 export const ASSIST_WAIT_TEXT: Record<AssistWait, string> = {
   off: "Live suggestions are off. When you turn them on, a local model reads the last few minutes of the transcript and proposes notes or replies.",
   checking: "Looking for a local model on this machine...",
+  // P7. Two things this sentence must do, and the second is the one people
+  // forget: name what is actually wrong, and say that NOTHING LEFT. Someone
+  // whose meeting just failed to be summarised needs to know whether their
+  // words went anywhere.
+  "provider-unavailable":
+    "The model you picked in Settings > Local AI is not available on this machine. Nothing was sent anywhere. The meeting is still being transcribed in full: this only affects the suggestions.",
   "no-model": "No local model found on this machine. Suggestions need Ollama running here, with a model installed - pick one in Settings > Local AI. Flow does not embed its own model yet, so this stays off until then.",
   idle: "Suggestions start once a recording is running.",
   finishing: "The recording is being finished. No new suggestions from here.",
@@ -143,7 +154,17 @@ export interface AssistSnapshot {
   enabled: boolean;
   /** null = not probed yet. Three states, never two: "no model" and "we have
    * not looked" are different sentences. */
-  modelReady: boolean | null;
+  /**
+   * P7: FOUR values, not three, and the fourth is a distinction the user can
+   * feel. `null` = still finding out. `false` = there is no local model.
+   * `"provider-unavailable"` = you PICKED something and it is not usable here.
+   *
+   * The plan forbids adding a `provider` field to decideAssist, and it is right:
+   * that function is pure and tested branch by branch, and a provider argument
+   * would turn twelve tests into a matrix. So the fourth state enters through
+   * this field, which was already tri-state - the shape absorbs it.
+   */
+  modelReady: boolean | null | "provider-unavailable";
   /** The local model a round would actually use, "" when there is none. Shown
    * verbatim: the user is entitled to know WHICH model read their meeting. */
   model: string;
@@ -183,8 +204,10 @@ export const ASSIST_UNAVAILABLE: AssistSnapshot = {
 
 export interface AssistGateInput {
   enabled: boolean;
-  /** null = the local-model probe has not answered yet. */
-  modelReady: boolean | null;
+  /** null = the probe has not answered yet. "provider-unavailable" = the user
+   * PICKED a provider and it is not usable here, which is a different fact from
+   * "there is no local model" and must not be told as that one. See P7. */
+  modelReady: boolean | null | "provider-unavailable";
   recordingActive: boolean;
   finalizing: boolean;
   /** A dictation OR an utterance from the local HTTP endpoint is being decoded. */
@@ -220,6 +243,9 @@ export interface AssistGateVerdict {
 export function decideAssist(i: AssistGateInput): AssistGateVerdict {
   if (!i.enabled) return { run: false, wait: "off" };
   if (i.modelReady === null) return { run: false, wait: "checking" };
+  // P7: "no local model" would be a LIE here. Someone who picked Claude Code
+  // and does not have it must not be sent to install Ollama.
+  if (i.modelReady === "provider-unavailable") return { run: false, wait: "provider-unavailable" };
   if (!i.modelReady) return { run: false, wait: "no-model" };
   // finalizing is tested before "idle": both have recordingActive false, and
   // "the recording is being finished" is the more informative of the two.

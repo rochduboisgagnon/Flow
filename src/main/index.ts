@@ -1262,6 +1262,14 @@ const liveAssist = new LiveAssistant({
   // The SAME local model choice the meeting summary uses - not a second setting.
   preferredModel: () => settings.summaryModel,
   listModels: () => listOllamaModels(),
+  // P7: what the panel needs to tell "there is no local model" apart from "the
+  // thing you PICKED is not here". Cheap by construction - see registry.ts, and
+  // note it is called on the 30-second re-probe, so it must never spawn.
+  providerStatus: async () => {
+    const p = llmRegistry.resolve(settings.aiProvider)!;
+    const av = await p.available();
+    return { found: av.found, local: p.locality === "on-this-machine" };
+  },
   // The SAME snapshot the Record page and GET /long/state read.
   longState: () => longRec.state(),
   dictating: () => listening || utterancesInFlight > 0,
