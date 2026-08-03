@@ -224,9 +224,19 @@ web3 = 30
 
 [auth.email]
 # Allow/disallow new user signups via email to your project.
-# Meme raison qu'au-dessus : les deux drapeaux existent, fermer un seul laisse
-# l'autre chemin ouvert.
-enable_signup = false
+#
+# VRAI, ET CE N'EST PAS UN RELACHEMENT. Ce drapeau ne fait pas ce que son nom
+# laisse croire : la CLI le traduit en « fournisseur courriel active ou non »,
+# pas en « inscriptions par courriel autorisees ou non ». Le mettre a faux a
+# coupe la CONNEXION par courriel pour tout le monde - "Email logins are
+# disabled", 422 email_provider_disabled - c'est-a-dire la seule facon
+# d'entrer dans Flow.
+#
+# Trouve en essayant de connecter deux comptes de test, pas en relisant la
+# configuration. C'est le drapeau de niveau projet (enable_signup, plus haut)
+# qui ferme vraiment les inscriptions, et il suffit : verifie, un POST vers
+# /auth/v1/signup rend 422 signup_disabled avec celui-ci a vrai.
+enable_signup = true
 # If enabled, a user will be required to confirm any email change on both the old, and new email
 # addresses. If disabled, only the new email is required to confirm.
 double_confirm_changes = true
