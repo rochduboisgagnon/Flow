@@ -19,12 +19,12 @@ What makes it different from the tools it is inspired by:
   speech or AI service, there is no API key, and that is the promise that has
   not moved and will not.
 
-- **Flow now has accounts, and that is a change to the product's central
-  claim.** Until 2026-08-03 the line above read "Nothing ever leaves your
-  machine. No cloud, no account, no API key." Saying so here, rather than
-  quietly deleting the old wording, is the whole point - and it is the second
-  time this README has had to do it. **A promise that changes and does not
-  announce itself was never a promise.**
+- **Flow now has accounts, and that changes this product's central claim.**
+  Until 2026-08-03 the line above read "Nothing ever leaves your machine. No
+  cloud, no account, no API key." Saying so here, rather than quietly deleting
+  the old wording, is the whole point - and it is the second time this README has
+  had to do it, after 2026-07-30. **A promise that changes and does not announce
+  itself was never a promise.**
 
   Why it changed: the same information has to follow you to a second computer.
   A dictionary of technical terms typed one word at a time over months, and the
