@@ -93,6 +93,22 @@ test("A2: aucune inscription, nulle part dans le code", () => {
 
   // Et la config commitee dit la meme chose, pour que le jour ou quelqu'un
   // relance `supabase config push` la porte ne se rouvre pas toute seule.
+  //
+  // LE DRAPEAU VISE EST CELUI DE LA SECTION [auth], ET SEULEMENT LUI. Il y a
+  // trois `enable_signup` dans ce fichier et ils ne parlent pas de la meme
+  // chose - celui de [auth.email] est en realite l'interrupteur du FOURNISSEUR
+  // courriel. L'avoir mis a faux en croyant fermer les inscriptions a coupe la
+  // connexion pour tout le monde (422 email_provider_disabled), c'est-a-dire la
+  // seule facon d'entrer dans Flow. Une regle ecrite en cherchant le mot
+  // partout aurait exige de refaire cette panne.
   const cfg = fs.readFileSync(path.join(__dirname, "..", "supabase", "config.toml"), "utf8");
-  assert.ok(!/^enable_signup = true$/m.test(cfg), "config.toml ne doit plus autoriser l'inscription");
+  const authSection = cfg.split(/^\[auth\]$/m)[1]?.split(/^\[/m)[0] ?? "";
+  assert.ok(authSection, "la section [auth] doit exister");
+  assert.match(authSection, /^enable_signup = false$/m, "[auth] ne doit pas autoriser l'inscription");
+  assert.match(authSection, /^enable_anonymous_sign_ins = false$/m, "ni les sessions anonymes");
+
+  // Et l'inverse, qui est aussi une regle : le fournisseur courriel doit RESTER
+  // allume, sinon plus personne ne se connecte.
+  const emailSection = cfg.split(/^\[auth\.email\]$/m)[1]?.split(/^\[/m)[0] ?? "";
+  assert.match(emailSection, /^enable_signup = true$/m, "le fournisseur courriel doit rester actif");
 });
