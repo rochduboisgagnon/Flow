@@ -1,18 +1,10 @@
-import fs from "node:fs";
-import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { dataDir } from "./settings";
 import {
-  CURRENT_VERSION,
   applyNoteAdd,
   applyNoteDelete,
   applyNoteEdit,
-  emptyLiveNotes,
-  parseLiveNotesFile,
   type LiveNote,
-  type LiveNotesFile,
   type LiveNotesResult,
-  type ParsedLiveNotes,
 } from "../shared/liveNotes";
 
 // D7: the store behind the live notes panel. MIRROR of main/snippets.ts - atomic
@@ -73,69 +65,52 @@ export const LIVE_NOTES_UNAVAILABLE: LiveNotesResult = {
   error: "unavailable",
 };
 
-export function liveNotesPath(): string {
-  return path.join(dataDir(), "live-notes.json");
-}
+// B2 : `liveNotesPath`, `loadLiveNotesFile` et `writeLiveNotesFile` ont disparu
+// avec live-notes.json. Elles portaient l'ecriture atomique, la garde de
+// version et le refus de reecrire un fichier mal compris - trois protections
+// d'un support qui n'existe plus. Les fonctions PURES de shared/liveNotes.ts
+// (applyNoteAdd, applyNoteEdit, applyNoteDelete) restent : elles decrivent ce
+// qu'est une note, pas ou elle vit.
 
-/** Thin disk wrapper around parseLiveNotesFile: adds the ENOENT special case (no
- * recording has ever been annotated on this machine - normal, not an error to
- * surface) and turns any other read failure into the same protective shape a bad
- * version gets. */
-export function loadLiveNotesFile(file = liveNotesPath()): ParsedLiveNotes {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException)?.code;
-    if (code === "ENOENT") return { file: emptyLiveNotes() };
-    return {
-      file: emptyLiveNotes(),
-      error: `live-notes.json could not be read (${err instanceof Error ? err.message : String(err)}); left untouched, starting with no notes [${file}]`,
-    };
-  }
-  const parsed = parseLiveNotesFile(raw);
-  // The path is added HERE rather than in the pure parser: every refusal above
-  // tells the user his file was left alone, which is only actionable if he knows
-  // which file (main/snippets.ts does the same, for the same reason).
-  if (parsed.error !== undefined) return { ...parsed, error: `${parsed.error} [${file}]` };
-  return parsed;
-}
+// ---------------------------------------------------------------------------
+// B2, dernier magasin : live-notes.json disparait.
+//
+// CE QUE CE MODULE PROTEGE, ET POURQUOI IL EST LE DERNIER : les notes tapees
+// pendant une reunion sont la SEULE partie d'une capture qu'on ne peut pas
+// regenerer. Le transcript se refait depuis l'audio ; ce que quelqu'un a pris
+// la peine d'ecrire pendant qu'on lui parlait, non.
+//
+// LE MODELE CHANGE, ET C'EST UNE AMELIORATION. Le fichier etait un SLOT unique :
+// une seule fente, un seul enregistrement a la fois, et tout le ceremonial
+// autour - deplacer des notes etrangeres de cote, refuser d'ecrire par-dessus
+// un fichier qu'on n'a pas compris - existait parce que deux enregistrements
+// devaient se partager une seule fente. La table `live_notes` a une colonne
+// `started_iso` : chaque enregistrement a la sienne, et la question « a qui
+// sont ces notes » ne se pose plus.
+//
+// CE QUI RESTE INCHANGE, PARCE QUE CE SONT DES PROMESSES ET PAS DES DETAILS DE
+// SUPPORT :
+//
+//  - la page declare a chaque ecriture l'enregistrement qu'elle croit annoter,
+//    et une note visant un enregistrement deja classe est REFUSEE plutot que de
+//    tomber sur le suivant.
+//  - `clear()` n'est appele qu'apres que les notes sont surement dans le
+//    document. Effacer avant serait la seule erreur irrattrapable de ce module.
+//  - le magasin ne lit JAMAIS l'horloge : `atMs` vient de l'appelant, calcule
+//    depuis l'instant de depart du recorder, pour que l'estampille et la ligne
+//    du temps ne viennent pas de deux endroits differents.
+// ---------------------------------------------------------------------------
 
-/** Atomic write (tmp + rename), MIRROR of saveSnippetsFile. Refuses to clobber a
- * slot this build did not fully understand - `onDisk` is the load the caller
- * already did for this same operation (see snippets.ts on why re-reading buys no
- * stronger guarantee and costs a second synchronous pass on the loop that
- * carries the keyboard hook). */
-function writeLiveNotesFile(
-  onDisk: ParsedLiveNotes,
-  next: LiveNotesFile,
-  file = liveNotesPath(),
-): { ok: true } | { ok: false; error: string } {
-  if (onDisk.error) return { ok: false, error: `refusing to overwrite live-notes.json: ${onDisk.error}` };
-  const tmp = file + ".tmp";
-  try {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(tmp, JSON.stringify(next, null, 2));
-    fs.renameSync(tmp, file);
-  } catch (err) {
-    try {
-      fs.rmSync(tmp, { force: true }); // never leave a half-written .tmp behind
-    } catch {
-      /* the cleanup failing changes nothing about the error being reported */
-    }
-    return {
-      ok: false,
-      error: `that note could not be saved (${err instanceof Error ? err.message : String(err)}); the notes already recorded are unchanged [${file}]`,
-    };
-  }
-  return { ok: true };
+export interface LiveNotesBacking {
+  /** Ecritures en arriere-plan : la frappe ne doit jamais attendre le reseau. */
+  upsertLiveNote(startedIso: string, n: LiveNote): void;
+  deleteLiveNote(id: string): void;
+  clearLiveNotes(startedIso: string): void;
 }
 
 export interface LiveNotesStoreDeps {
   log?: (msg: string) => void;
-  /** Tests only: keep the slot away from the real ~/.flow. Same seam, same
-   * reason, as LongDeps.recentPathOverride. */
-  pathOverride?: string;
+  backing?(): LiveNotesBacking | null;
 }
 
 /**
@@ -146,100 +121,69 @@ export interface LiveNotesStoreDeps {
  */
 export class LiveNotesStore {
   private deps: LiveNotesStoreDeps;
+  /** L'enregistrement en cours, et ses notes. En memoire : c'est ce que la page
+   * relit dix fois par minute pendant une reunion, et la source de verite
+   * pendant la seance. Le compte recoit chaque changement derriere. */
+  private startedIso = "";
+  private notes: LiveNote[] = [];
 
   constructor(deps: LiveNotesStoreDeps = {}) {
     this.deps = deps;
   }
 
-  private file(): string {
-    return this.deps.pathOverride ?? liveNotesPath();
+  private backing(): LiveNotesBacking | null {
+    return this.deps.backing?.() ?? null;
   }
 
-  /** Called by the recorder at start(). Rebinds the slot to this recording -
-   * and moves any FOREIGN notes aside first, never over them (module note). */
+  /** Appele par le recorder au start(). Rebranche la fente sur CET
+   * enregistrement.
+   *
+   * Le ceremonial de mise a l'ecart des notes etrangeres a disparu avec le
+   * fichier : chaque enregistrement a desormais sa propre ligne dans
+   * `live_notes`, donc il n'y a plus de fente a se disputer. Des notes d'une
+   * seance precedente qui n'ont jamais ete classees restent simplement dans le
+   * compte, sous leur propre `started_iso`. */
   open(startedIso: string): void {
     const iso = (startedIso || "").trim();
-    if (!iso) return;
-    const file = this.file();
-    const onDisk = loadLiveNotesFile(file);
-    if (onDisk.file.startedIso === iso) return; // resuming the same recording: leave the notes alone
-    if (onDisk.file.notes.length > 0 || onDisk.error) {
-      // Notes from a session that never got merged, or a file this build could
-      // not read. Either way: keep it, name it, and say where it went.
-      const aside = file.replace(/\.json$/, "") + "." + Date.now() + ".orphan.json";
-      try {
-        fs.renameSync(file, aside);
-        this.deps.log?.(
-          `[live-notes] found notes from an earlier recording (${onDisk.file.startedIso || "unattributed"}) that were never filed into a document; moved aside to ${aside} rather than overwritten`,
-        );
-      } catch (err) {
-        // Could not move it: refuse to start a fresh slot on top of it. The
-        // panel will report the slot as unavailable, which is annoying and
-        // recoverable; overwriting would not be.
-        this.deps.log?.(`[live-notes] could not set aside earlier notes, leaving them in place: ${err}`);
-        return;
-      }
-    }
-    const fresh = loadLiveNotesFile(file); // the file is gone now: a clean, empty load
-    const written = writeLiveNotesFile(fresh, emptyLiveNotes(iso), file);
-    if (!written.ok) this.deps.log?.(`[live-notes] could not open a slot for this recording: ${written.error}`);
+    if (!iso || iso === this.startedIso) return;
+    this.startedIso = iso;
+    this.notes = [];
   }
 
-  /** UI_LIVE_NOTES_LIST. Answers with the slot's own startedIso, so the page can
-   * refuse to render notes that belong to another capture (LiveNotesResult). */
   list(): LiveNotesResult {
-    const { file, error } = loadLiveNotesFile(this.file());
-    return { ok: error === undefined, startedIso: file.startedIso, notes: file.notes, error };
+    return { ok: true, startedIso: this.startedIso, notes: [...this.notes] };
   }
 
-  /** UI_LIVE_NOTES_ADD. `atMs` is computed by the CALLER from the recorder's own
-   * start instant (main/index.ts) - this store never reads a clock, so the stamp
-   * and the recording's timeline can never come from two different places. */
   add(startedIso: string, rawText: unknown, atMs: number): LiveNotesResult {
     return this.mutate(startedIso, (notes) => applyNoteAdd(notes, rawText, atMs, randomUUID()));
   }
 
-  /** UI_LIVE_NOTES_EDIT. The stamp does not move (shared/liveNotes.ts DECISION 2). */
   edit(startedIso: string, rawId: unknown, rawText: unknown): LiveNotesResult {
     return this.mutate(startedIso, (notes) => applyNoteEdit(notes, rawId, rawText));
   }
 
-  /** UI_LIVE_NOTES_DELETE. Idempotent: an id already gone is a no-op. */
   remove(startedIso: string, rawId: unknown): LiveNotesResult {
     return this.mutate(startedIso, (notes) => ({ notes: applyNoteDelete(notes, rawId) }));
   }
 
-  /** What the recorder reads at the end of a recording, to write into the
-   * document. Empty for a recording that was never annotated, and empty - never
-   * another recording's notes - when the slot names a different capture. */
+  /** Ce que le recorder lit a la fin. Vide - jamais les notes d'un AUTRE
+   * enregistrement - quand la fente en nomme un different. */
   read(startedIso: string): LiveNote[] {
     const iso = (startedIso || "").trim();
-    if (!iso) return [];
-    const { file, error } = loadLiveNotesFile(this.file());
-    if (error) {
-      this.deps.log?.(`[live-notes] the slot did not load intact, the document gets no notes block: ${error}`);
-      return [];
-    }
-    if (file.startedIso !== iso) return [];
-    return file.notes;
+    if (!iso || iso !== this.startedIso) return [];
+    return [...this.notes];
   }
 
-  /** Called ONLY after the notes are safely in the document. If the document
-   * write failed, the slot is deliberately left alone: a later open() will find
-   * it, see a foreign startedIso and set it aside with a log line, which is a
-   * recoverable outcome. Clearing first would not be. */
+  /** UNIQUEMENT apres que les notes sont surement dans le document. Si
+   * l'ecriture du document a echoue, la fente est laissee telle quelle : les
+   * notes restent dans le compte sous leur `started_iso`, ce qui est
+   * rattrapable. Effacer d'abord ne le serait pas. */
   clear(startedIso: string): void {
     const iso = (startedIso || "").trim();
-    const file = this.file();
-    const onDisk = loadLiveNotesFile(file);
-    // Never clear a slot that belongs to someone else, and never "clear" a file
-    // this build could not read (that would be an overwrite, not a clear).
-    if (onDisk.error || (iso && onDisk.file.startedIso !== iso)) return;
-    try {
-      fs.rmSync(file, { force: true });
-    } catch (err) {
-      this.deps.log?.(`[live-notes] could not clear the slot after filing its notes: ${err}`);
-    }
+    if (iso && iso !== this.startedIso) return;
+    this.backing()?.clearLiveNotes(this.startedIso);
+    this.notes = [];
+    this.startedIso = "";
   }
 
   private mutate(
@@ -247,26 +191,33 @@ export class LiveNotesStore {
     apply: (notes: readonly LiveNote[]) => { notes: LiveNote[] } | { error: string },
   ): LiveNotesResult {
     const iso = (startedIso || "").trim();
-    const file = this.file();
-    const onDisk = loadLiveNotesFile(file);
-    const cur = onDisk.file;
-    if (onDisk.error) return { ok: false, startedIso: cur.startedIso, notes: cur.notes, error: onDisk.error };
-    // No recording, or a different one than the caller thinks: refuse. A page
-    // that raced the end of a recording must be told, not have its note filed
-    // against whatever the slot happens to hold now.
-    if (!iso || cur.startedIso !== iso) {
+    // Pas d'enregistrement, ou un autre que celui que l'appelant croit : on
+    // REFUSE. Une page qui a course avec la fin d'un enregistrement doit
+    // l'apprendre, pas voir sa note classee sur la seance suivante.
+    if (!iso || iso !== this.startedIso) {
       return {
         ok: false,
-        startedIso: cur.startedIso,
-        notes: cur.notes,
-        error: "that recording is no longer the one being annotated; its notes have already been written into its document",
+        startedIso: this.startedIso,
+        notes: [...this.notes],
+        error: "cette note vise un enregistrement qui n'est plus celui en cours",
       };
     }
-    const applied = apply(cur.notes);
-    if ("error" in applied) return { ok: false, startedIso: cur.startedIso, notes: cur.notes, error: applied.error };
-    const next: LiveNotesFile = { version: CURRENT_VERSION, startedIso: iso, notes: applied.notes };
-    const written = writeLiveNotesFile(onDisk, next, file);
-    if (!written.ok) return { ok: false, startedIso: cur.startedIso, notes: cur.notes, error: written.error };
-    return { ok: true, startedIso: iso, notes: applied.notes };
+    const applied = apply(this.notes);
+    if ("error" in applied) {
+      return { ok: false, startedIso: this.startedIso, notes: [...this.notes], error: applied.error };
+    }
+    const before = new Map(this.notes.map((n) => [n.id, JSON.stringify(n)]));
+    this.notes = applied.notes;
+    const b = this.backing();
+    if (b) {
+      const after = new Set(this.notes.map((n) => n.id));
+      for (const n of this.notes) {
+        if (before.get(n.id) !== JSON.stringify(n)) b.upsertLiveNote(this.startedIso, n);
+      }
+      for (const id of before.keys()) {
+        if (!after.has(id)) b.deleteLiveNote(id);
+      }
+    }
+    return { ok: true, startedIso: this.startedIso, notes: [...this.notes] };
   }
 }

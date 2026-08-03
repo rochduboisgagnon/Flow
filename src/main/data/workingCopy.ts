@@ -73,7 +73,10 @@ type Job =
   | { kind: "stats-day-delete"; day: string }
   | { kind: "dictation"; entry: HistoryEntry }
   | { kind: "dictations-clear" }
-  | { kind: "stats-clear" };
+  | { kind: "stats-clear" }
+  | { kind: "note-upsert"; startedIso: string; note: { id: string; atMs: number; text: string } }
+  | { kind: "note-delete"; id: string }
+  | { kind: "notes-clear"; startedIso: string };
 
 /** Deux travaux qui se remplacent l'un l'autre plutot que de s'empiler. Les
  * reglages et une journee de statistiques sont des ETATS : seule la derniere
@@ -82,6 +85,10 @@ function jobKey(j: Job): string | null {
   if (j.kind === "settings") return "settings";
   if (j.kind === "dict-upsert" || j.kind === "dict-delete") return `dict:${j.id}`;
   if (j.kind === "stats-day" || j.kind === "stats-day-delete") return `stats:${j.day}`;
+  // Une note en direct est un ETAT : la meme note reecrite trois fois pendant
+  // qu'on la corrige ne merite qu'un envoi, le dernier.
+  if (j.kind === "note-upsert") return `note:${j.note.id}`;
+  if (j.kind === "note-delete") return `note:${j.id}`;
   return null; // dictations et purges : jamais fusionnees
 }
 
@@ -233,6 +240,20 @@ export class WorkingCopy {
     this.enqueue({ kind: "stats-day-delete", day });
   }
 
+  // --- notes prises pendant un enregistrement -------------------------------
+  upsertLiveNote(startedIso: string, n: { id: string; atMs: number; text: string }): void {
+    this.enqueue({ kind: "note-upsert", startedIso, note: { id: n.id, atMs: n.atMs, text: n.text } });
+  }
+
+  deleteLiveNote(id: string): void {
+    this.enqueue({ kind: "note-delete", id });
+  }
+
+  clearLiveNotes(startedIso: string): void {
+    if (!startedIso) return;
+    this.enqueue({ kind: "notes-clear", startedIso });
+  }
+
   clearStats(): void {
     this.stats = [];
     this.enqueue({ kind: "stats-clear" });
@@ -315,6 +336,12 @@ export class WorkingCopy {
           return (await repo.clearDictations()).ok;
         case "stats-clear":
           return (await repo.clearStats()).ok;
+        case "note-upsert":
+          return (await repo.upsertLiveNote(j.startedIso, j.note)).ok;
+        case "note-delete":
+          return (await repo.deleteLiveNote(j.id)).ok;
+        case "notes-clear":
+          return (await repo.clearLiveNotes(j.startedIso)).ok;
       }
     } catch (err) {
       this.deps.log?.(`[data] envoi echoue : ${(err as Error).message}`);

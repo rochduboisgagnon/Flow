@@ -1330,7 +1330,13 @@ function recentForUi(): UiStatePayload["recent"] {
 // of the document, so the notes reach the document through it and never through a
 // second writer. Nothing here resolves a path at module load - liveNotesPath()
 // is called inside the store, on each operation (main/liveNotes.ts).
-const liveNotes = new LiveNotesStore({ log: flowLog });
+const liveNotes = new LiveNotesStore({
+  log: flowLog,
+  // Null tant que le compte n'a pas charge : les notes restent alors en
+  // memoire pour la page, ce qui est deja mieux que de les refuser - et elles
+  // partiront a la premiere ecriture qui trouve un magasin.
+  backing: () => (workingCopy.isReady() ? workingCopy : null),
+});
 
 // F1: the SECOND speech engine, the one a meeting or an imported file runs on
 // when the user has asked for a different model there. Built here - before the

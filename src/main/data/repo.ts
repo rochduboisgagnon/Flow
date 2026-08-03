@@ -243,6 +243,51 @@ export class Repo {
     return error ? fail(null, error) : { ok: true, data: null, error: "" };
   }
 
+  // -------------------------------------------------------------------------
+  // LES NOTES PRISES PENDANT UN ENREGISTREMENT
+  //
+  // La seule partie d'une capture qu'on ne peut PAS regenerer : le transcript
+  // se refait depuis l'audio, les notes non. Elles sont donc ecrites au fil de
+  // la frappe plutot qu'a la fin, et rattachees a `started_iso` - l'instant que
+  // la page declare - parce qu'elles s'ecrivent AVANT que la ligne
+  // d'enregistrement existe.
+  // -------------------------------------------------------------------------
+
+  async loadLiveNotes(startedIso: string): Promise<RepoResult<Array<{ id: string; at_ms: number; text: string }>>> {
+    const { data, error } = await this.client
+      .from("live_notes")
+      .select("id, at_ms, text")
+      .eq("started_iso", startedIso)
+      .order("at_ms", { ascending: true });
+    return error ? fail([], error) : { ok: true, data: data ?? [], error: "" };
+  }
+
+  async upsertLiveNote(startedIso: string, n: { id: string; atMs: number; text: string }): Promise<RepoResult<null>> {
+    const user_id = await this.uid();
+    if (!user_id) return fail(null, { message: "personne n'est connecte" });
+    const { error } = await this.client
+      .from("live_notes")
+      .upsert({ id: n.id, user_id, started_iso: startedIso, at_ms: n.atMs, text: n.text });
+    return error ? fail(null, error) : { ok: true, data: null, error: "" };
+  }
+
+  async deleteLiveNote(id: string): Promise<RepoResult<null>> {
+    const { error } = await this.client.from("live_notes").delete().eq("id", id);
+    return error ? fail(null, error) : { ok: true, data: null, error: "" };
+  }
+
+  /** Apres que les notes sont SUREMENT dans le document. Voir LiveNotesStore.clear. */
+  async clearLiveNotes(startedIso: string): Promise<RepoResult<null>> {
+    const user_id = await this.uid();
+    if (!user_id) return fail(null, { message: "personne n'est connecte" });
+    const { error } = await this.client
+      .from("live_notes")
+      .delete()
+      .eq("user_id", user_id)
+      .eq("started_iso", startedIso);
+    return error ? fail(null, error) : { ok: true, data: null, error: "" };
+  }
+
   /** Journalise un echec d'ecriture SANS son contenu : ce qui rate ici, c'est
    * souvent une dictee, et une dictee est le texte de quelqu'un. */
   reportWriteFailure(what: string, r: RepoResult<unknown>): void {
