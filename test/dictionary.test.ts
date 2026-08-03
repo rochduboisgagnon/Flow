@@ -358,8 +358,8 @@ test("cost is linear in the text and independent of the rule count", () => {
 
 test("un alias joint par une esperluette fonctionne (D&D, R&D, AT&T)", () => {
   const c = compileDictionary([
-    { id: "1", term: "DND", kind: "replacement", starred: false, aliases: ["D&D"] },
-    { id: "2", term: "recherche et developpement", kind: "replacement", starred: false, aliases: ["R&D"] },
+    { id: "1", term: "DND", kind: "replacement", starred: false, createdIso: "2026-08-03T00:00:00.000Z", aliases: ["D&D"] },
+    { id: "2", term: "recherche et developpement", kind: "replacement", starred: false, createdIso: "2026-08-03T00:00:00.000Z", aliases: ["R&D"] },
   ]);
   assert.equal(applyDictionary("Je travaille au D&D cette semaine.", c), "Je travaille au DND cette semaine.");
   // « R&D » compte pour UN mot, pas deux : sans ca la regle du cri se
@@ -370,7 +370,7 @@ test("un alias joint par une esperluette fonctionne (D&D, R&D, AT&T)", () => {
 });
 
 test("l'esperluette reste insensible a la casse, comme les autres connecteurs", () => {
-  const c = compileDictionary([{ id: "1", term: "DND", kind: "replacement", starred: false, aliases: ["D&D"] }]);
+  const c = compileDictionary([{ id: "1", term: "DND", kind: "replacement", starred: false, createdIso: "2026-08-03T00:00:00.000Z", aliases: ["D&D"] }]);
   assert.equal(applyDictionary("au d&d demain", c), "au DND demain");
 });
 
@@ -379,20 +379,20 @@ test("une esperluette ENTOURÉE D'ESPACES ne joint rien : « Marks & Spencer » 
   // « & » colle est un connecteur INTERNE a un nom ; un « & » espace joint des
   // mots qui etaient deja separes, et ce n'est pas la meme affirmation.
   const c = compileDictionary([
-    { id: "1", term: "MS", kind: "replacement", starred: false, aliases: ["marks spencer"] },
+    { id: "1", term: "MS", kind: "replacement", starred: false, createdIso: "2026-08-03T00:00:00.000Z", aliases: ["marks spencer"] },
   ]);
   assert.equal(applyDictionary("Marks & Spencer ouvre demain.", c), "Marks & Spencer ouvre demain.");
 });
 
 test("les connecteurs deja acceptes n'ont pas regresse", () => {
   const c = compileDictionary([
-    { id: "1", term: "whisper.cpp", kind: "replacement", starred: false, aliases: ["whisper cpp"] },
-    { id: "2", term: "Loi 25", kind: "replacement", starred: false, aliases: ["loi vingt-cinq"] },
+    { id: "1", term: "whisper.cpp", kind: "replacement", starred: false, createdIso: "2026-08-03T00:00:00.000Z", aliases: ["whisper cpp"] },
+    { id: "2", term: "Loi 25", kind: "replacement", starred: false, createdIso: "2026-08-03T00:00:00.000Z", aliases: ["loi vingt-cinq"] },
   ]);
   assert.equal(applyDictionary("whisper.cpp est rapide", c), "whisper.cpp est rapide");
   assert.equal(applyDictionary("la loi vingt-cinq", c), "la Loi 25");
   // Et la garde d'origine tient toujours : un point SUIVI D'UNE ESPACE est une
   // fin de phrase, jamais un connecteur.
-  const c2 = compileDictionary([{ id: "3", term: "Loi 25", kind: "replacement", starred: false, aliases: ["loi vingt"] }]);
+  const c2 = compileDictionary([{ id: "3", term: "Loi 25", kind: "replacement", starred: false, createdIso: "2026-08-03T00:00:00.000Z", aliases: ["loi vingt"] }]);
   assert.equal(applyDictionary("de la loi. Vingt personnes", c2), "de la loi. Vingt personnes");
 });

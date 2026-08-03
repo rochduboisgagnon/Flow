@@ -293,7 +293,9 @@ const LETTER_TOKEN = /[a-z]/;
  * as two for the same reason and are fixed by the same line. */
 function letterWords(matched: string): number {
   let n = 0;
-  for (const part of matched.split(/[\s -‐‑–—]+/)) {
+  // Le NBSP et les tirets longs sont ecrits en echappement plutot qu'en clair :
+  // un caractere invisible dans la source est illisible, et le linter le refuse.
+  for (const part of matched.split(/[\s\u00a0\u2010\u2011\u2013\u2014-]+/)) {
     if (part !== "" && LETTER_TOKEN.test(part.toLowerCase())) n++;
   }
   return n;
