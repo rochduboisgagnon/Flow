@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { createFlowClient } from "../src/main/data/client";
+import { audioObjectName } from "../src/shared/tus";
 
 // ---------------------------------------------------------------------------
 // A1, la preuve : un compte A ne lit AUCUNE ligne d'un compte B.
@@ -156,6 +157,87 @@ test("A1: l'isolation entre comptes est prouvee en essayant vraiment", { skip: C
     await B.auth.signOut({ scope: "local" });
   }
 });
+
+// ---------------------------------------------------------------------------
+// B3c : LA MEME PREUVE, POUR LE SEAU.
+//
+// Les politiques de storage.objects existaient depuis la premiere migration et
+// personne n'y avait jamais mis un octet. B3c est le premier utilisateur du
+// seau, et un seau ouvert rendrait le RLS des tables DECORATIF : l'audio d'une
+// reunion en dit autant que son transcript.
+//
+// La frontiere est le PREFIXE du nom de l'objet : `(storage.foldername(name))[1]
+// = auth.uid()`. Ce test l'attaque des deux cotes - B ne doit ni lire l'objet de
+// A, ni ecrire sous le prefixe de A. Et il verifie que A, lui, peut travailler
+// chez lui : un seau ferme a tout le monde passerait autrement avec les honneurs.
+// ---------------------------------------------------------------------------
+test(
+  "B3c: l'isolation du seau audio est prouvee en essayant vraiment",
+  { skip: C ? false : "identifiants de test absents de .env - la preuve d'isolation du seau N'A PAS ete faite" },
+  async () => {
+    const c = C as Creds;
+    const A = createFlowClient({ storage: memoryStorage() });
+    const B = createFlowClient({ storage: memoryStorage() });
+    const inA = await A.auth.signInWithPassword({ email: c.aEmail, password: c.aPassword });
+    assert.equal(inA.error, null, `le compte A ne se connecte pas : ${inA.error?.message}`);
+    const inB = await B.auth.signInWithPassword({ email: c.bEmail, password: c.bPassword });
+    assert.equal(inB.error, null, `le compte B ne se connecte pas : ${inB.error?.message}`);
+    const idA = inA.data.session?.user.id ?? "";
+    const idB = inB.data.session?.user.id ?? "";
+    assert.ok(idA && idB && idA !== idB, "deux comptes DISTINCTS sont necessaires a cette preuve");
+
+    // Le MEME composeur de chemin que le televersement utilise, pour que ce test
+    // prouve la frontiere reelle et pas une frontiere qui lui ressemble.
+    const objectA = audioObjectName(idA, "rls-proof");
+    const bucket = "recordings";
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+
+    try {
+      // --- A ecrit chez lui ------------------------------------------------
+      const put = await A.storage.from(bucket).upload(objectA, bytes, { contentType: "audio/wav", upsert: true });
+      assert.equal(put.error, null, `A doit pouvoir ecrire sous son prefixe : ${put.error?.message}`);
+
+      // --- B ne le voit pas ------------------------------------------------
+      const listed = await B.storage.from(bucket).list(idA);
+      // Selon la version, une lecture refusee rend une erreur OU une liste vide.
+      // Les deux sont acceptables ; ce qui ne l'est pas est de VOIR l'objet.
+      assert.ok(
+        listed.error !== null || (listed.data ?? []).every((f) => f.name !== "rls-proof.wav"),
+        "le compte B VOIT l'audio du compte A",
+      );
+      const stolen = await B.storage.from(bucket).download(objectA);
+      assert.notEqual(stolen.error, null, "le compte B a TELECHARGE l'audio du compte A");
+
+      // --- B ne peut pas ecrire sous le prefixe de A -----------------------
+      // Sans le `with check` du prefixe, B deposerait un objet dans les donnees
+      // de A - qu'il ne reverrait jamais, mais qui serait la.
+      const forged = await B.storage.from(bucket).upload(audioObjectName(idA, "forge"), bytes, { upsert: true });
+      assert.notEqual(forged.error, null, "le compte B a ecrit sous le prefixe du compte A");
+
+      // --- B ne peut pas le supprimer non plus -----------------------------
+      const wiped = await B.storage.from(bucket).remove([objectA]);
+      // `remove` rend la liste de ce qu'il a VRAIMENT supprime : une liste vide
+      // est le refus, et c'est plus subtil qu'une erreur - il faut le verifier.
+      assert.deepEqual(wiped.data ?? [], [], "le compte B a supprime l'audio du compte A");
+
+      // --- Et A retrouve bien son objet ------------------------------------
+      const back = await A.storage.from(bucket).download(objectA);
+      assert.equal(back.error, null, `A doit pouvoir relire son audio : ${back.error?.message}`);
+      assert.equal((await back.data!.arrayBuffer()).byteLength, bytes.length);
+
+      // --- Le seau n'est PAS public ----------------------------------------
+      // Une URL publique sur un seau prive ne rend rien : c'est la deuxieme
+      // serrure, et elle se verifie sans jeton du tout.
+      const pub = A.storage.from(bucket).getPublicUrl(objectA);
+      const anon = await fetch(pub.data.publicUrl);
+      assert.notEqual(anon.status, 200, "le seau repond a une requete SANS JETON : il est public");
+    } finally {
+      await A.storage.from(bucket).remove([objectA]);
+      await A.auth.signOut({ scope: "local" });
+      await B.auth.signOut({ scope: "local" });
+    }
+  },
+);
 
 test("A1: le fichier .env ne doit jamais etre suivi par git", () => {
   // La contrepartie de tout ce qui precede. Ce test-la, lui, ne se tait jamais.
