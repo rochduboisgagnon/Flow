@@ -130,14 +130,32 @@ const HAS_LETTER = /\p{L}/u;
  * the result is still wrong. So the separator itself has to be legal:
  *   - horizontal whitespace (the ordinary case), or
  *   - a hyphen/dash, spaced or not ("vingt-cinq"), or
- *   - ONE tight connector with no whitespace around it: apostrophe, period or
- *     slash ("whisper.cpp", "l'AGR").
+ *   - ONE tight connector with no whitespace around it: apostrophe, period,
+ *     slash or ampersand ("whisper.cpp", "l'AGR", "D&D").
  * Everything else - a comma, a colon, ". " with its space, a newline, a run of
  * mixed punctuation - ends the phrase. A period followed by a space is the
  * whole point of writing this as three alternatives instead of "any
  * punctuation": "whisper.cpp" must match, "loi. Vingt" must not.
+ *
+ * ---------------------------------------------------------------------------
+ * THE AMPERSAND, added 2026-08-03 after Roch reported an entry that did nothing
+ * ---------------------------------------------------------------------------
+ * He had taught Flow that "D&D" should be written "DND". Everything about that
+ * entry was right and it still never fired: the alias compiled to the key
+ * "d d", the spoken text tokenized to "d","d", and the two matched. The
+ * replacement never happened because the gap BETWEEN those two tokens was "&",
+ * which was not joinable - so the two-word key was never even built, and the
+ * lookup that would have succeeded was never attempted.
+ *
+ * An omission rather than a decision: "&" is structurally the same thing as the
+ * period in "whisper.cpp", a tight connector INSIDE one name. R&D, AT&T, M&M
+ * and D&D all fell in the same hole.
+ *
+ * It stays a SINGLE character with no whitespace around it, which is what keeps
+ * "Marks & Spencer" two separate phrases: an ampersand between spaces joins
+ * words that were already separate, and that is not the same claim at all.
  */
-const JOINABLE_GAP = /^(?:[ \t\u00a0]+|[ \t]*[-\u2010\u2011\u2013\u2014][ \t]*|['\u2019./])$/;
+const JOINABLE_GAP = /^(?:[ \t\u00a0]+|[ \t]*[-\u2010\u2011\u2013\u2014][ \t]*|['\u2019./&])$/;
 
 /** Per-character normalization: NFD, drop combining marks, lowercase. Applied
  * character by character (rather than to the whole string) precisely so token
@@ -261,10 +279,23 @@ const LETTER_TOKEN = /[a-z]/;
 
 /** How many WORDS the matched text spans, counting only the ones that could
  * have been said rather than counted out. The shouting test below is about this
- * number, not about the string's length. */
+ * number, not about the string's length.
+ *
+ * 2026-08-03, found while adding "&" to JOINABLE_GAP: a tight connector does NOT
+ * start a new word. "R&D" is one word, not two, and counting it as two made the
+ * shouting rule fire on it - turning an entry that taught Flow "R&D" means
+ * "recherche et developpement" into one that wrote RECHERCHE ET DEVELOPPEMENT in
+ * the middle of a calm sentence. That is precisely the failure the rule below
+ * was written to prevent, arriving through a door it did not know it had.
+ *
+ * So the count splits on what SEPARATES words - whitespace and dashes - and not
+ * on punctuation that lives inside one. "whisper.cpp" and "l'AGR" were counting
+ * as two for the same reason and are fixed by the same line. */
 function letterWords(matched: string): number {
   let n = 0;
-  for (const t of tokenizeForDictionary(matched)) if (LETTER_TOKEN.test(t.norm)) n++;
+  for (const part of matched.split(/[\s -‐‑–—]+/)) {
+    if (part !== "" && LETTER_TOKEN.test(part.toLowerCase())) n++;
+  }
   return n;
 }
 

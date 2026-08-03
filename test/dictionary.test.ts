@@ -344,3 +344,55 @@ test("cost is linear in the text and independent of the rule count", () => {
     `2000 rules cost ${withMany.toFixed(1)} ms against ${withFew.toFixed(1)} ms for 1 - that is rule-count sensitivity, not a slow machine`,
   );
 });
+
+// ---------------------------------------------------------------------------
+// 2026-08-03. Roch a signale une entree du dictionnaire qui ne faisait rien :
+// il avait appris a Flow que « D&D » s'ecrit « DND ».
+//
+// Tout dans l'entree etait juste. L'alias compilait vers la cle "d d", le texte
+// dicte se tokenisait en "d","d", et les deux correspondaient. Le remplacement
+// n'arrivait jamais parce que l'ECART entre les deux jetons etait « & », qui
+// n'etait pas joignable : la cle a deux mots n'etait donc jamais CONSTRUITE, et
+// la recherche qui aurait reussi n'etait jamais tentee.
+// ---------------------------------------------------------------------------
+
+test("un alias joint par une esperluette fonctionne (D&D, R&D, AT&T)", () => {
+  const c = compileDictionary([
+    { id: "1", term: "DND", kind: "replacement", starred: false, aliases: ["D&D"] },
+    { id: "2", term: "recherche et developpement", kind: "replacement", starred: false, aliases: ["R&D"] },
+  ]);
+  assert.equal(applyDictionary("Je travaille au D&D cette semaine.", c), "Je travaille au DND cette semaine.");
+  // « R&D » compte pour UN mot, pas deux : sans ca la regle du cri se
+  // declenchait et rendait « RECHERCHE ET DEVELOPPEMENT » au milieu d'une
+  // phrase calme - le defaut meme que cette regle existe pour eviter. La
+  // capitale initiale qui reste vient d'une autre regle, sur l'acronyme etendu.
+  assert.equal(applyDictionary("On fait de la R&D.", c), "On fait de la Recherche et developpement.");
+});
+
+test("l'esperluette reste insensible a la casse, comme les autres connecteurs", () => {
+  const c = compileDictionary([{ id: "1", term: "DND", kind: "replacement", starred: false, aliases: ["D&D"] }]);
+  assert.equal(applyDictionary("au d&d demain", c), "au DND demain");
+});
+
+test("une esperluette ENTOURÉE D'ESPACES ne joint rien : « Marks & Spencer » reste deux phrases", () => {
+  // La distinction qui fait que le correctif est etroit plutot que commode : un
+  // « & » colle est un connecteur INTERNE a un nom ; un « & » espace joint des
+  // mots qui etaient deja separes, et ce n'est pas la meme affirmation.
+  const c = compileDictionary([
+    { id: "1", term: "MS", kind: "replacement", starred: false, aliases: ["marks spencer"] },
+  ]);
+  assert.equal(applyDictionary("Marks & Spencer ouvre demain.", c), "Marks & Spencer ouvre demain.");
+});
+
+test("les connecteurs deja acceptes n'ont pas regresse", () => {
+  const c = compileDictionary([
+    { id: "1", term: "whisper.cpp", kind: "replacement", starred: false, aliases: ["whisper cpp"] },
+    { id: "2", term: "Loi 25", kind: "replacement", starred: false, aliases: ["loi vingt-cinq"] },
+  ]);
+  assert.equal(applyDictionary("whisper.cpp est rapide", c), "whisper.cpp est rapide");
+  assert.equal(applyDictionary("la loi vingt-cinq", c), "la Loi 25");
+  // Et la garde d'origine tient toujours : un point SUIVI D'UNE ESPACE est une
+  // fin de phrase, jamais un connecteur.
+  const c2 = compileDictionary([{ id: "3", term: "Loi 25", kind: "replacement", starred: false, aliases: ["loi vingt"] }]);
+  assert.equal(applyDictionary("de la loi. Vingt personnes", c2), "de la loi. Vingt personnes");
+});
