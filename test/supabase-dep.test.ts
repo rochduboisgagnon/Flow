@@ -46,21 +46,53 @@ test("Z5: le lock porte bien une empreinte pour ce paquet", () => {
   assert.match(String(entry.version), /^\d+\.\d+\.\d+$/);
 });
 
-test("Z5: le client n'est pas encore appele - Z5 pose la dependance, rien d'autre", () => {
-  // La discipline du plan : « les quatre portes passent avec la dependance en
-  // place, AVANT qu'une seule ligne ne l'utilise ». Ce test tombera de lui-meme
-  // quand A2 ecrira le module d'authentification, et c'est exactement le moment
-  // ou il faudra le remplacer par la regle d'A3 : un seul fichier de src/ parle
-  // a Supabase.
-  const walk = (dir: string, out: string[] = []): string[] => {
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      const p = path.join(dir, e.name);
-      if (e.isDirectory()) walk(p, out);
-      else if (/\.(ts|tsx)$/.test(e.name)) out.push(p);
-    }
-    return out;
-  };
+function walk(dir: string, out: string[] = []): string[] {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) walk(p, out);
+    else if (/\.(ts|tsx)$/.test(e.name)) out.push(p);
+  }
+  return out;
+}
+
+test("A3: UN SEUL fichier importe la bibliotheque Supabase", () => {
+  // Z5 verifiait qu'aucun fichier ne l'importait encore. A2 a ecrit le premier
+  // appelant, donc la regle devient celle d'A3, telle que le plan la formule :
+  // « un module unique par lequel passe toute lecture et toute ecriture ».
+  //
+  // Ce n'est pas de l'esthetique. Quand tout passe par un point unique, une
+  // question comme « est-ce qu'une ecriture peut bloquer le chemin chaud de la
+  // dictee ? » a UN endroit ou se verifier. Repandue sur douze fichiers, la
+  // meme question ne se verifie plus, elle se croit.
   const src = path.join(__dirname, "..", "src");
-  const users = walk(src).filter((f) => /@supabase\/supabase-js/.test(fs.readFileSync(f, "utf8")));
-  assert.deepEqual(users, [], "Z5 ne cable rien ; le premier appelant est A2");
+  const users = walk(src)
+    .filter((f) => /from "@supabase\/supabase-js"/.test(fs.readFileSync(f, "utf8")))
+    .map((f) => path.relative(src, f).replace(/\\/g, "/"));
+  assert.deepEqual(users, ["main/data/client.ts"]);
+});
+
+test("A2: aucune inscription, nulle part dans le code", () => {
+  // Decision de Roch, 2026-08-03 : personne ne cree son compte, Roch les cree
+  // un par un depuis la console. Une fonction d'inscription sans appelant
+  // serait une porte fermee mais pas verrouillee - elle survit aux
+  // refactorisations et se rebranche en une ligne.
+  //
+  // L'autre moitie de la regle est cote serveur, et c'est celle qui compte : la
+  // clef publiable part dans l'installeur, donc n'importe qui peut poster vers
+  // /auth/v1/signup sans passer par notre interface. VERIFIE le 2026-08-03
+  // contre le vrai projet : la reponse est 422 signup_disabled, et les sessions
+  // anonymes rendent 422 anonymous_provider_disabled.
+  const src = path.join(__dirname, "..", "src");
+  // Un APPEL, pas le mot : les commentaires de auth.ts expliquent longuement
+  // pourquoi ce verbe n'existe pas, et une regle qui interdit d'en parler
+  // interdit surtout d'expliquer.
+  const offenders = walk(src)
+    .filter((f) => /\.signUp\s*\(/.test(fs.readFileSync(f, "utf8")))
+    .map((f) => path.relative(src, f).replace(/\\/g, "/"));
+  assert.deepEqual(offenders, [], "aucun appel a signUp ne doit exister");
+
+  // Et la config commitee dit la meme chose, pour que le jour ou quelqu'un
+  // relance `supabase config push` la porte ne se rouvre pas toute seule.
+  const cfg = fs.readFileSync(path.join(__dirname, "..", "supabase", "config.toml"), "utf8");
+  assert.ok(!/^enable_signup = true$/m.test(cfg), "config.toml ne doit plus autoriser l'inscription");
 });
