@@ -379,63 +379,44 @@ function TabLocalAi({ s }: { s: UiStatePayload; patch: Patch }) {
   );
 }
 
-// U2a: the recordings folder is FIXED under Flow's own data folder - no
-// picker, no Reset. Two truths about where recordings live was exactly the
-// confusion a fixed folder ends (decision: Roch).
-function TabStorage({ s, patch }: { s: UiStatePayload; patch: Patch }) {
+// B3d : LE DOSSIER D'ENREGISTREMENTS N'EXISTE PLUS.
+//
+// Cet onglet montrait un chemin, un bouton « Ouvrir », et une regle de nettoyage
+// a 90 jours. Les trois decrivaient un dossier que Flow remplissait. Les reunions
+// vivent maintenant dans le compte, donc :
+//
+//  - il n'y a plus de chemin a montrer, ni de nettoyage a suspendre ou a
+//    reprendre. Un bouton « Reprendre le nettoyage a 90 jours » qui ne nettoie
+//    plus rien serait pire que pas de bouton : ce serait une interface qui ment.
+//  - il reste le dossier de CEUX D'AVANT, et il compte plus qu'avant : c'est le
+//    seul endroit ou sont les reunions enregistrees par une version precedente.
+//    Il est donc montre, avec son chemin, et rien n'y est jamais touche.
+function TabStorage({ s }: { s: UiStatePayload; patch: Patch }) {
   const legacy = s.legacyHistory;
   return (
     <div className="rows">
       <Row
-        label="Recordings folder"
-        help={
-          "Lives inside Flow's data folder, not configurable. " +
-          (s.historyPurgeSuspended
-            ? "Automatic cleanup is paused on this machine: nothing here is ever deleted until you resume it below."
-            : "Kept 90 days, then purged.")
-        }
+        label="Where your meetings live"
+        help="In your Flow account, not on this computer. Open the Notes page to browse them; they follow you to any machine you sign in on."
       >
-        <span className="mono">{s.dataDir + "\\history"}</span>
-        <button className="btn" aria-label="Open recordings folder" onClick={() => void window.flowui.openPath("history")}>Open</button>
+        <span className="mono">{s.account?.email || "your account"}</span>
       </Row>
-      {/* U2b: shown ONLY to the few users who had picked their own folder before
-          it became fixed. Removing the setting silently would have made their
-          past recordings look deleted while they sit untouched on disk.
-          U2c: the wording follows what main actually FOUND on disk, and the
-          Open button only exists when there is something to open. */}
+      {/* Montre UNIQUEMENT quand un dossier porte encore des enregistrements
+          d'avant. Les faire disparaitre de l'ecran sans un mot ferait croire
+          qu'ils ont ete supprimes, alors qu'ils sont intacts sur le disque. */}
       {legacy ? (
         <Row
           label="Recordings made before this update"
           help={
             legacy.exists
-              ? "This folder used to be configurable, and you had chosen your own. It no longer is - but nothing was moved or deleted: everything you recorded back then is still in this folder, which Flow just checked is there."
-              : "This folder used to be configurable, and you had chosen your own. Flow no longer finds it at this path - it was moved, renamed or is on a drive that is not connected. Flow never deleted anything there."
+              ? "Flow used to file recordings into a folder on this computer. It no longer does - but nothing was moved or deleted: everything you recorded back then is still in this folder, which Flow just checked is there."
+              : "Flow used to file recordings into a folder on this computer. It no longer finds it at this path - it was moved, renamed or is on a drive that is not connected. Flow never deleted anything there."
           }
         >
           <span className="mono">{legacy.dir}</span>
           {legacy.exists ? (
             <button className="btn" aria-label="Open the old folder" onClick={() => void window.flowui.openPath("legacy-history")}>Open the old folder</button>
           ) : null}
-        </Row>
-      ) : null}
-      {/* U2c: because Flow was filing recordings elsewhere back then, the folder
-          above is not the only frozen one - the fixed folder is too, and its
-          dated subfolders are all older than the 90-day retention. Flow does not
-          clean up what it was not managing, so the purge stays off until this
-          button says otherwise. Clearing the folder above is the same decision:
-          the machine stops being a special case. */}
-      {s.historyPurgeSuspended ? (
-        <Row
-          label="Automatic cleanup"
-          help="Paused since this update, because Flow found recordings it had not filed itself. Resuming it applies the normal rule to the recordings folder above: anything older than 90 days is deleted, from now on and at every start."
-        >
-          <button
-            className="btn"
-            aria-label="Resume automatic cleanup"
-            onClick={() => void patch({ historyPurgeSuspended: false, legacyHistoryDir: "" })}
-          >
-            Resume 90-day cleanup
-          </button>
         </Row>
       ) : null}
       {/* Review U6/U7 (major): this row claimed there was "nothing to purge" on

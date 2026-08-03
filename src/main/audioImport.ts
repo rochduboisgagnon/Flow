@@ -24,13 +24,15 @@ import { gateTranscript } from "../shared/textGate";
 import {
   chunkTranscript,
   hms,
-  recordingBaseName,
-  spliceNotes,
   summaryPrompt,
   transcriptLine,
 } from "../shared/longform";
 import type { DecodeCall, DecodeResult, DecodeVerdict } from "./audioDecode";
-import { fileRecordingIntoHistory, historyEntryId, noteInterruption } from "./longform";
+import { randomUUID } from "node:crypto";
+import { CaptureDoc } from "../shared/captureDoc";
+import { audioObjectName } from "../shared/tus";
+import type { CaptureStore } from "./longform";
+import type { RecordingRow } from "../shared/recordings";
 
 // V4 D2: the import pipeline - "this audio file becomes a document in the
 // archive". It owns the QUEUE, the SEGMENTATION, the transcription loop and the
@@ -109,14 +111,19 @@ export interface ImportDeps {
   /** Who owns the speech engine RIGHT NOW, if anyone: a dictation in flight, or
    * a live long recording. Null means the import may proceed. This is rule 2. */
   userEngineClaim(): "dictation" | "recording" | null;
-  /** `<dataDir>/history` - the fixed archive root (U2a). */
-  historyRoot(): string;
-  /** `<dataDir>/staging` - the app-owned folder a document is built in before it
-   * is filed. Deliberately the SAME staging root the long recorder uses: the
-   * boot rescan (LongRecorder.rescueOrphanedStaging) then covers an import the
-   * app died in the middle of, for free and through one implementation, which is
-   * the whole of what plan §5.1.4 promises about a restart. */
-  stagingRoot(): string;
+  /** B3e : ou l'import ecrit sa reunion. LE MEME magasin que le recorder, et
+   * c'est ce qui remplace le partage du dossier `staging/` : un import
+   * interrompu laisse une ligne OUVERTE dans le compte, exactement comme une
+   * reunion coupee, donc `rescueAbandoned()` le couvre sans rien savoir de
+   * l'import. La promesse du §5.1.4 est tenue par un seul mecanisme, comme
+   * avant - simplement, ce mecanisme n'est plus un dossier. */
+  store: CaptureStore;
+  /** L'identifiant du compte, pour composer le chemin de l'objet audio. */
+  accountId(): Promise<string>;
+  /** Confie l'audio decode a la file de televersement. */
+  uploadAudio(recordingId: string): void;
+  /** Ou le .wav decode attend son televersement. */
+  pendingAudioDir(): string;
   /** settings.summaryModel, read lazily. "" falls back to the first installed
    * Ollama model, exactly like LongRecorder.finalize. */
   summaryModel?(): string;
@@ -146,8 +153,13 @@ interface Job {
    * decode window unwinds the same way a user cancellation unwinds. */
   abort: string;
   startedMs: number;
-  dir: string; // staging folder, "" until the first PCM arrives
-  docPath: string;
+  /** B3e : le document, en memoire. Null jusqu'a la premiere tranche de PCM -
+   * voir ensureDocument sur pourquoi c'est paresseux. */
+  doc: CaptureDoc | null;
+  /** L'identifiant de la ligne du compte. "" avant ensureDocument. */
+  recordingId: string;
+  /** Le .wav decode en transit sur le disque, ou "" quand l'utilisateur n'a pas
+   * demande de garder l'audio. */
   audioPath: string;
   audioBytes: number;
   decodedMs: number;
@@ -246,8 +258,8 @@ export class ImportQueue {
         cancelled: false,
         abort: "",
         startedMs: 0,
-        dir: "",
-        docPath: "",
+        doc: null,
+        recordingId: "",
         audioPath: "",
         audioBytes: 0,
         decodedMs: 0,
@@ -329,8 +341,8 @@ export class ImportQueue {
       if (!isPending(job.pub.phase) || job.pub.phase === "queued") continue;
       job.cancelled = true;
       try {
-        if (job.lines > 0 && job.docPath) {
-          this.finishPartial(job, "interrupted");
+        if (job.lines > 0 && job.doc) {
+          void this.finishPartial(job, "interrupted");
           rescued = true;
         } else {
           this.discard(job);
@@ -569,21 +581,14 @@ export class ImportQueue {
         const { text } = await this.deps.transcribe(encodeWav(s.pcm));
         const clean = gateTranscript(text);
         if (clean) {
-          fs.appendFileSync(job.docPath, transcriptLine(s.offsetMs, clean));
+          job.doc?.append(transcriptLine(s.offsetMs, clean));
           job.lines++;
         }
       }
     } catch (err) {
       this.deps.log?.(`[import] segment at ${Math.round(s.offsetMs / 1000)}s failed: ${err}`);
       job.gaps++;
-      try {
-        fs.appendFileSync(
-          job.docPath,
-          `> [segment at ${Math.round(s.offsetMs / 1000)}s could not be transcribed]\n\n`,
-        );
-      } catch {
-        /* the log line above already recorded it */
-      }
+      job.doc?.append(`> [segment at ${Math.round(s.offsetMs / 1000)}s could not be transcribed]\n\n`);
     }
     job.segments++;
     job.transcribedMs = s.offsetMs + Math.round((s.pcm.length / SAMPLE_RATE) * 1000);
@@ -617,37 +622,26 @@ export class ImportQueue {
    * or refused for its length, must leave NOTHING behind - not even an empty
    * folder - and by the time PCM arrives both of those verdicts are in. */
   private ensureDocument(job: Job): boolean {
-    if (job.docPath) return true;
-    const title = importTitle(job.pub.fileName);
+    if (job.doc) return true;
     try {
-      // Same folder shape and same name shape as a staged recording
-      // ("<epoch ms>-<random>"), which is what lets the boot rescan read an
-      // import the app died inside of without any bookkeeping of its own.
-      const dir = path.join(
-        this.deps.stagingRoot(),
-        String(this.now()) + "-" + Math.random().toString(36).slice(2, 8),
-      );
-      fs.mkdirSync(dir, { recursive: true });
-      const base = recordingBaseName(title, new Date(job.startedMs || this.now()));
-      const docPath = path.join(dir, base + ".md");
-      fs.writeFileSync(
-        docPath,
-        importedHeader(title, {
-          fileName: job.pub.fileName,
-          importedIso: new Date(job.startedMs || this.now()).toISOString(),
-          durationMs: job.pub.durationMs,
-        }),
-      );
-      job.dir = dir;
-      job.docPath = docPath;
-      // The decoded 16 kHz mono .wav is written ONLY when the user asked to keep
-      // it - unlike a live capture, which always writes one because the audio is
-      // the only thing that can still save a meeting whose transcription falls
-      // over. An import has no such risk: the user's own file is exactly where
-      // it was (an import never touches it), so a second copy would be weight,
-      // not a safety net.
+      job.recordingId = randomUUID();
+      job.doc = new CaptureDoc(this.headerOf(job));
+      // La ligne existe DES la premiere tranche de PCM, et ouverte. C'est ce qui
+      // remplace le dossier `staging/` partage avec le recorder : un import que
+      // l'application ne finit pas laisse une ligne que `rescueAbandoned()`
+      // ferme au prochain lancement, avec son avertissement d'interruption. Un
+      // seul mecanisme, comme avant.
+      this.publish(job);
+      // Le .wav decode n'est ecrit QUE si l'utilisateur a demande de le garder -
+      // contrairement a une capture en direct, qui en ecrit toujours un parce que
+      // l'audio est la seule chose qui puisse encore sauver une reunion dont la
+      // transcription tombe. Un import n'a pas ce risque : le fichier de
+      // l'utilisateur est exactement la ou il etait (un import n'y touche
+      // jamais), donc une seconde copie serait du poids, pas un filet.
       if (job.keepAudio) {
-        job.audioPath = path.join(dir, base + ".wav");
+        const dir = this.deps.pendingAudioDir();
+        fs.mkdirSync(dir, { recursive: true });
+        job.audioPath = path.join(dir, job.recordingId + ".wav");
         fs.writeFileSync(job.audioPath, encodeWav(new Int16Array(0))); // the 44-byte header alone
         job.audioBytes = 0;
       }
@@ -656,6 +650,35 @@ export class ImportQueue {
       job.abort = `Flow could not prepare a document for "${job.pub.fileName}" (${String(err)}).`;
       this.deps.log?.(`[import] ${job.abort}`);
       return false;
+    }
+  }
+
+  /** La ligne de cet import, telle qu'elle est maintenant. */
+  private rowOf(job: Job, over: Partial<RecordingRow> = {}): RecordingRow {
+    return {
+      id: job.recordingId,
+      title: importTitle(job.pub.fileName),
+      startedIso: new Date(job.startedMs || this.now()).toISOString(),
+      durationMs: job.pub.durationMs,
+      doc: job.doc?.text() ?? "",
+      audioPath: "",
+      audioBytes: 0,
+      audioUploaded: 0,
+      audioUploadUrl: "",
+      audioUploadExpires: "",
+      staged: true,
+      endedIso: "",
+      ...over,
+    };
+  }
+
+  /** Pousse l'etat courant vers le magasin. Ne bloque pas, ne leve pas. */
+  private publish(job: Job, over: Partial<RecordingRow> = {}): void {
+    if (!job.recordingId) return;
+    try {
+      this.deps.store.write(this.rowOf(job, over));
+    } catch (err) {
+      this.deps.log?.(`[import] la ligne n'a pas pu etre mise en file : ${err}`);
     }
   }
 
@@ -707,8 +730,9 @@ export class ImportQueue {
       return;
     }
     try {
-      const doc = fs.readFileSync(job.docPath, "utf8");
-      const header = this.headerOf(job);
+      if (!job.doc) return;
+      const doc = job.doc.text();
+      const header = job.doc.headerText();
       const body = doc.startsWith(header) ? doc.slice(header.length) : doc;
       const parts = chunkTranscript(body);
       let notes = "";
@@ -731,10 +755,9 @@ export class ImportQueue {
       // spliceNotes is the function the live notes splice uses, so an imported
       // document ends up shaped exactly like a capture whose notes were
       // generated - which is the whole point of D2 ("the same document").
-      // Atomic swap, same discipline as every other rewrite of a document.
-      const tmp = job.docPath + ".tmp";
-      fs.writeFileSync(tmp, spliceNotes(doc, header, notes));
-      fs.renameSync(tmp, job.docPath);
+      // Plus de tmp+rename : il n'y a plus de fichier qu'un lecteur pourrait
+      // surprendre a moitie ecrit.
+      job.doc.spliceNotesBlock(notes);
     } catch (err) {
       // A failed summary is a document without notes, never a failed import.
       this.deps.log?.(`[import] notes failed, keeping the transcript: ${err}`);
@@ -758,24 +781,16 @@ export class ImportQueue {
    * effort, atomic, and a no-op in the normal case (a container that stated its
    * own duration got it right in the header from the start). */
   private finishDocument(job: Job, extent: "whole" | "partial"): void {
-    if (!job.lengthUnknown) return;
+    if (!job.lengthUnknown || !job.doc) return;
     const value = extent === "whole" && job.pub.durationMs > 0 ? hms(job.pub.durationMs) : "unknown";
-    try {
-      const doc = fs.readFileSync(job.docPath, "utf8");
-      const fixed = doc.replace(/^- source length: .*$/m, `- source length: ${value}`);
-      if (fixed === doc) return;
-      const tmp = job.docPath + ".tmp";
-      fs.writeFileSync(tmp, fixed);
-      fs.renameSync(tmp, job.docPath);
-    } catch (err) {
-      this.deps.log?.(`[import] could not state the measured length in the header: ${err}`);
-    }
+    // Le remplacement porte sur l'ENTETE seule (CaptureDoc.rewriteHeader) : sur
+    // le document entier, une ligne de transcript qui commencerait par
+    // « - source length: » serait reecrite aussi.
+    const header = job.doc.headerText();
+    const fixed = header.replace(/^- source length: .*$/m, `- source length: ${value}`);
+    if (fixed !== header) job.doc.rewriteHeader(fixed);
   }
 
-  /** File the finished document into the archive, through the SAME function the
-   * recorder's three paths use (main/longform.ts's fileRecordingIntoHistory), so
-   * every guardrail it carries - the marker, the no-clobber suffixing, the
-   * date-bucket retention rule - applies to an import identically. */
   /** Close the kept .wav by writing its real sizes into the header it was opened
    * with a placeholder for. Until this runs the file declares zero bytes of
    * audio, so every player reads it as empty - the same size-patch the long
@@ -800,35 +815,47 @@ export class ImportQueue {
     }
   }
 
-  private file(job: Job): void {
+  /**
+   * Clot l'import : la ligne est FERMEE, et son audio part vers Storage.
+   *
+   * B3e a fait disparaitre le classement dans un dossier date, et avec lui les
+   * garde-fous qui l'entouraient (le marqueur, le suffixage anti-ecrasement, la
+   * regle de la fenetre de retention). Ils n'ont pas ete perdus : ils protegeaient
+   * l'operation « deplacer un fichier dans un dossier de l'utilisateur », qui
+   * n'existe plus ici. Ecrire une ligne sous son propre identifiant ne peut
+   * ecraser la reunion de personne - le RLS y veille, et l'identifiant est
+   * fabrique par ce processus.
+   */
+  private async file(job: Job): Promise<void> {
     this.sealAudio(job);
-    const staged = job.dir;
-    const filed = fileRecordingIntoHistory({
-      historyRoot: this.deps.historyRoot(),
-      docPath: job.docPath,
-      audioPath: job.audioPath,
-      keepAudio: job.keepAudio,
-      startedMs: job.startedMs || this.now(),
-      log: this.deps.log,
-    });
-    if (!filed) {
-      // The document is still in staging, complete: the boot rescan will file it.
-      this.deps.log?.(`[import] "${job.pub.fileName}" stayed in staging; the next start files it`);
-      return;
+    let audioPath = "";
+    let audioBytes = 0;
+    if (job.audioPath && job.keepAudio) {
+      const uid = await this.deps.accountId();
+      if (uid) {
+        audioPath = audioObjectName(uid, job.recordingId);
+        audioBytes = job.audioBytes + 44;
+      } else {
+        // Sans compte connu, le chemin ne peut pas porter le bon prefixe, et un
+        // objet mal prefixe serait refuse par les politiques de Storage. Le
+        // fichier reste : le balayage du prochain lancement le reprendra.
+        this.deps.log?.("[import] l'audio attend : le compte n'est pas connu pour l'instant");
+      }
     }
-    job.dir = filed.dir;
-    job.docPath = filed.docPath;
-    job.audioPath = filed.audioPath;
-    job.pub.historyId = historyEntryId(filed.dir);
-    this.dropEmptyStagingDir(staged);
-    this.deps.log?.(`[import] filed "${job.pub.fileName}" -> ${filed.docPath}`);
+    // `endedIso` est ce qui sort la ligne de l'ensemble « ouvertes » que le
+    // sauvetage inspecte : jusqu'a cette ligne, un import interrompu etait
+    // recuperable, et c'etait le but.
+    this.publish(job, { endedIso: new Date(this.now()).toISOString(), audioPath, audioBytes });
+    if (audioPath) this.deps.uploadAudio(job.recordingId);
+    job.pub.historyId = job.recordingId;
+    this.deps.log?.(`[import] "${job.pub.fileName}" -> ${job.recordingId}`);
   }
 
   /** A cancellation. Rule 3 decides between the two outcomes, and there are only
    * two: a document that says how far it got, or nothing at all. */
   private cancelled(job: Job): void {
-    if (job.lines > 0 && job.docPath) {
-      this.finishPartial(job, "cancelled");
+    if (job.lines > 0 && job.doc) {
+      void this.finishPartial(job, "cancelled");
       return;
     }
     this.discard(job);
@@ -840,8 +867,8 @@ export class ImportQueue {
    * exists is kept and labelled, work that does not exist leaves nothing - plus
    * the sentence to put in front of the user. */
   private fail(job: Job, message: string): void {
-    if (job.lines > 0 && job.docPath) {
-      this.finishPartial(job, "failed");
+    if (job.lines > 0 && job.doc) {
+      void this.finishPartial(job, "failed");
       job.pub.error = message;
       this.deps.log?.(`[import] ${message}`);
       return;
@@ -857,14 +884,14 @@ export class ImportQueue {
    * summary of half the audio presented as the meeting's notes would be the lie
    * this rule exists to prevent), and the row carries `partial` so the page can
    * say it too. */
-  private finishPartial(job: Job, kind: "cancelled" | "interrupted" | "failed"): void {
-    noteInterruption(
-      job.docPath,
-      partialImportNote(kind, job.transcribedMs, job.pub.durationMs),
-      this.deps.log,
-    );
+  private async finishPartial(job: Job, kind: "cancelled" | "interrupted" | "failed"): Promise<void> {
+    // L'avertissement AVANT tout splice de notes, et l'ordre n'est pas un detail :
+    // voir CaptureDoc.prependToBody. Ici il n'y a de toute facon pas de notes -
+    // un resume de la moitie de l'audio presente comme les notes de la reunion
+    // serait exactement le mensonge que cette regle interdit.
+    job.doc?.prependToBody(partialImportNote(kind, job.transcribedMs, job.pub.durationMs));
     this.finishDocument(job, "partial");
-    this.file(job);
+    await this.file(job);
     job.pub.partial = true;
     job.pub.phase = kind === "failed" ? "failed" : "cancelled";
     job.pub.processedMs = job.transcribedMs;
@@ -877,34 +904,35 @@ export class ImportQueue {
    * produced nothing leaves nothing" a deletion that can never reach a file the
    * user owns. The SOURCE is never a candidate here; it is not even in scope. */
   private discard(job: Job): void {
-    const dir = job.dir;
-    job.dir = "";
-    job.docPath = "";
+    const audio = job.audioPath;
+    const id = job.recordingId;
+    job.doc = null;
+    job.recordingId = "";
     job.audioPath = "";
-    if (!dir || !this.underStaging(dir)) return;
+    // La ligne du compte, si elle existait deja : un import qui n'a rien produit
+    // ne doit pas laisser une reunion vide derriere lui, et surtout pas une
+    // reunion OUVERTE que le sauvetage du prochain lancement viendrait annoter
+    // comme « interrompue ».
+    if (id) this.deps.store.remove(id);
+    // Et le .wav decode : c'est le seul fichier que CE pipeline a cree, il porte
+    // l'identifiant qu'il a choisi lui-meme, et il vit dans le dossier de transit
+    // de l'application. La SOURCE n'est jamais candidate ; elle n'est meme pas
+    // dans le perimetre.
+    if (!audio || !this.underPendingAudio(audio)) return;
     try {
-      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(audio, { force: true });
     } catch (err) {
-      this.deps.log?.(`[import] could not clean up ${dir}: ${err}`);
+      this.deps.log?.(`[import] could not clean up ${audio}: ${err}`);
     }
   }
 
-  /** The now-empty session folder the document was just moved out of. rmdir,
-   * never rm -r: anything still in there keeps the folder alive, and a folder
-   * outside the app-owned staging root is never a candidate at all. Left behind,
-   * an empty folder would make the boot rescan log "a staging folder without a
-   * transcript" at every start, forever. */
-  private dropEmptyStagingDir(dir: string): void {
-    if (!dir || !this.underStaging(dir)) return;
-    try {
-      fs.rmdirSync(dir);
-    } catch {
-      /* not empty, or already gone: a leftover folder costs app-owned disk only */
-    }
-  }
-
-  private underStaging(p: string): boolean {
-    const rel = path.relative(this.deps.stagingRoot(), p);
+  /** Le fichier est-il DANS le dossier de transit de l'application ?
+   *
+   * La verification de confinement n'est pas du ceremonial : c'est ce qui fait
+   * que « un import qui n'a rien produit ne laisse rien » est une suppression
+   * qui ne peut jamais atteindre un fichier de l'utilisateur. */
+  private underPendingAudio(p: string): boolean {
+    const rel = path.relative(this.deps.pendingAudioDir(), p);
     return !!rel && !rel.startsWith("..") && !path.isAbsolute(rel);
   }
 

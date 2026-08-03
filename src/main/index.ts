@@ -33,7 +33,9 @@ import { TusUpload } from "./data/tusUpload";
 import { AudioUploadQueue } from "./audioUpload";
 import { supabaseUrl, supabaseAnonKey } from "../shared/supabaseConfig";
 import { LocalApi } from "./api";
-import { LongRecorder, historyRoot, stagingRoot, listHistory, deleteHistoryEntry, resolveHistoryEntry, readHistoryDoc } from "./longform";
+import { LongRecorder } from "./longform";
+import { historyDownloadStem } from "../shared/downloadName";
+import { MAX_DOC_DISPLAY_BYTES } from "../shared/recordings";
 import { LiveNotesStore } from "./liveNotes";
 import { AudioDecodeWindow } from "./audioDecode";
 import { ImportQueue } from "./audioImport";
@@ -306,16 +308,16 @@ if (!app.requestSingleInstanceLock()) {
     stats.start();
     // B2 : history.start() a disparu avec son minuteur de vidage - il n'y a plus
     // de fichier a vider, la copie de travail tient la file.
-    logLegacyHistoryState(); // U2c: say where the older recordings are, before purging anything
-    // U4 (blocking review): the app can die without ever running before-quit -
-    // a power cut, a bugcheck, a taskkill. Whatever is still in the staging
-    // folder at boot therefore belongs to a session that is over, and staging
-    // is a folder nothing lists and nothing rescans: file those recordings into
-    // the archive NOW, before the API or the window can start a new one on top.
-    // Runs BEFORE the purge so a recovered recording is judged by the date the
-    // rescue filed it under, never by the state the crash left behind.
-    longRec.rescueOrphanedStaging();
-    longRec.purgeHistory(); // C10: retention purge at engine startup, best effort
+    noticeRetiredHistoryFolder(); // B3d : signaler <dataDir>/history s'il porte encore des reunions
+    logLegacyHistoryState(); // et dire ou elles sont, une fois par lancement
+    // B3d : plus rien a balayer ni a purger au demarrage du moteur.
+    //
+    // Ce que ces deux lignes faisaient - recuperer un dossier `staging/` laisse
+    // par une session morte, puis purger l'archive de plus de 90 jours - n'a plus
+    // d'objet : une reunion interrompue est une LIGNE du compte restee ouverte, et
+    // c'est `rescueAbandoned()` qui la ferme, au chargement du compte plutot
+    // qu'ici. La difference n'est pas cosmetique : ce moment-ci n'a pas de
+    // session, donc il ne peut pas lire une ligne.
 
     // U4a: named so the EXACT SAME closures are handed to both the HTTP API
     // (LocalApi, below) and the main window's IPC bridge (UiBridge, further
@@ -375,12 +377,43 @@ if (!app.requestSingleInstanceLock()) {
     const longMarkDep = () => longRec.mark();
     const longTranscriptDep = (since: number) => longRec.transcriptSince(since);
     const canLoopbackDep = () => NativeCapture.available(); // C2: "this is a PC" gate
-    // U5a: named exactly like the long* deps above, and for the identical
-    // reason - historyRoot() is fixed (U2a), so BOTH the HTTP archive routes
-    // and the UI_HISTORY_* IPC channels always reflect the one place
-    // recordings are actually filed, off the SAME two functions.
-    const listHistoryDep = () => listHistory(historyRoot(), flowLog);
-    const readHistoryDocDep = (id: string) => readHistoryDoc(id, historyRoot());
+    // B3e : nommes exactement comme les deps long* ci-dessus, et pour la meme
+    // raison - les routes HTTP de l'archive et les canaux UI_HISTORY_* doivent
+    // lire la MEME chose, par les MEMES deux fonctions. Ce qu'elles lisent est
+    // maintenant le compte.
+    //
+    // Le plafond de lecture s'applique ICI et non dans le depot : couper un
+    // document a la lecture ferait qu'une annotation le reecrirait tronque, ce
+    // qui detruirait la fin du transcript de quelqu'un. L'affichage borne, le
+    // depot rend tout.
+    const listRecordingsDep = async () => {
+      const r = await repo.listRecordings();
+      if (!r.ok) flowLog(`[data] la liste des reunions n'a pas pu etre lue : ${r.error}`);
+      return r.data;
+    };
+    const readRecordingDocDep = async (id: string) => {
+      const r = await captureStore.read(id);
+      if (!r) return null;
+      const text =
+        Buffer.byteLength(r.doc, "utf8") > MAX_DOC_DISPLAY_BYTES
+          ? Buffer.from(r.doc, "utf8").subarray(0, MAX_DOC_DISPLAY_BYTES).toString("utf8")
+          : r.doc;
+      return { id: r.id, title: r.title, startedIso: r.startedIso, text };
+    };
+    const deleteRecordingDep = async (id: string) => {
+      // La ligne d'abord, l'objet audio ensuite : une ligne supprimee dont
+      // l'audio survit est un objet orphelin dans un seau prive, ce qui coute de
+      // la place. L'inverse - un audio supprime sous une reunion encore listee -
+      // serait un lecteur qui clique « telecharger l'audio » et n'obtient rien.
+      const row = await captureStore.read(id);
+      const gone = await repo.deleteRecording(id);
+      if (!gone.ok) flowLog(`[data] la reunion n'a pas pu etre supprimee : ${gone.error}`);
+      if (gone.ok && row?.audioPath) {
+        const wiped = await repo.deleteAudio(row.audioPath);
+        if (!wiped.ok) flowLog(`[data] l'audio de la reunion supprimee est reste : ${wiped.error}`);
+      }
+      return listRecordingsDep();
+    };
     // B1: same discipline as every dep above - the Diagnostics panel (IPC) and
     // a `bench:hotpath` run against a live app (HTTP) must read the exact same
     // in-memory ring, never two independently-serialized copies.
@@ -417,13 +450,13 @@ if (!app.requestSingleInstanceLock()) {
       },
       longGap: (seconds) => longRec.gap(seconds),
       longTranscript: longTranscriptDep,
-      // Archive 2026-07-14 / U5a: listHistory and readHistoryDoc are the named
-      // consts above, shared byte-for-byte with UiBridge below. resolveHistoryEntry
-      // stays route-local (still needed here for streaming /long/history/audio,
-      // which has no IPC equivalent - U5c downloads instead, see downloads.ts).
-      listHistory: listHistoryDep,
-      resolveHistoryEntry: (id) => resolveHistoryEntry(id, historyRoot()),
-      readHistoryDoc: readHistoryDocDep,
+      // B3e : les deux consts ci-dessus, partagees octet pour octet avec
+      // UiBridge. `resolveHistoryEntry` a disparu avec le dossier : la route
+      // /long/history/audio ne peut plus diffuser un fichier local, et elle rend
+      // desormais une URL signee - voir api.ts.
+      listHistory: listRecordingsDep,
+      readHistoryDoc: readRecordingDocDep,
+      signAudio: (id) => signAudioDep(id),
       // Settings surface for the Manager's AGR Flow view (chantier A).
       getSettings: () => ({
         settings: { ...settings, combo: [...settings.combo] },
@@ -476,7 +509,11 @@ if (!app.requestSingleInstanceLock()) {
         downloadNotesModel: () => downloadNotesModel(),
         signIn: (email, password) => auth.signIn(email, password),
         signOut: () => auth.signOut(),
-        historyRootDir: () => historyRoot(),
+        // B3d : les enregistrements vivent dans le compte, mais un dossier peut
+        // encore porter ceux d'avant. Le bouton « Ouvrir le dossier » pointe donc
+        // vers CE dossier-la quand il existe, et vers rien quand il n'existe pas -
+        // jamais vers un dossier que Flow ne remplit plus.
+        historyRootDir: () => legacyHistoryForUi()?.dir ?? "",
         // U2b: resolved in MAIN, never passed in by the renderer - the bridge
         // opens fixed destinations only (see UI_OPEN_PATH).
         // U2c: null unless the folder is REALLY there, so the bridge can never
@@ -516,16 +553,12 @@ if (!app.requestSingleInstanceLock()) {
         // U5a: identical closures to LocalApi's above (listHistoryDep &
         // readHistoryDocDep, defined once, just above) - the Notes page's
         // archive view and the HTTP /long/history* routes can never disagree.
-        listHistory: listHistoryDep,
+        listHistory: listRecordingsDep,
         // Deliberately NOT given to LocalApi, unlike listHistory beside it: a
         // phone on the local network may READ the archive, and must never be
         // able to delete a recording from it.
-        deleteHistory: (id: string) => {
-          const r = deleteHistoryEntry(id, historyRoot(), flowLog);
-          if (!r.ok) flowLog(`[history] delete refused: ${r.error}`);
-          return listHistoryDep();
-        },
-        readHistoryDoc: readHistoryDocDep,
+        deleteHistory: (id: string) => deleteRecordingDep(id),
+        readHistoryDoc: readRecordingDocDep,
         // U5c: browser-style downloads (Roch's decision) - main-only, no HTTP
         // equivalent (a remote PWA has no business writing into this
         // machine's Downloads folder).
@@ -670,7 +703,6 @@ function getUiState(): UiStatePayload {
     dataDir: dataDir(),
     logPath: path.join(dataDir(), "flow.log"),
     legacyHistory: legacyHistoryForUi(),
-    historyPurgeSuspended: settings.historyPurgeSuspended,
     recent: recentForUi(),
   };
 }
@@ -1318,7 +1350,37 @@ function runStartupSelfCheck(): void {
 function captureLegacyHistory(dir: string | null): void {
   if (!dir) return;
   if (settings.legacyHistoryDir) return; // already recorded on an earlier boot
-  applySettings({ legacyHistoryDir: dir, historyPurgeSuspended: true });
+  applySettings({ legacyHistoryDir: dir });
+}
+
+/**
+ * B3d : LE DOSSIER QUE FLOW GERAIT LUI-MEME, ET QU'IL NE GERE PLUS.
+ *
+ * Le mecanisme ci-dessus existait pour une machine qui avait deplace ses
+ * enregistrements ailleurs avant la 1.0.0. Il couvre maintenant le cas beaucoup
+ * plus courant : `<dataDir>/history`, le dossier que CE Flow remplissait jusqu'a
+ * cette vague. Les documents y sont, complets, et rien ne les lit plus.
+ *
+ * Ils ne sont ni deplaces ni supprimes, et c'est le seul choix defendable :
+ * remonter automatiquement des annees de reunions dans un compte serait une
+ * decision que personne n'a demandee, et les effacer serait la pire chose que
+ * cette application puisse faire. Ils sont SIGNALES - un chemin, dans Reglages et
+ * dans la page Notes - pour que la reponse a « ou sont passes mes
+ * enregistrements » ne soit jamais « nulle part ».
+ */
+function noticeRetiredHistoryFolder(): void {
+  if (settings.legacyHistoryDir) return; // un dossier est deja signale : ne pas l'ecraser
+  const retired = path.join(dataDir(), "history");
+  try {
+    if (!fs.existsSync(retired)) return;
+    // Un dossier vide n'a rien a signaler : il ne contient aucune reunion, et
+    // pointer l'utilisateur vers rien serait une inquietude gratuite.
+    if (fs.readdirSync(retired).filter((n) => !n.startsWith(".")).length === 0) return;
+  } catch {
+    return;
+  }
+  applySettings({ legacyHistoryDir: retired });
+  flowLog(`[history] ${retired} contient des enregistrements que Flow ne gere plus : ils y restent, intacts`);
 }
 
 /** U2c (minor finding): the archive view lists the FIXED folder only, so for
@@ -1329,9 +1391,8 @@ function logLegacyHistoryState(): void {
   const info = legacyHistoryInfo(settings.legacyHistoryDir);
   if (!info) return;
   flowLog(
-    `[history] the recordings archive lists ${historyRoot()} only. Recordings made before this update are in ` +
-      `${info.dir}${info.exists ? "" : " (Flow does not find that folder any more)"}; nothing was moved or deleted.` +
-      (settings.historyPurgeSuspended ? " The 90-day cleanup is suspended until you resume it in Settings > Storage." : ""),
+    `[history] la page Notes liste les reunions de votre COMPTE. Celles enregistrees avant cette mise a jour sont dans ` +
+      `${info.dir}${info.exists ? "" : " (Flow ne trouve plus ce dossier)"} ; rien n'a ete deplace ni supprime.`,
   );
 }
 
@@ -1429,9 +1490,6 @@ const longRec = new LongRecorder({
   // provider, and the provider is the only thing in the process that had to
   // learn a second implementation exists.
   llm: llmProvider,
-  // U2c: read lazily, so the Settings button that resumes cleanup takes effect
-  // on the very next purge instead of needing a restart.
-  historyPurgeSuspended: () => settings.historyPurgeSuspended,
   // B3a : le document part ICI, et nulle part ailleurs. Le recorder ne sait pas
   // que Supabase existe.
   store: captureStore,
@@ -1464,10 +1522,52 @@ const longRec = new LongRecorder({
 // would run before app.whenReady() for no benefit (download only actually
 // happens well after boot).
 const downloads = new DownloadManager({
-  historyRoot: () => historyRoot(),
+  // B3e : le nom du fichier telecharge est compose ici, a partir de faits sur la
+  // reunion (sa date, son titre) et non du nom de son dossier - il n'y a plus de
+  // dossier. historyDownloadStem garde toutes ses regles de securite de nom
+  // (caracteres interdits de Windows, noms de peripheriques reserves, longueur).
+  readDoc: async (id) => {
+    const row = await captureStore.read(id);
+    if (!row) return null;
+    return { stem: downloadStemFor(row.title, row.startedIso), text: row.doc };
+  },
+  openAudio: async (id) => {
+    const row = await captureStore.read(id);
+    if (!row?.audioPath) return null;
+    const stream = await repo.openAudioStream(row.audioPath);
+    if (!stream.ok || !stream.data) {
+      flowLog(`[download] l'audio n'a pas pu etre ouvert : ${stream.error}`);
+      return null;
+    }
+    return { stem: downloadStemFor(row.title, row.startedIso), bytes: row.audioBytes, body: stream.data };
+  },
   downloadsDir: () => app.getPath("downloads"),
   log: flowLog,
 });
+
+/** Le nom de fichier d'une reunion telechargee : sa date locale puis son titre.
+ * UNE fonction, parce que le document et l'audio d'une meme reunion doivent
+ * porter le meme nom - sinon les deux moities ne se retrouvent plus dans le
+ * dossier Telechargements. */
+function downloadStemFor(title: string, startedIso: string): string {
+  const d = new Date(Date.parse(startedIso) || Date.now());
+  const p = (n: number) => String(n).padStart(2, "0");
+  return historyDownloadStem(`${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`, title);
+}
+
+/** Une URL signee, courte, pour que la page PWA puisse ecouter l'audio d'une
+ * reunion. Signee et non publique : le seau est prive, et il doit le rester -
+ * l'audio d'une reunion en dit autant que son transcript. */
+async function signAudioDep(id: string): Promise<{ url: string; bytes: number } | null> {
+  const row = await captureStore.read(id);
+  if (!row?.audioPath) return null;
+  const signed = await repo.signAudioUrl(row.audioPath);
+  if (!signed.ok) {
+    flowLog(`[api] l'audio n'a pas pu etre signe : ${signed.error}`);
+    return null;
+  }
+  return { url: signed.data, bytes: row.audioBytes };
+}
 
 // D11: removing a sensitive passage from an archived capture - the transcript
 // AND the matching range of the audio. Same lazy historyRoot() closure as
@@ -1475,7 +1575,21 @@ const downloads = new DownloadManager({
 // same containment: it can only ever write inside a folder Flow itself
 // established as a history root.
 const redactor = new Redactor({
-  historyRoot: () => historyRoot(),
+  readRecording: async (id) => {
+    const row = await captureStore.read(id);
+    if (!row) return null;
+    return { doc: row.doc, audioObject: row.audioPath, audioBytes: row.audioBytes };
+  },
+  // Mise en file, jamais attendue jusqu'a Supabase : voir RedactDeps.writeDoc sur
+  // pourquoi l'ordre du bandeau de redact.ts tient quand meme.
+  writeDoc: (id, doc) => {
+    void captureStore.read(id).then((row) => {
+      if (row) captureStore.write({ ...row, doc });
+    });
+  },
+  fetchAudio: (objectName, destPath) => repo.downloadAudioTo(objectName, destPath),
+  replaceAudio: (objectName, srcPath) => audioUploads.uploadFile(objectName, srcPath),
+  workDir: () => pendingAudioDir,
   log: flowLog,
 });
 
@@ -1506,12 +1620,15 @@ const importQueue = new ImportQueue({
   // this cover the decode-and-insert tail after the key comes back up.
   userEngineClaim: () =>
     listening || utterancesInFlight > 0 ? "dictation" : longRec.isBusy ? "recording" : null,
-  historyRoot: () => historyRoot(),
-  // The SAME app-owned staging root a live capture uses, so the boot rescan
-  // (longRec.rescueOrphanedStaging) already covers an import the app died inside
-  // of - one implementation, and exactly what plan §5.1.4 promises about a
-  // restart: an interrupted import is visible as interrupted, never gone.
-  stagingRoot: () => stagingRoot(),
+  // B3e : LE MEME magasin qu'une capture en direct, ce qui remplace le partage du
+  // dossier `staging/`. Un import que l'application ne finit pas laisse une ligne
+  // OUVERTE, et `rescueAbandoned()` la ferme au prochain lancement : une seule
+  // implementation, et exactement ce que le §5.1.4 promet - un import interrompu
+  // est visible comme interrompu, jamais disparu.
+  store: captureStore,
+  accountId: () => repo.userId(),
+  uploadAudio: (id) => audioUploads.enqueue(id),
+  pendingAudioDir: () => pendingAudioDir,
   summaryModel: () => settings.summaryModel,
   ollamaModels: () => listOllamaModels(),
   summarize: (_model, prompt) => llmProvider.long(prompt),

@@ -163,6 +163,28 @@ export class CaptureDoc {
     this.joined = null;
   }
 
+  /**
+   * Remplace l'ENTETE, en laissant le corps intact.
+   *
+   * Un seul appelant, et il justifie la methode : l'import d'un fichier audio
+   * ecrit « - source length: » dans son entete avant de connaitre la vraie duree
+   * (un ogg diffuse ne la declare pas), et une entete qui annonce 00:00:00 pour
+   * un memo de quarante minutes est exactement la petite contre-verite que les
+   * invariants de la campagne interdisent.
+   *
+   * L'entete est un champ a part dans cette classe, donc ce remplacement est
+   * exact : il ne peut pas mordre sur le transcript, ce qu'un `replace` sur le
+   * document entier pourrait faire si une ligne de transcript ressemblait a une
+   * ligne d'entete.
+   */
+  rewriteHeader(next: string): void {
+    if (next === this.header) return;
+    this.size += Buffer.byteLength(next, "utf8") - Buffer.byteLength(this.header, "utf8");
+    this.header = next;
+    this.rev++;
+    this.joined = null;
+  }
+
   /** Le document depuis l'octet `since`, pour le sondage de la page (l'ancien
    * `transcriptSince`, qui lisait le fichier). Les offsets sont en octets et
    * non en caracteres, comme quand la source etait un Buffer : la page les

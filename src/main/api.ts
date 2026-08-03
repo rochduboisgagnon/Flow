@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import path from "node:path";
 import { dataDir } from "./settings";
-import type { HistoryItem, HistoryDocPayload } from "./longform";
+import type { RecordingSummary, RecordingDocPayload } from "../shared/recordings";
 
 // AGR Flow's local API (plan 7.2): how the rest of the AGR ecosystem talks to
 // the app WITHOUT reimplementing it. AGR Pilot's PWA posts phone-recorded
@@ -52,16 +52,18 @@ export interface ApiDeps {
   longChunk(pcm: Int16Array): unknown;
   longGap(seconds: number): unknown;
   longTranscript(since: number): unknown;
-  // Archive 2026-07-14: recording history browser (C10's history folder, now
-  // readable from the PWA, and U5a's UI_HISTORY_* IPC channels). listHistory
-  // re-enumerates the real dirs on every call; resolveHistoryEntry turns an
-  // opaque id back into on-disk paths, or null if the id is forged/stale (see
-  // longform.ts for the path-safety). readHistoryDoc is the ONE
-  // implementation behind both this route and UI_HISTORY_DOC (U5a) - never a
-  // second copy of the resolve+read+cap logic.
-  listHistory(): HistoryItem[];
-  resolveHistoryEntry(id: string): { dir: string; doc: string | null; audio: string | null } | null;
-  readHistoryDoc(id: string): HistoryDocPayload | null;
+  // B3e : le navigateur d'archive lit le COMPTE. `listHistory` et
+  // `readHistoryDoc` sont les MEMES fonctions que les canaux UI_HISTORY_*
+  // utilisent - jamais une seconde copie de la lecture et de son plafond.
+  //
+  // `resolveHistoryEntry` a disparu avec le dossier qu'il resolvait, et la route
+  // audio a change de nature avec lui : elle ne diffuse plus un fichier local,
+  // elle REDIRIGE vers une URL signee. Le changement est un gain - le seau est
+  // prive, l'URL expire, et les octets ne traversent plus le processus qui porte
+  // le crochet clavier pour aller d'un disque a un telephone.
+  listHistory(): Promise<RecordingSummary[]>;
+  readHistoryDoc(id: string): Promise<RecordingDocPayload | null>;
+  signAudio(id: string): Promise<{ url: string; bytes: number } | null>;
   // Settings surface (plan v2 chantier A): AGR Flow is headless; AGR Manager's
   // AGR Flow view is the ONLY user-facing settings UI and drives it through
   // these endpoints.
@@ -542,22 +544,31 @@ export class LocalApi {
       }
       // ---- Archive 2026-07-14: recording history browser ----
       if (req.method === "GET" && url.pathname === "/long/history") {
-        return json(200, { items: this.deps.listHistory() });
+        return json(200, { items: await this.deps.listHistory() });
       }
       if (req.method === "GET" && url.pathname === "/long/history/doc") {
         const id = url.searchParams.get("id") || "";
-        const payload = this.deps.readHistoryDoc(id);
+        const payload = await this.deps.readHistoryDoc(id);
         if (!payload) return json(404, { error: "not found" });
         return json(200, payload);
       }
       if (req.method === "GET" && url.pathname === "/long/history/audio") {
         const id = url.searchParams.get("id") || "";
-        const entry = this.deps.resolveHistoryEntry(id);
-        if (!entry || !entry.audio) return json(404, { error: "not found" });
-        // Raw bytes, not the json() helper: this response is streamed straight
-        // through writeHead/pipe below, then we return before falling into the
-        // JSON branches.
-        this.streamAudioFile(entry.audio, req, res);
+        const signed = await this.deps.signAudio(id);
+        if (!signed) return json(404, { error: "not found" });
+        // UNE REDIRECTION, plus un flux d'octets.
+        //
+        // Ce que ca retire est exactement ce que la vieille version de cette
+        // route payait : chaque saut dans le lecteur audio emettait une requete
+        // Range, et chaque requete Range faisait relire un fichier de 115 Mo par
+        // le processus PRINCIPAL - celui qui porte le crochet clavier et decide
+        // si une dictee part. Storage sert maintenant les octets lui-meme, avec
+        // ses propres requetes Range, et Flow ne fait que dire ou.
+        //
+        // L'URL est SIGNEE et courte : le seau reste prive, et une adresse
+        // recopiee dans un message ne survit pas a la conversation.
+        res.writeHead(302, { location: signed.url, "cache-control": "no-store" });
+        res.end();
         return;
       }
       if (req.method === "POST" && url.pathname === "/transcribe") {
@@ -585,50 +596,12 @@ export class LocalApi {
       json(500, { error: String(err) });
     }
   }
+  // B3e : `streamAudioFile` est parti avec les fichiers qu'il diffusait. Il
+  // portait une implementation de Range HTTP - parse de l'en-tete, 206 partiel,
+  // 416 sur une plage impossible - qui existait pour qu'un lecteur audio puisse
+  // sauter dans une reunion de trois heures. Storage sait faire tout ca, et il le
+  // fait SANS passer par le processus qui porte le crochet clavier.
 
-  /** Archive 2026-07-14: stream a history .wav in raw bytes, honoring a Range
-   * header so the phone's <audio> element can seek. Always a pipe from disk,
-   * never a full read into RAM - a multi-hour capture must not balloon the
-   * engine's memory just because someone opens the archive. */
-  private streamAudioFile(file: string, req: http.IncomingMessage, res: http.ServerResponse): void {
-    let stat: fs.Stats;
-    try {
-      stat = fs.statSync(file);
-    } catch {
-      const body = JSON.stringify({ error: "not found" });
-      res.writeHead(404, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) });
-      res.end(body);
-      return;
-    }
-    const total = stat.size;
-    const range = req.headers.range;
-    const m = typeof range === "string" ? /^bytes=(\d*)-(\d*)$/.exec(range) : null;
-    if (m) {
-      const start = m[1] ? parseInt(m[1], 10) : 0;
-      const end = m[2] ? parseInt(m[2], 10) : total - 1;
-      if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start < 0 || end >= total) {
-        res.writeHead(416, { "Content-Range": `bytes */${total}` });
-        res.end();
-        return;
-      }
-      res.writeHead(206, {
-        "Content-Type": "audio/wav",
-        "Accept-Ranges": "bytes",
-        "Content-Range": `bytes ${start}-${end}/${total}`,
-        "Content-Length": end - start + 1,
-      });
-      const stream = fs.createReadStream(file, { start, end });
-      stream.on("error", () => res.end());
-      stream.pipe(res);
-      return;
-    }
-    // Fallback: a plain 200 full-body response is acceptable per spec when
-    // there is no (valid) Range header.
-    res.writeHead(200, { "Content-Type": "audio/wav", "Accept-Ranges": "bytes", "Content-Length": total });
-    const stream = fs.createReadStream(file);
-    stream.on("error", () => res.end());
-    stream.pipe(res);
-  }
 
   stop() {
     this.server?.close();

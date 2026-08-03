@@ -78,8 +78,6 @@ function chain(over: { transcribeSegment?: (wav: Uint8Array) => Promise<{ text: 
     transcribeSegment: over.transcribeSegment ?? (() => Promise.resolve({ text: "phrase transcrite.", ms: 2 })),
     store,
     pendingAudioDir: over.pendingAudioDir,
-    historyRootOverride: path.join(os.tmpdir(), "flow-offline-legacy-history"),
-    stagingRootOverride: path.join(os.tmpdir(), "flow-offline-legacy-staging"),
     schedule: () => () => {},
   });
   return { backing, workingCopy, store, rec };

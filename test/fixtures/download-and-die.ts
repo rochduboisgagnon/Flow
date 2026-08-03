@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { DownloadManager, PART_SUFFIX } from "../../src/main/downloads";
 
 // A REAL process death in the middle of a REAL copy (U5 review, MAJEUR 1).
@@ -11,12 +12,37 @@ import { DownloadManager, PART_SUFFIX } from "../../src/main/downloads";
 // error handling can never cover. Whatever the Downloads folder holds at that
 // instant is what the user is left with, and that is what the parent asserts on.
 //
-// argv: <historyRoot> <downloadsDir> <historyId>
+// B3e : la source est un FLUX, plus un fichier. Le flux est fabrique ici, a
+// partir d'une taille passee en argument, et il livre ses octets un morceau par
+// tour de boucle - exactement comme un objet descendu de Storage. Ce que le test
+// prouve n'a pas change d'un mot : la mort du processus ne peut laisser qu'un
+// fichier de travail, jamais un fichier sous le nom canonique.
+//
+// argv: <downloadsDir> <totalBytes>
 
-const [historyRoot, downloadsDir, id] = process.argv.slice(2);
+const [downloadsDir, totalArg] = process.argv.slice(2);
+const total = Number(totalArg);
+const CHUNK = 64 * 1024;
 
-const mgr = new DownloadManager({ historyRoot: () => historyRoot, downloadsDir: () => downloadsDir });
-void mgr.downloadAudio(id);
+let sent = 0;
+const body = new Readable({
+  read() {
+    if (sent >= total) {
+      this.push(null);
+      return;
+    }
+    const n = Math.min(CHUNK, total - sent);
+    sent += n;
+    this.push(Buffer.alloc(n, 7));
+  },
+});
+
+const mgr = new DownloadManager({
+  readDoc: () => Promise.resolve(null),
+  openAudio: () => Promise.resolve({ stem: "2026-07-27 reunion", bytes: total, body }),
+  downloadsDir: () => downloadsDir,
+});
+void mgr.downloadAudio("rec-1");
 
 // The copy advances one stream chunk per event-loop turn, so this poll gets
 // many chances to fire long before the last byte of a multi-megabyte source.

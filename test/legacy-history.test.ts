@@ -66,25 +66,28 @@ test("U2c: a packaged first run registers and records, exactly once", () => {
 
 // ---- the two persisted facts ----
 
-test("U2c: legacyHistoryDir and historyPurgeSuspended default to 'no special case'", () => {
+// ---- le fait persiste, apres B3d : il n'en reste qu'UN ----
+//
+// `historyPurgeSuspended` est parti avec la purge qu'il suspendait. Il etait
+// ecrit et effacé EN PAIRE avec `legacyHistoryDir`, ce qui rendait l'etat
+// « suspendu sans dossier » impossible a produire ; sans purge, la moitie qui
+// reste n'a plus de paire a tenir et le dossier se suffit a lui-meme.
+
+test("B3d: legacyHistoryDir - le seul fait qui reste, et il survit a un rechargement", () => {
   assert.equal(SETTINGS_DEFAULTS.legacyHistoryDir, "");
-  assert.equal(SETTINGS_DEFAULTS.historyPurgeSuspended, false);
   assert.equal(sanitizeSettings({}).legacyHistoryDir, "");
-  assert.equal(sanitizeSettings({}).historyPurgeSuspended, false);
+  const s = sanitizeSettings({ legacyHistoryDir: "  D:\\Reunions  " });
+  assert.equal(s.legacyHistoryDir, "D:\\Reunions", "trimmed, otherwise kept verbatim");
+  // Une valeur mal typee retombe sur le defaut, comme partout ailleurs.
+  assert.equal(sanitizeSettings({ legacyHistoryDir: 42 }).legacyHistoryDir, "");
+  // Et le vider est une valeur en soi : « cette machine n'est plus un cas
+  // particulier ».
+  assert.equal(sanitizeSettings({ legacyHistoryDir: "" }).legacyHistoryDir, "");
 });
 
-test("U2c: both survive a reload, and junk falls back to the safe direction", () => {
-  const s = sanitizeSettings({ legacyHistoryDir: "  D:\\Reunions  ", historyPurgeSuspended: true });
-  assert.equal(s.legacyHistoryDir, "D:\\Reunions", "trimmed, otherwise kept verbatim");
-  assert.equal(s.historyPurgeSuspended, true, "the suspension must not evaporate on the next boot");
-  // A wrong-typed value falls back to the default like every other boolean.
-  // Not a hole Flow can open on its own: the pair is written together by the
-  // migration capture and cleared together by the Settings button, so
-  // "suspended but no folder" is never a state this app produces.
-  assert.equal(sanitizeSettings({ historyPurgeSuspended: "yes" }).historyPurgeSuspended, false);
-  assert.equal(sanitizeSettings({ legacyHistoryDir: 42 }).legacyHistoryDir, "");
-  // Resuming cleanup clears both, and that survives too.
-  const resumed = sanitizeSettings({ legacyHistoryDir: "", historyPurgeSuspended: false });
-  assert.equal(resumed.legacyHistoryDir, "");
-  assert.equal(resumed.historyPurgeSuspended, false);
+test("B3d: le reglage de purge n'existe plus - la purge non plus", () => {
+  // Un reglage qui ne fait plus rien serait pire que pas de reglage : ce serait
+  // une interface qui ment. Ce test refuse son retour par distraction.
+  assert.equal("historyPurgeSuspended" in SETTINGS_DEFAULTS, false);
+  assert.equal("historyPurgeSuspended" in sanitizeSettings({ historyPurgeSuspended: true }), false);
 });

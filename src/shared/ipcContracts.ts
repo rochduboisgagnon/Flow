@@ -466,11 +466,6 @@ export interface UiStatePayload {
    * are still there only when Flow has actually looked, and the "Open" button
    * exists only when there is something to open. */
   legacyHistory?: { dir: string; exists: boolean };
-  /** U2c: the 90-day retention purge is off (Flow does not manage what is in
-   * the history folder). Drives the "Resume automatic cleanup" control and the
-   * wording of the retention line - a UI that still promised a 90-day purge
-   * while it is suspended would be the same lie in the other direction. */
-  historyPurgeSuspended: boolean;
   recent: UiRecentCapture[];
 }
 
@@ -546,7 +541,11 @@ export const UI_HISTORY_LIST = "ui:history-list";
 export const UI_HISTORY_DELETE = "ui:history-delete";
 export const UI_HISTORY_DOC = "ui:history-doc"; // takes an id, answers one entry's transcript or null
 
-export type { HistoryItem, HistoryDocPayload } from "./longform";
+// B3e : les formes de l'archive viennent de shared/recordings.ts. Elles
+// remplacent HistoryItem/HistoryDocPayload, qui decrivaient un DOSSIER (un
+// identifiant opaque encodant « <date>/<titre> », une taille de fichier, un
+// mtime) plutot qu'une reunion.
+export type { RecordingSummary, RecordingDocPayload, AudioUploadProgress } from "./recordings";
 
 // ---- capture downloads (U5c, Roch's decision) ----
 // Browser-style: straight into the OS Downloads folder, no dialog. The

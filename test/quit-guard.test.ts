@@ -49,13 +49,22 @@ test("U4-1: before-quit files the recording into the archive before tearing anyt
   );
 });
 
-test("U4-1: the boot rescans staging, before anything can start a new recording on top", () => {
-  const rescan = INDEX_SRC.indexOf("longRec.rescueOrphanedStaging()");
-  assert.ok(rescan > 0, "a crash/power cut never runs before-quit: the boot must rescue what it left behind");
-  const apiUp = INDEX_SRC.indexOf("api = new LocalApi({");
-  assert.ok(apiUp > rescan, "the local API must not be able to start a recording before the rescan is done");
-  const purge = INDEX_SRC.indexOf("longRec.purgeHistory()");
-  assert.ok(purge > rescan, "and the retention purge must judge a rescued recording after it was filed");
+test("B3b: la connexion sauve les reunions interrompues, et l'audio inachve reprend", () => {
+  // U4-1 attendait un balayage du dossier `staging/` AVANT que quoi que ce soit
+  // puisse demarrer un nouvel enregistrement par-dessus. Le dossier a disparu,
+  // et avec lui la course qu'il fallait eviter : une reunion interrompue est
+  // maintenant une LIGNE ouverte, et deux lignes ne se marchent pas dessus.
+  //
+  // Ce qui reste a exiger est donc l'endroit : les deux sauvetages partent du
+  // chargement du compte, parce qu'avant la connexion il n'y a rien a lire.
+  const at = INDEX_SRC.indexOf("async function loadAccountData()");
+  assert.ok(at > 0, "loadAccountData a change de nom : verifier ou les sauvetages doivent vivre");
+  const body = INDEX_SRC.slice(at, INDEX_SRC.indexOf("\n}\n", at));
+  assert.match(body, /longRec\.rescueAbandoned\(\)/, "un plantage ne passe jamais par before-quit");
+  assert.match(body, /audioUploads\.resumePending\(\)/, "et un televersement de 115 Mo coupe doit reprendre");
+  // Aucun des deux ne retient la connexion : `void`, jamais `await`.
+  assert.match(body, /void longRec\.rescueAbandoned\(\)/);
+  assert.match(body, /void audioUploads\.resumePending\(\)/);
 });
 
 test("U4-1: Quit Flow consults the same isBusy the updater does, instead of quitting blind", () => {

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { resolveHistoryEntry, historyEntryLabel } from "./longform";
-import { historyDownloadStem, numberedFilename } from "../shared/downloadName";
+import { Readable } from "node:stream";
+import { numberedFilename } from "../shared/downloadName";
 import type { DownloadResult } from "../shared/ipcContracts";
 
 // U5c (Roch's decision): downloading a capture from the archive behaves like a
@@ -36,8 +36,28 @@ import type { DownloadResult } from "../shared/ipcContracts";
 // Killing the process mid-copy can only ever leave a work file behind, which
 // the next download sweeps away.
 
+/** Les octets a ecrire, quelle que soit leur provenance.
+ *
+ * B3e : ce module recevait un CHEMIN et copiait un fichier. La source est
+ * maintenant une ligne du compte pour le document, et un objet de Storage pour
+ * l'audio - donc « d'ou viennent les octets » devient une question a laquelle
+ * l'appelant repond. Tout le reste de ce fichier - le fichier de travail, la
+ * verification de taille, le nom canonique pris atomiquement - est INCHANGE, et
+ * c'est voulu : ces protections repondent a la mort du processus en cours de
+ * copie, un risque que le changement de source ne diminue en rien. */
+export type ByteSource =
+  | { kind: "text"; text: string }
+  | { kind: "stream"; body: Readable };
+
 export interface DownloadDeps {
-  historyRoot(): string;
+  /** Le document d'une reunion, tel qu'il sera ecrit, et le nom qu'il portera.
+   * Rend null quand l'identifiant ne designe rien - un identifiant forge, ou une
+   * reunion supprimee entre l'affichage de la liste et le clic. */
+  readDoc(id: string): Promise<{ stem: string; text: string } | null>;
+  /** L'audio d'une reunion, EN FLUX. Jamais un tampon : un .wav d'une heure pese
+   * 115 Mo, et le charger en memoire pour le recopier aussitot serait payer deux
+   * fois ce que le disque va couter de toute facon. */
+  openAudio(id: string): Promise<{ stem: string; bytes: number; body: Readable } | null>;
   /** app.getPath("downloads") - injected so tests never touch the real
    * Downloads folder, and so this module stays Electron-free itself. */
   downloadsDir(): string;
@@ -97,10 +117,10 @@ class DownloadFailure extends Error {
  * file". An unconditional rm would be the worse bug: on the EEXIST path the
  * file at `dest` was created by someone else, and this function must never
  * touch it. `created` can only be set by our own exclusive create succeeding. */
-function streamCopyExclusive(src: string, dest: string, log?: (msg: string) => void): Promise<void> {
+function streamCopyExclusive(src: ByteSource, dest: string, log?: (msg: string) => void): Promise<void> {
   return new Promise((resolve, reject) => {
     const write = fs.createWriteStream(dest, { flags: "wx" });
-    let read: fs.ReadStream | null = null;
+    let read: Readable | null = null;
     let created = false;
     let settled = false;
 
@@ -130,7 +150,14 @@ function streamCopyExclusive(src: string, dest: string, log?: (msg: string) => v
     });
     write.once("open", () => {
       created = true; // the file at `dest` exists because of THIS call, and only because of it
-      read = fs.createReadStream(src);
+      if (src.kind === "text") {
+        // Un document tient en memoire par construction - le tampon le borne a
+        // 8 Mo - donc une seule ecriture suffit, et `end` declenche le "close"
+        // que la promesse attend, exactement comme la fin d'un tuyau.
+        write.end(src.text, "utf8");
+        return;
+      }
+      read = src.body;
       read.once("error", fail);
       read.pipe(write);
     });
@@ -260,7 +287,7 @@ async function copyIntoDownloads(
   dir: string,
   stem: string,
   ext: string,
-  src: string,
+  src: ByteSource,
   expectedBytes: number,
   inFlight: Set<string>,
   log?: (msg: string) => void,
@@ -350,24 +377,43 @@ export class DownloadManager {
   }
 
   private async download(id: string, kind: "doc" | "audio"): Promise<DownloadResult> {
-    // The renderer only ever hands over an id; resolution happens here, with
-    // the exact same containment guarantees as the archive's read routes (a
-    // forged/stale id is refused, never a read outside historyRoot).
-    const entry = resolveHistoryEntry(id, this.deps.historyRoot());
-    if (!entry) return { ok: false, error: "recording not found" };
-    const src = kind === "doc" ? entry.doc : entry.audio;
-    if (!src) {
-      return { ok: false, error: kind === "doc" ? "no transcript for this recording" : "no audio for this recording" };
+    // La page ne remet qu'un identifiant, et la resolution se fait ici.
+    //
+    // B3e : le schema d'identifiants opaques a disparu avec le dossier qu'il
+    // confinait, et il n'y a rien a regretter - le RLS est une garde plus forte
+    // que le confinement de chemin qu'il remplace. Un identifiant forge ne rend
+    // pas le document d'un autre compte : il ne rend RIEN, parce que la requete
+    // porte le jeton de celui qui la fait.
+    let src: ByteSource;
+    let stem: string;
+    let expectedBytes: number;
+    try {
+      if (kind === "doc") {
+        const doc = await this.deps.readDoc(id);
+        if (!doc) return { ok: false, error: "recording not found" };
+        stem = doc.stem;
+        src = { kind: "text", text: doc.text };
+        // Mesure en OCTETS et non en caracteres : la verification de fin compare
+        // a la taille du fichier ecrit, et un document accentue a plus d'octets
+        // que de caracteres. C'est l'ecart qui ferait declarer « incomplet »
+        // chaque telechargement d'un document francais.
+        expectedBytes = Buffer.byteLength(doc.text, "utf8");
+      } else {
+        const audio = await this.deps.openAudio(id);
+        if (!audio) return { ok: false, error: "no audio for this recording" };
+        stem = audio.stem;
+        src = { kind: "stream", body: audio.body };
+        // Ce que le compte dit que l'objet pese, connu AVANT que la copie
+        // commence : le nombre auquel la copie finie doit correspondre ne peut
+        // pas venir d'une source qu'on est en train de lire.
+        expectedBytes = audio.bytes;
+      }
+    } catch (err) {
+      this.deps.log?.(`[download] could not read ${kind} for ${id}: ${err}`);
+      return { ok: false, error: SAVE_FAILED };
     }
-    const { date, title } = historyEntryLabel(entry.dir);
-    const stem = historyDownloadStem(date, title);
     const ext = kind === "doc" ? "md" : "wav";
     try {
-      // WHAT we are copying is measured before WHERE it goes is even asked for:
-      // the number the finished copy has to match is the size of the file as it
-      // stood when this download started, not one re-read from a source that may
-      // have been rewritten in the meantime.
-      const expectedBytes = (await fs.promises.stat(src)).size;
       const dir = this.deps.downloadsDir();
       const dest = await copyIntoDownloads(dir, stem, ext, src, expectedBytes, this.inFlight, (msg) =>
         this.deps.log?.(msg),

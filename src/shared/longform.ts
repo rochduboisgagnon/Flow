@@ -592,42 +592,20 @@ export interface LongTranscriptResult {
   nextSince: number;
 }
 
-// ---- U5a/U5c: the archive browser (history list + doc), shared by the HTTP
-// /long/history* routes and the UI_HISTORY_* IPC channels. Defined here for
-// the same reason as the shapes above: ipcContracts.ts (compiled into the
-// renderer/preload build too) needs the type without pulling src/main in -
-// main/longform.ts imports these back FROM here and does the actual disk I/O.
-
-/** A runaway history (years of unattended recordings piling up on the fixed
- * folder) must never make the archive view stall the engine's single-threaded
- * API, so the listing is BOUNDED - newest first, so the cap keeps the recent
- * ones. Bounded like the ASR queue.
- *
- * The number lives here, pure, rather than in main/longform.ts where the walk
- * is (U5 review, MAJEUR 4): the Notes page has to be able to SAY it. A page
- * that promises "every capture Flow has produced" over a list the engine
- * silently truncated is exactly the quiet lie this app does not tell, and the
- * page can only avoid it if it can see the same number the walk enforces. */
-export const MAX_HISTORY_ITEMS = 2000;
-
-/** One recording as the archive browser lists it. `hasAudio`/`audioBytes` let
- * the UI show a download's size BEFORE the click (U5c: a long WAV is ~115 MB/h,
- * the user must learn that up front, not after starting a multi-minute copy). */
-export interface HistoryItem {
-  id: string;
-  date: string;
-  title: string;
-  hasAudio: boolean;
-  audioBytes: number;
-  docBytes: number;
-  savedMs: number;
-}
-
-/** A history entry's transcript, read for display - shared by the HTTP
- * /long/history/doc route and the UI_HISTORY_DOC IPC channel (main/longform.ts's
- * readHistoryDoc is the ONE implementation behind both). */
-export interface HistoryDocPayload {
-  title: string;
-  date: string;
-  text: string;
-}
+// ---- B3e : le navigateur d'archive lit maintenant le COMPTE ----
+//
+// `MAX_HISTORY_ITEMS`, `HistoryItem` et `HistoryDocPayload` sont partis avec le
+// dossier `history/` qu'ils decrivaient : les trois portaient une forme de
+// SYSTEME DE FICHIERS - un identifiant opaque qui encodait « <date>/<titre> »,
+// une taille de fichier, un mtime, et tout un schema de confinement pour
+// qu'un identifiant forge ne puisse pas lire hors du dossier.
+//
+// Le RLS remplace ce schema, et il le remplace mieux : un identifiant forge ne
+// rend pas une ligne d'un autre compte, il ne rend RIEN. Les formes vivent
+// desormais dans shared/recordings.ts (RecordingSummary, RecordingRow), ou
+// « une reunion » est une ligne et non un dossier.
+//
+// Le plafond de la liste a suivi, sous le nom MAX_RECORDINGS_LISTED
+// (main/data/repo.ts). Il n'a pas change de valeur en changeant de support :
+// ce qu'il borne est ce qu'une page peut afficher, pas ce qu'un dossier peut
+// contenir.

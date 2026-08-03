@@ -66,9 +66,6 @@ function recorder(over: Partial<LongDeps> = {}): { store: FakeCaptureStore; rec:
   const rec = new LongRecorder({
     transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
     store,
-    // start() balaie encore l'archive LEGACY : la tenir loin du vrai ~/.flow.
-    historyRootOverride: path.join(os.tmpdir(), "flow-test-legacy-history"),
-    stagingRootOverride: path.join(os.tmpdir(), "flow-test-legacy-staging"),
     // Pas d'horloge de tranches dans les tests : ils appellent flushSlice() quand
     // ils veulent observer une tranche, ce qui est plus sur qu'attendre 20 s.
     schedule: () => () => {},
@@ -575,4 +572,86 @@ test("B3a: transcriptSince lit la memoire et rend des offsets reutilisables", as
   assert.equal(rec.transcriptSince(next.nextSince).text, "", "reprendre au bout ne rend rien");
   rec.stop();
   await settle(rec);
+});
+
+// ---------------------------------------------------------------------------
+// B3a : LA CASE « GARDER L'AUDIO » DECIDE ENCORE QUELQUE CHOSE.
+//
+// Ces deux tests remplacent quatre tests de test/history.test.ts, supprime avec
+// le dossier qu'il decrivait. Les quatre verifiaient le trajet staging/ ->
+// history/ ; la PROMESSE, elle, survit sans changer d'un mot - le .wav est ecrit
+// pendant toute la capture quoi que dise la case (c'est la seule chose qui peut
+// encore sauver une reunion dont la transcription tombe), et c'est a la FIN que
+// la case tranche.
+// ---------------------------------------------------------------------------
+
+test("U4-2: keepAudio decoche - le .wav en transit est supprime des que le document est sur", async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "flow-audio-off-"));
+  const pending = path.join(work, "pending");
+  const { rec } = recorder({
+    transcribeSegment: () => Promise.resolve({ text: "Bonjour.", ms: 5 }),
+    pendingAudioDir: pending,
+  });
+  const started = rec.start({ title: "No Audio Please", keepAudio: false });
+  assert.equal(started.ok, true, started.error ?? "expected ok");
+  // Le .wav est ouvert MEME avec la case decochee : pendant la capture, c'est le
+  // dernier recours si la transcription tombe, et un plantage ne donne pas de
+  // seconde chance de commencer a l'ecrire.
+  const wav = path.join(pending, started.recordingId! + ".wav");
+  assert.equal(fs.existsSync(wav), true, "l'audio est ecrit pendant la capture, quoi que dise la case");
+
+  rec.onChunk(speechy(5000));
+  rec.onChunk(concat(speechy(2000), silence(1500)));
+  rec.stop();
+  await settle(rec);
+  assert.equal(fs.existsSync(wav), false, "et il disparait a la fin : la case decrit ce que Flow GARDE");
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+test("U4-2: keepAudio cochee - le .wav survit a la fin, avec une entete valide", async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "flow-audio-on-"));
+  const pending = path.join(work, "pending");
+  const { rec, store } = recorder({
+    transcribeSegment: () => Promise.resolve({ text: "Bonjour.", ms: 5 }),
+    pendingAudioDir: pending,
+    accountId: () => Promise.resolve("uid-1"),
+  });
+  const started = rec.start({ title: "Keep It", keepAudio: true });
+  rec.onChunk(speechy(5000));
+  rec.onChunk(concat(speechy(2000), silence(1500)));
+  rec.stop();
+  await settle(rec);
+
+  const wav = path.join(pending, started.recordingId! + ".wav");
+  assert.equal(fs.existsSync(wav), true, "la case cochee garde l'audio, pour que B3c le televerse");
+  // Et son entete de taille a ete corrigee : un fichier lu avant la fermeture du
+  // flux parait vide a tous les lecteurs.
+  const head = fs.readFileSync(wav);
+  assert.equal(head.subarray(0, 4).toString(), "RIFF");
+  assert.equal(head.readUInt32LE(4), 36 + head.readUInt32LE(40), "RIFF et data se repondent");
+  // Et la ligne porte le chemin de l'objet, prefixe par le compte.
+  const row = store.rows.get(started.recordingId!)!;
+  assert.equal(row.audioPath, `uid-1/${started.recordingId}.wav`);
+  assert.ok(row.audioBytes > 44, "et sa taille, mesuree sur le fichier reel");
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+test("B3a: sans compte connu, l'audio ATTEND au lieu de partir sous un mauvais chemin", async () => {
+  // Un objet dont le prefixe n'est pas l'identifiant du compte est refuse par les
+  // politiques de Storage, et le refus arriverait apres une heure de reunion. Le
+  // fichier reste donc en transit, pour le balayage du prochain lancement.
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "flow-audio-noacct-"));
+  const pending = path.join(work, "pending");
+  const { rec, store } = recorder({
+    transcribeSegment: () => Promise.resolve({ text: "Bonjour.", ms: 5 }),
+    pendingAudioDir: pending,
+    accountId: () => Promise.resolve(""),
+  });
+  const started = rec.start({ title: "No account", keepAudio: true });
+  rec.onChunk(concat(speechy(3000), silence(1500)));
+  rec.stop();
+  await settle(rec);
+  assert.equal(fs.existsSync(path.join(pending, started.recordingId! + ".wav")), true, "le fichier reste");
+  assert.equal(store.rows.get(started.recordingId!)!.audioPath, "", "et la ligne ne promet aucun audio");
+  fs.rmSync(work, { recursive: true, force: true });
 });

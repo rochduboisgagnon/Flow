@@ -4,31 +4,42 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Redactor, REDACT_SUFFIX, MAX_REDACT_DOC_BYTES } from "../src/main/redact";
-import { listHistory } from "../src/main/longform";
 import { transcriptHeader, transcriptLine } from "../src/shared/longform";
 import { encodeWav } from "../src/shared/wav";
 
-// D11, the writing half. Every test works against a TEMP history root - never
-// the real ~/.flow, and never the real recordings folder.
+// D11, the writing half.
 //
-// What these tests are actually defending:
-//  - the operation is a REAL removal: the words leave the transcript AND the
-//    matching samples leave the audio;
-//  - it can only ever touch a folder Flow itself established as a history root
-//    (the campaign's first invariant);
-//  - an interrupted write leaves either "nothing done" or "audio done, text
-//    not" - never a document that CLAIMS the audio was silenced when it was
-//    not (main/redact.ts's order-of-operations note).
+// Ce que ces tests defendent, et B3e n'en change AUCUN :
+//  - l'operation est un vrai retrait : les mots quittent le transcript ET les
+//    echantillons correspondants quittent l'audio ;
+//  - une ecriture interrompue laisse « rien de fait » ou « audio fait, texte pas
+//    encore » - jamais un document qui PRETEND que l'audio a ete rendu
+//    silencieux alors qu'il ne l'est pas (voir l'ordre des operations dans le
+//    bandeau de main/redact.ts).
+//
+// Ce qui a bouge est le support : le document est une ligne du compte, et l'audio
+// est un objet de Storage. Le silence, lui, s'ecrit toujours sur un FICHIER -
+// mettre des zeros au milieu d'un objet distant n'existe pas - donc le trajet
+// descendre / reecrire / remonter est simule ici par un dossier de travail et
+// deux fonctions. Les octets, eux, sont vrais : `isSilent` et `hasSound` lisent
+// le fichier que le retrait a produit.
 
 const SR = 16_000;
 
 interface Fixture {
-  root: string;
   work: string;
+  /** Le dossier de travail que le retrait utilise pour descendre et reecrire. */
   dir: string;
-  doc: string;
+  /** Le fichier qui tient lieu d'objet de Storage : ce que `fetchAudio` copie, et
+   * ce que `replaceAudio` remplace. C'est sur lui que les assertions comptent
+   * les zeros. */
   audio: string;
   id: string;
+  /** Le document, tel que le compte le detient. Muté par `writeDoc`. */
+  doc(): string;
+  /** Vrai quand l'audio a ete remplace : la moitie « AUDIO FIRST » de l'ordre. */
+  audioReplaced(): boolean;
+  deps(over?: Partial<ConstructorParameters<typeof Redactor>[0]>): ConstructorParameters<typeof Redactor>[0];
 }
 
 /** A filed recording: three passages at 0 s, 7 s and 14 s, over 30 s of audio
@@ -36,41 +47,66 @@ interface Fixture {
  * looking at the bytes. */
 function fixture(opts: { audio?: boolean; notes?: string; seconds?: number } = {}): Fixture {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "flow-redact-"));
-  const root = path.join(work, "history");
-  const dir = path.join(root, "2026-07-29", "weekly-sync");
+  const dir = path.join(work, "pending");
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(root, ".agr-flow-history"), "marker\n");
 
   const head = transcriptHeader("Weekly sync", "2026-07-29T09:00:00.000Z");
   const body = transcriptLine(0, "Alpha.") + transcriptLine(7000, "My card is 4111.") + transcriptLine(14_000, "Gamma.");
-  const text =
+  let doc =
     opts.notes === undefined
       ? head + body
       : head + "## Notes\n\n" + opts.notes + "\n\n## Transcript\n\n" + body;
-  const doc = path.join(dir, "weekly-sync.md");
-  fs.writeFileSync(doc, text);
 
-  const audio = path.join(dir, "weekly-sync.wav");
-  if (opts.audio !== false) {
+  // « L'objet de Storage » : un fichier hors du dossier de travail, dont chaque
+  // echantillon est non nul, pour que « cette plage a-t-elle ete rendue
+  // silencieuse » se decide en lisant les octets.
+  const audio = path.join(work, "object.wav");
+  const hasAudio = opts.audio !== false;
+  if (hasAudio) {
     const samples = new Int16Array(SR * (opts.seconds ?? 30));
     for (let i = 0; i < samples.length; i++) samples[i] = ((i % 1000) + 1) as number;
     fs.writeFileSync(audio, encodeWav(samples));
   }
-  const id = listHistory(root)[0].id;
-  return { root, work, dir, doc, audio, id };
+  let replaced = false;
+  const id = "rec-1";
+
+  const f: Fixture = {
+    work,
+    dir,
+    audio,
+    id,
+    doc: () => doc,
+    audioReplaced: () => replaced,
+    deps: (over = {}) => ({
+      readRecording: (rid: string) =>
+        Promise.resolve(
+          rid === id
+            ? { doc, audioObject: hasAudio ? "uid/rec-1.wav" : "", audioBytes: hasAudio ? fs.statSync(audio).size : 0 }
+            : null,
+        ),
+      writeDoc: (_rid: string, next: string) => void (doc = next),
+      fetchAudio: async (_o: string, dest: string) => {
+        await fs.promises.copyFile(audio, dest);
+        return { ok: true, error: "" };
+      },
+      replaceAudio: async (_o: string, src: string) => {
+        await fs.promises.copyFile(src, audio);
+        replaced = true;
+        return { ok: true, error: "" };
+      },
+      workDir: () => dir,
+      ...over,
+    }),
+  };
+  return f;
 }
 
 function cleanup(f: Fixture): void {
-  try {
-    fs.chmodSync(f.doc, 0o666);
-  } catch {
-    /* best effort */
-  }
   fs.rmSync(f.work, { recursive: true, force: true });
 }
 
 function redactor(f: Fixture): Redactor {
-  return new Redactor({ historyRoot: () => f.root });
+  return new Redactor(f.deps());
 }
 
 /** True when every PCM byte in [fromMs, toMs) is zero. */
@@ -98,7 +134,7 @@ test("a removal takes the words out of the transcript AND the sound out of the a
   assert.equal(r.ok, true);
   assert.equal(r.audioSilenced, true);
 
-  const doc = fs.readFileSync(f.doc, "utf8");
+  const doc = f.doc();
   assert.doesNotMatch(doc, /4111/, "the passage left the transcript");
   assert.match(doc, /Alpha\./);
   assert.match(doc, /\[00:00:14\] Gamma\./, "and the surviving timestamps did not move");
@@ -126,7 +162,7 @@ test("removing the LAST passage silences to the end of the file", async () => {
   assert.equal(r.ok, true);
   assert.equal(isSilent(f.audio, 14_000, 30_000), true);
   assert.equal(hasSound(f.audio, 0, 14_000), true);
-  assert.match(fs.readFileSync(f.doc, "utf8"), /to the end of the recording/);
+  assert.match(f.doc(), /to the end of the recording/);
   cleanup(f);
 });
 
@@ -147,7 +183,7 @@ test("the derived notes go with the passage, and the result says so", async () =
   const r = await redactor(f).remove(f.id, [{ index: 1, startMs: 7000 }]);
   assert.equal(r.ok, true);
   assert.equal(r.notesDropped, true);
-  const doc = fs.readFileSync(f.doc, "utf8");
+  const doc = f.doc();
   assert.doesNotMatch(doc, /4111/, "a summary that repeated the passage would cancel the removal");
   assert.match(doc, /The meeting notes were removed on \d{4}-\d{2}-\d{2}/);
   cleanup(f);
@@ -158,7 +194,7 @@ test("a recording with no audio is removed from honestly, not silently", async (
   const r = await redactor(f).remove(f.id, [{ index: 1, startMs: 7000 }]);
   assert.equal(r.ok, true);
   assert.equal(r.audioSilenced, false);
-  assert.match(fs.readFileSync(f.doc, "utf8"), /No audio was kept for this recording/);
+  assert.match(f.doc(), /No audio was kept for this recording/);
   cleanup(f);
 });
 
@@ -166,23 +202,28 @@ test("a recording with no audio is removed from honestly, not silently", async (
 
 test("a forged or stale id is refused, and nothing anywhere is touched", async () => {
   const f = fixture();
-  const before = fs.readFileSync(f.doc, "utf8");
+  const before = f.doc();
   for (const id of ["", "not-a-real-id", Buffer.from("../../etc/x", "utf8").toString("base64url")]) {
     const r = await redactor(f).remove(id, [{ index: 1, startMs: 7000 }]);
     assert.equal(r.ok, false, `id ${JSON.stringify(id)} must be refused`);
   }
-  assert.equal(fs.readFileSync(f.doc, "utf8"), before);
+  assert.equal(f.doc(), before);
   assert.equal(hasSound(f.audio, 7000, 14_000), true);
   cleanup(f);
 });
 
-test("a history root Flow did not establish serves nothing, even with a real-looking folder inside", async () => {
+test("B3e: un identifiant qui ne designe aucune reunion ne retire rien", async () => {
+  // Ce test remplace « une racine que Flow n'a pas etablie ne sert rien », qui
+  // portait sur un marqueur de dossier. La garde a change de nature et elle est
+  // plus forte : il n'y a plus de dossier a marquer, et une requete portant le
+  // jeton de quelqu'un ne peut rendre que SES lignes - un identifiant inconnu ne
+  // rend rien du tout, jamais la reunion d'un autre.
   const f = fixture();
-  const id = f.id;
-  fs.rmSync(path.join(f.root, ".agr-flow-history"));
-  const r = await redactor(f).remove(id, [{ index: 1, startMs: 7000 }]);
+  const r = await redactor(f).remove("pas-une-reunion", [{ index: 1, startMs: 7000 }]);
   assert.equal(r.ok, false);
-  assert.match(fs.readFileSync(f.doc, "utf8"), /4111/, "the transcript is untouched");
+  assert.match(r.error ?? "", /not found/i);
+  assert.match(f.doc(), /4111/, "the transcript is untouched");
+  assert.equal(f.audioReplaced(), false, "et l'audio n'a pas ete touche non plus");
   cleanup(f);
 });
 
@@ -191,30 +232,30 @@ test("an index whose start offset has DRIFTED refuses the whole request", async 
   // startup rescue can rewrite the document. Acting on the stale index would
   // irreversibly destroy a passage nobody looked at.
   const f = fixture();
-  const before = fs.readFileSync(f.doc, "utf8");
+  const before = f.doc();
   const r = await redactor(f).remove(f.id, [{ index: 1, startMs: 999_000 }]);
   assert.equal(r.ok, false);
   assert.match(r.error ?? "", /changed since you opened it/);
-  assert.equal(fs.readFileSync(f.doc, "utf8"), before);
+  assert.equal(f.doc(), before);
   assert.equal(hasSound(f.audio, 7000, 14_000), true, "the audio was not touched either");
   cleanup(f);
 });
 
 test("an out-of-range index refuses, and never falls back to a neighbouring passage", async () => {
   const f = fixture();
-  const before = fs.readFileSync(f.doc, "utf8");
+  const before = f.doc();
   const r = await redactor(f).remove(f.id, [{ index: 99, startMs: 0 }]);
   assert.equal(r.ok, false);
-  assert.equal(fs.readFileSync(f.doc, "utf8"), before);
+  assert.equal(f.doc(), before);
   cleanup(f);
 });
 
 test("an empty target list is refused rather than treated as \"all of it\"", async () => {
   const f = fixture();
-  const before = fs.readFileSync(f.doc, "utf8");
+  const before = f.doc();
   const r = await redactor(f).remove(f.id, []);
   assert.equal(r.ok, false);
-  assert.equal(fs.readFileSync(f.doc, "utf8"), before);
+  assert.equal(f.doc(), before);
   cleanup(f);
 });
 
@@ -226,71 +267,111 @@ test("an audio file Flow cannot silence refuses the WHOLE removal, transcript in
   const stereo = Buffer.from(fs.readFileSync(f.audio));
   stereo.writeUInt16LE(2, 22); // two channels: the byte-to-time mapping is no longer ours
   fs.writeFileSync(f.audio, stereo);
-  const before = fs.readFileSync(f.doc, "utf8");
+  const before = f.doc();
 
   const r = await redactor(f).remove(f.id, [{ index: 1, startMs: 7000 }]);
   assert.equal(r.ok, false);
   assert.match(r.error ?? "", /could not silence/i);
-  assert.equal(fs.readFileSync(f.doc, "utf8"), before, "the transcript still holds the passage");
+  assert.equal(f.doc(), before, "the transcript still holds the passage");
   assert.equal(fs.existsSync(f.audio + REDACT_SUFFIX), false, "no work file was left behind");
   cleanup(f);
 });
 
 // ---- the interrupted write ----
 
-test("AUDIO FIRST: when the transcript cannot be rewritten, the audio is already silent and the text still shows the passage", async () => {
-  // The whole safety argument of main/redact.ts, exercised. The transcript is
-  // made unwritable so the second step fails; the observable state afterwards
-  // is the SAFE half of the crash window - never a tombstone claiming a silence
-  // that did not happen.
+test("AUDIO FIRST: l'audio est silencieux AVANT que le document bouge", async () => {
+  // Tout l'argument de surete du bandeau de main/redact.ts, exerce.
+  //
+  // B3e le rend plus direct qu'avant : l'ancien test rendait le document en
+  // lecture seule et devait prevoir le cas ou le systeme de fichiers ignore le
+  // bit pour le proprietaire (tests eleves), ce qui laissait la moitie du temps
+  // l'affirmation d'ordre non verifiee. Ici l'ordre s'OBSERVE : `writeDoc` note
+  // dans quel etat etait l'audio quand il a ete appele.
   const f = fixture();
-  fs.chmodSync(f.doc, 0o444);
-  const r = await redactor(f).remove(f.id, [{ index: 1, startMs: 7000 }]);
-  fs.chmodSync(f.doc, 0o666);
-
-  if (r.ok) {
-    // Some filesystems ignore the read-only bit for the owner (notably when the
-    // tests run elevated). The ordering claim is then covered by the source
-    // canary below rather than left silently unverified.
-    assert.equal(isSilent(f.audio, 7000, 14_000), true);
-    cleanup(f);
-    return;
-  }
-  assert.match(r.error ?? "", /transcript/i);
-  assert.equal(isSilent(f.audio, 7000, 14_000), true, "the audio was scrubbed BEFORE the document was touched");
-  assert.match(fs.readFileSync(f.doc, "utf8"), /4111/, "and the document never claimed otherwise");
-  assert.equal(fs.existsSync(f.doc + ".tmp"), false, "no half-written document was left behind");
+  let audioSilentWhenDocWritten: boolean | null = null;
+  const red = new Redactor(
+    f.deps({
+      writeDoc: () => {
+        audioSilentWhenDocWritten = isSilent(f.audio, 7000, 14_000);
+      },
+    }),
+  );
+  const r = await red.remove(f.id, [{ index: 1, startMs: 7000 }]);
+  assert.equal(r.ok, true, r.error ?? "expected ok");
+  assert.equal(audioSilentWhenDocWritten, true, "le document n'est ecrit qu'APRES que l'audio est silencieux");
   cleanup(f);
 });
 
-test("source canary: the audio is silenced before the document is written, and both go through a rename", () => {
-  // A test verifies behaviour; this one verifies the PREMISE the behaviour
-  // rests on, which no fixture can kill a process to observe. If someone ever
-  // reorders these two statements - or drops the tmp+rename for a direct write -
-  // the safety argument in this module's note stops holding and this fails.
-  const src = fs.readFileSync(new URL("../src/main/redact.ts", import.meta.url), "utf8");
-  const silence = src.indexOf("await silenceAudio(");
-  const write = src.indexOf("await fs.promises.writeFile(tmp,");
-  const rename = src.indexOf("await fs.promises.rename(tmp, entry.doc)");
-  assert.ok(silence > 0 && write > 0 && rename > 0, "all three steps are still there");
-  assert.ok(silence < write, "silenceAudio runs BEFORE the document is rewritten");
-  assert.ok(write < rename, "the document is written to a temporary and then renamed into place");
-  // The audio's own swap, for the same reason: zeroing bytes in place would be
-  // interruptible, and a half-scrubbed file wearing the recording's real name
-  // is the one outcome that must be impossible.
-  assert.ok(src.includes("await fs.promises.rename(work, audioPath)"), "the scrubbed audio is swapped in, never written in place");
-  assert.ok(src.includes('fs.promises.open(work, "wx")'), "the work file is created exclusively, never truncating anything");
+test("AUDIO FIRST: un audio qu'on ne peut pas REMPLACER refuse tout le retrait", async () => {
+  // Le pire etat possible serait l'inverse de celui du test ci-dessus : un
+  // document qui annonce un passage supprime au-dessus d'un audio qui le joue
+  // encore. Si la remontee echoue, le document ne doit PAS etre ecrit.
+  const f = fixture();
+  const before = f.doc();
+  const red = new Redactor(
+    f.deps({ replaceAudio: () => Promise.resolve({ ok: false, error: "le stockage a refuse" }) }),
+  );
+  const r = await red.remove(f.id, [{ index: 1, startMs: 7000 }]);
+  assert.equal(r.ok, false);
+  assert.match(r.error ?? "", /could not replace/i);
+  assert.equal(f.doc(), before, "le document n'a pas ete reecrit");
+  assert.equal(hasSound(f.audio, 7000, 14_000), true, "et l'audio joue encore le passage");
+  // Et les deux fichiers de travail sont partis, meme sur ce chemin d'echec.
+  assert.deepEqual(
+    fs.readdirSync(f.dir).filter((n) => n.includes(f.id)),
+    [],
+    "aucun fichier de travail ne reste apres un echec",
+  );
+  cleanup(f);
 });
 
-test("a work file left by a killed run is swept, and the real audio survives it", async () => {
+test("B3e: un audio qu'on ne peut pas DESCENDRE refuse tout le retrait", async () => {
   const f = fixture();
-  const orphan = f.audio + REDACT_SUFFIX;
+  const before = f.doc();
+  const red = new Redactor(
+    f.deps({ fetchAudio: () => Promise.resolve({ ok: false, error: "hors ligne" }) }),
+  );
+  const r = await red.remove(f.id, [{ index: 1, startMs: 7000 }]);
+  assert.equal(r.ok, false);
+  assert.match(r.error ?? "", /could not fetch/i);
+  assert.equal(f.doc(), before);
+  assert.equal(hasSound(f.audio, 7000, 14_000), true);
+  cleanup(f);
+});
+
+test("canari de source : l'audio est remplace AVANT que le document soit ecrit", () => {
+  // Un test verifie un comportement ; celui-ci verifie la PREMISSE sur laquelle
+  // le comportement repose, et qu'aucun harnais ne peut observer sans tuer un
+  // processus. Si quelqu'un inverse ces deux appels un jour, l'argument de
+  // securite du bandeau de ce module cesse de tenir, et ce test tombe.
+  //
+  // B3e a change les moyens, pas l'ordre. Le tmp+rename a disparu avec le
+  // fichier : la bascule atomique est maintenant le `upsert` de Storage pour
+  // l'audio, et une ligne de base pour le document. Ce qui reste vrai, et qui
+  // est tout le sujet : au moment ou le document annonce un audio silencieux,
+  // l'audio EST silencieux.
+  const src = fs.readFileSync(new URL("../src/main/redact.ts", import.meta.url), "utf8");
+  const silence = src.indexOf("await this.silenceStoredAudio(");
+  const write = src.indexOf("this.deps.writeDoc(id, plan.doc)");
+  assert.ok(silence > 0 && write > 0, "les deux etapes sont toujours la");
+  assert.ok(silence < write, "l'audio d'abord, le document ensuite : voir le bandeau du module");
+  // Et le remplacement est ATTENDU. Sans `await`, le document partirait pendant
+  // que l'audio monte encore, ce qui rendrait la pierre tombale fausse
+  // exactement le temps du televersement - des minutes, sur 115 Mo.
+  assert.match(src.slice(silence - 10, silence + 40), /await this\.silenceStoredAudio\(/);
+});
+
+test("un fichier de travail laisse par une execution tuee est balaye, et l'objet survit", async () => {
+  // B3e : le balayage porte sur le dossier de TRAVAIL, pas sur le dossier de
+  // l'enregistrement - il n'y en a plus. Ce qui ne change pas : un reste d'une
+  // execution morte ne doit ni s'accumuler, ni etre confondu avec l'audio.
+  const f = fixture();
+  const orphan = path.join(f.dir, "rec-0" + REDACT_SUFFIX);
   fs.writeFileSync(orphan, "debris from a run that died mid-scrub");
   const r = await redactor(f).remove(f.id, [{ index: 1, startMs: 7000 }]);
   assert.equal(r.ok, true);
   assert.equal(fs.existsSync(orphan), false, "the orphan is gone");
-  assert.equal(isSilent(f.audio, 7000, 14_000), true);
-  assert.equal(hasSound(f.audio, 0, 7000), true);
+  assert.equal(f.audioReplaced(), true, "et l'objet a bien ete remplace");
   cleanup(f);
 });
 
@@ -303,11 +384,13 @@ test("the sweep only ever touches its own suffix", async () => {
   cleanup(f);
 });
 
-test("a completed removal leaves no work file and no temporary behind", async () => {
+test("un retrait termine ne laisse aucun fichier de travail derriere lui", async () => {
+  // Les DEUX fichiers - la copie descendue et sa version nettoyee - partent dans
+  // un `finally`, y compris quand la remontee echoue. Un .wav d'une heure pese
+  // 115 Mo : deux restes par retrait rempliraient un disque en silence.
   const f = fixture();
   await redactor(f).remove(f.id, [{ index: 1, startMs: 7000 }]);
-  const left = fs.readdirSync(f.dir).sort();
-  assert.deepEqual(left, ["weekly-sync.md", "weekly-sync.wav"]);
+  assert.deepEqual(fs.readdirSync(f.dir).sort(), [], "le dossier de travail est vide");
   cleanup(f);
 });
 
@@ -320,7 +403,7 @@ test("a second removal, on the already-cleaned transcript, still works on the ri
   assert.equal(r.ok, true);
   assert.equal(isSilent(f.audio, 7000, 30_000), true);
   assert.equal(hasSound(f.audio, 0, 7000), true);
-  const doc = fs.readFileSync(f.doc, "utf8");
+  const doc = f.doc();
   assert.equal(doc.match(/Passage removed/g)?.length, 2);
   assert.match(doc, /Alpha\./);
   cleanup(f);
@@ -329,13 +412,13 @@ test("a second removal, on the already-cleaned transcript, still works on the ri
 test("a transcript too large to rewrite is refused rather than truncated", () => {
   // The one that would be catastrophic and silent: rewriting from a capped read
   // would drop everything past the cap while reporting a clean removal.
-  assert.ok(MAX_REDACT_DOC_BYTES > 5 * 1024 * 1024, "well above readHistoryDoc's display cap");
+  assert.ok(MAX_REDACT_DOC_BYTES > 5 * 1024 * 1024, "bien au-dessus du plafond d'AFFICHAGE (MAX_DOC_DISPLAY_BYTES)");
 });
 
 test("nothing removed is ever written to the log", async () => {
   const f = fixture();
   const lines: string[] = [];
-  const red = new Redactor({ historyRoot: () => f.root, log: (m) => lines.push(m) });
+  const red = new Redactor(f.deps({ log: (m) => lines.push(m) }));
   await red.remove(f.id, [{ index: 1, startMs: 7000 }]);
   assert.ok(lines.length > 0, "the operation is traceable");
   for (const l of lines) {

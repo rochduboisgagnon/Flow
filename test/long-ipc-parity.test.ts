@@ -103,11 +103,11 @@ test("uiBridge.ts decides UI_LONG_START through shared/longStart.ts, not an inli
 // and readHistoryDoc must be the identical named consts LocalApi's HTTP
 // /long/history* routes and UiBridge's UI_HISTORY_* channels both receive.
 const HISTORY_DEPS: Array<[prop: string, dep: string]> = [
-  ["listHistory", "listHistoryDep"],
-  ["readHistoryDoc", "readHistoryDocDep"],
+  ["listHistory", "listRecordingsDep"],
+  ["readHistoryDoc", "readRecordingDocDep"],
 ];
 
-test("index.ts defines each archive dep exactly once, as a named const built on listHistory/readHistoryDoc", () => {
+test("index.ts defines each archive dep exactly once, as a named const built on listRecordings/readRecordingDoc", () => {
   for (const [, dep] of HISTORY_DEPS) {
     const count = (INDEX_SRC.match(new RegExp(`const ${dep} = `, "g")) ?? []).length;
     assert.equal(count, 1, `${dep} must be declared exactly once (a second declaration is a parallel implementation)`);

@@ -69,13 +69,6 @@ export interface FlowSettings {
    * Turning it back off ERASES what was collected (mergeDays strips the field
    * from every day it writes), it does not merely pause the collection. */
   statsPerApp: boolean;
-  /** U2c: the 90-day retention purge is SUSPENDED on this machine. Set once,
-   * together with the field above, when we learn the (now fixed) history folder
-   * is not the one Flow was actually filing into: its dated folders are then a
-   * frozen archive Flow never managed, and Flow never deletes recordings it was
-   * not managing (non-negotiable rule: Roch). Settings > Storage is the only
-   * way back to false. */
-  historyPurgeSuspended: boolean;
 }
 
 export const SETTINGS_DEFAULTS: FlowSettings = {
@@ -100,7 +93,6 @@ export const SETTINGS_DEFAULTS: FlowSettings = {
   // plainly in Settings, and turned off in one click.
   loginItemInitialized: false, // false = the one-time "start with Windows" registration has not run yet
   legacyHistoryDir: "", // "" = this machine never had its own recordings folder
-  historyPurgeSuspended: false, // retention runs normally until we learn otherwise
   // U7a: the two halves of the statistics policy, and the ONLY place their
   // defaults are stated. A settings.json written before this wave carries
   // neither field, so the tolerant merge below leaves both at these values:
@@ -219,7 +211,10 @@ export function sanitizeSettings(raw: unknown): FlowSettings {
     out.batchModel = priorDictationModel;
   }
   if (typeof r.micDeviceId === "string") out.micDeviceId = r.micDeviceId;
-  // U2a: historyDir is gone (the recordings folder is fixed under dataDir()/history).
+  // B3d : `historyDir` et `historyPurgeSuspended` sont partis avec le dossier
+  // d'enregistrements. `legacyHistoryDir`, lui, RESTE : c'est le pointeur vers
+  // les reunions d'avant, et c'est desormais la seule chose que Flow sache dire
+  // a leur sujet.
   // A leftover historyDir from an older settings.json falls through unread here -
   // the tolerant merge drops unknown fields by construction, same as any other
   // retired setting.
@@ -251,7 +246,6 @@ export function sanitizeSettings(raw: unknown): FlowSettings {
   // beyond "is it a string"; a wrong-typed field falls back to "no legacy folder",
   // which is the safe direction (no note, no claim about anyone's data).
   if (typeof r.legacyHistoryDir === "string") out.legacyHistoryDir = r.legacyHistoryDir.trim();
-  if (typeof r.historyPurgeSuspended === "boolean") out.historyPurgeSuspended = r.historyPurgeSuspended;
   // U7a: literal booleans only, exactly like sounds/forceCpu above. A truthy
   // string ("false" is truthy) or a missing field falls back to the default,
   // which for statsPerApp is OFF - the safe direction for a privacy switch is

@@ -1,8 +1,13 @@
+import { createWriteStream } from "node:fs";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import type { SupabaseClient } from "./client";
 import type { DictEntry, DictKind } from "../../shared/ipcContracts";
 import type { StatsDay } from "../../shared/stats";
 import { retentionCutoff, type HistoryEntry } from "../../shared/dictationHistory";
 import type { OpenRecording, RecordingRow, RecordingSummary } from "../../shared/recordings";
+import { AUDIO_BUCKET } from "../../shared/tus";
+import { MAX_RECORDINGS_LISTED } from "../../shared/recordings";
 
 // ---------------------------------------------------------------------------
 // A3 : le depot. Toute lecture et toute ecriture des donnees de l'utilisateur
@@ -380,7 +385,12 @@ export class Repo {
   /** Une reunion avec son document. L'equivalent de l'ancien readHistoryDoc,
    * sans son schema d'identifiants opaques : le RLS remplace la verification de
    * confinement, et il la remplace mieux - un identifiant forge ne rend pas une
-   * ligne d'un autre compte, il ne rend rien. */
+   * ligne d'un autre compte, il ne rend rien.
+   *
+   * Aucun plafond ici : le tampon en amont borne deja le document a 8 Mo
+   * (shared/captureDoc.ts), et couper une reunion a la LECTURE ferait qu'une
+   * annotation la reecrirait tronquee. C'est l'affichage qui borne, pas le
+   * depot - voir MAX_DOC_DISPLAY_BYTES. */
   async readRecording(id: string): Promise<RepoResult<RecordingRow | null>> {
     const { data, error } = await this.client.from("recordings").select("*").eq("id", id).maybeSingle();
     if (error) return fail(null, error);
@@ -425,6 +435,64 @@ export class Repo {
     };
   }
 
+  // -------------------------------------------------------------------------
+  // B3e : L'AUDIO DANS STORAGE, EN LECTURE
+  //
+  // Le TELEVERSEMENT ne passe pas par ici : il parle TUS, en trois requetes
+  // HTTP, et il vit dans data/tusUpload.ts. Ce qui suit est la moitie lecture,
+  // que la bibliotheque cliente sait faire - donc quatre methodes courtes,
+  // plutot qu'un second protocole.
+  //
+  // AUCUNE ne rend une URL PUBLIQUE. Le seau est prive et doit le rester :
+  // l'audio d'une reunion en dit autant que son transcript, et un seau public
+  // rendrait le RLS des tables decoratif.
+  // -------------------------------------------------------------------------
+
+  /** L'objet audio en FLUX, pour le recopier sans le charger en memoire. Un .wav
+   * d'une heure pese 115 Mo : le mettre en tampon pour l'ecrire aussitot serait
+   * payer deux fois. */
+  async openAudioStream(objectName: string): Promise<RepoResult<Readable | null>> {
+    const { data, error } = await this.client.storage.from(AUDIO_BUCKET).download(objectName);
+    if (error || !data) return fail(null, error ?? { message: "objet introuvable" });
+    // Le client rend un Blob ; son `stream()` est un flux web, converti ici en
+    // flux Node. La conversion est paresseuse : rien n'est lu avant que le
+    // consommateur tire.
+    return { ok: true, data: Readable.fromWeb(data.stream() as Parameters<typeof Readable.fromWeb>[0]), error: "" };
+  }
+
+  /** L'objet audio DANS un fichier local. Sert au retrait d'un passage, qui doit
+   * pouvoir reecrire l'audio - mettre des zeros au milieu d'un objet distant
+   * n'existe pas. */
+  async downloadAudioTo(objectName: string, destPath: string): Promise<{ ok: boolean; error: string }> {
+    const got = await this.openAudioStream(objectName);
+    if (!got.ok || !got.data) return { ok: false, error: got.error };
+    try {
+      await pipeline(got.data, createWriteStream(destPath));
+      return { ok: true, error: "" };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+  }
+
+  /** Une URL SIGNEE, courte, pour qu'un lecteur audio puisse jouer l'objet.
+   *
+   * Une heure de validite : assez pour ecouter une reunion de trois heures avec
+   * des pauses, trop court pour qu'une URL copiee dans un message survive a la
+   * conversation. */
+  async signAudioUrl(objectName: string, seconds = 3600): Promise<RepoResult<string>> {
+    const { data, error } = await this.client.storage.from(AUDIO_BUCKET).createSignedUrl(objectName, seconds);
+    if (error || !data?.signedUrl) return fail("", error ?? { message: "signature impossible" });
+    return { ok: true, data: data.signedUrl, error: "" };
+  }
+
+  /** Supprime l'objet audio d'une reunion. Appele APRES la suppression de sa
+   * ligne : un objet orphelin coute de la place, alors qu'un audio supprime sous
+   * une reunion encore listee est un bouton qui ne rend rien. */
+  async deleteAudio(objectName: string): Promise<RepoResult<null>> {
+    const { error } = await this.client.storage.from(AUDIO_BUCKET).remove([objectName]);
+    return error ? fail(null, error) : { ok: true, data: null, error: "" };
+  }
+
   /** Journalise un echec d'ecriture SANS son contenu : ce qui rate ici, c'est
    * souvent une dictee, et une dictee est le texte de quelqu'un. */
   reportWriteFailure(what: string, r: RepoResult<unknown>): void {
@@ -432,10 +500,7 @@ export class Repo {
   }
 }
 
-/** Le meme plafond que l'ancienne archive disque (MAX_HISTORY_ITEMS valait
- * 2000). Il n'a pas change de valeur en changeant de support : ce qu'il borne
- * est ce qu'une page peut afficher, pas ce qu'un dossier peut contenir. */
-export const MAX_RECORDINGS_LISTED = 2000;
+
 
 // ---------------------------------------------------------------------------
 // Conversions ligne <-> forme applicative.

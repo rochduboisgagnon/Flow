@@ -51,8 +51,8 @@ import {
   type LongStopResult,
   type LongTranscriptResult,
   type LiveNotesResult,
-  type HistoryItem,
-  type HistoryDocPayload,
+  type RecordingSummary,
+  type RecordingDocPayload,
   type DownloadResult,
   type RedactTarget,
   type RedactResult,
@@ -138,12 +138,19 @@ export interface UiBridgeDeps {
 
   // ---- archive browser (U5a) ----
   // The SAME functions the HTTP /long/history* routes call (main/api.ts),
-  // identical closures to LocalApi's (index.ts's listHistoryDep &
-  // readHistoryDocDep) - never a second implementation.
-  listHistory(): HistoryItem[];
+  // identical closures to LocalApi's (index.ts's listRecordingsDep &
+  // readRecordingDocDep) - never a second implementation.
+  //
+  // B3e : les trois sont devenues ASYNCHRONES, et c'est le seul changement de
+  // forme que le passage au compte impose a ce fichier. Une lecture de dossier
+  // etait synchrone ; une lecture de ligne est un aller-retour reseau. `guarded`
+  // acceptait deja une promesse, donc rien d'autre n'a bouge - et surtout, aucune
+  // de ces trois-la n'est sur le chemin d'une dictee : elles servent une page que
+  // quelqu'un a ouverte.
+  listHistory(): Promise<RecordingSummary[]>;
   /** Deletes a capture, then answers with what is left. */
-  deleteHistory(id: string): HistoryItem[];
-  readHistoryDoc(id: string): HistoryDocPayload | null;
+  deleteHistory(id: string): Promise<RecordingSummary[]>;
+  readHistoryDoc(id: string): Promise<RecordingDocPayload | null>;
 
   // ---- capture downloads (U5c, Roch's decision) ----
   // Browser-style, straight into the OS Downloads folder - main-only, no HTTP
@@ -506,14 +513,14 @@ export class UiBridge {
     // Deliberately NOT cached (unlike UiStatePayload.recent / LongStateSnapshot.recent):
     // the Notes page pulls this on demand, not at 1 Hz under the keyboard hook,
     // and needs the EXACT on-disk state - see ipcContracts.ts's module note.
-    this.guarded<[], HistoryItem[]>(UI_HISTORY_LIST, [], () => this.deps.listHistory());
+    this.guarded<[], RecordingSummary[]>(UI_HISTORY_LIST, [], () => this.deps.listHistory());
     // The one channel here that DESTROYS a recording. Behind the same gate as
     // the rest, and answering with the refreshed list so a refused sender can
     // never make a page show a capture as gone when it is still on disk.
-    this.guarded<[unknown], HistoryItem[]>(UI_HISTORY_DELETE, [], (id) =>
+    this.guarded<[unknown], RecordingSummary[]>(UI_HISTORY_DELETE, [], (id) =>
       this.deps.deleteHistory(typeof id === "string" ? id : ""),
     );
-    this.guarded<[unknown], HistoryDocPayload | null>(UI_HISTORY_DOC, null, (id) =>
+    this.guarded<[unknown], RecordingDocPayload | null>(UI_HISTORY_DOC, null, (id) =>
       this.deps.readHistoryDoc(typeof id === "string" ? id : ""),
     );
 

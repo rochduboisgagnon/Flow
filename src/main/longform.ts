@@ -1,9 +1,7 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { dataDir } from "./settings";
 import { CaptureDoc } from "../shared/captureDoc";
 import { looksAbandoned, type OpenRecording, type RecordingRow } from "../shared/recordings";
 import { audioObjectName } from "../shared/tus";
@@ -25,30 +23,19 @@ import {
   markLine,
   gapLine,
   interruptedNote,
-  ENGINE_LINE,
   recordingBaseName,
   summaryPrompt,
   chunkTranscript,
-  spliceNotes,
   composeNotesBlock,
   renderMyNotes,
   transcriptStamps,
   verifyCitations,
-  MAX_HISTORY_ITEMS,
   type RecentEntry,
   type LongStateSnapshot,
   type LongStartResult,
   type LongStopResult,
   type LongTranscriptResult,
-  type HistoryItem,
-  type HistoryDocPayload,
 } from "../shared/longform";
-
-// U5a: HistoryItem/HistoryDocPayload now live in shared/longform.ts (same
-// reason RecentEntry & co. do - see that file's module note); re-exported here
-// so api.ts's existing `import type { HistoryItem } from "./longform"` keeps
-// working unchanged.
-export type { HistoryItem, HistoryDocPayload };
 
 // C2: a 44-byte canonical WAV header (16 kHz mono 16-bit). Written with a
 // placeholder size at native-capture start, then patched with the real sizes when
@@ -121,11 +108,6 @@ export interface LongDeps {
    * provider has, and asking it here is what made a second implementation mean
    * editing this file. */
   llm?: LlmProvider;
-  /** settings.historyPurgeSuspended, read LAZILY (this module never imports
-   * settings state - only dataDir()): true means the fixed history folder holds
-   * an archive Flow was not managing, so the retention purge must not run at
-   * all. Absent = not suspended, which is the normal case. */
-  historyPurgeSuspended?(): boolean;
   /** D7: the live-notes slot (main/liveNotes.ts). Injected rather than imported
    * for the same reason as everything else in this interface - so the recorder's
    * tests never touch the real ~/.flow - and OPTIONAL so a caller that has no
@@ -160,200 +142,74 @@ export interface LongDeps {
   /** B3c : confie l'audio d'une reunion terminee a la file de televersement.
    * Rend la main tout de suite - 115 Mo n'ont pas a retenir une finalisation. */
   uploadAudio?(recordingId: string): void;
-  /** Tests only: keep the app-owned staging folder away from the real ~/.flow. */
-  stagingRootOverride?: string;
-  /** Tests only: keep the retention history away from the real ~/.agr-flow. This is
-   * a TEST seam, not a user setting - U2a fixed the history folder at
-   * dataDir()/history, so production code never sets this. */
-  historyRootOverride?: string;
 }
 
 const MAX_QUEUE = 240; // ~100 min of backlog before we refuse to grow (safety)
 
-// B3a : RECENT_STATE_CACHE_MS et recentPath() sont partis avec recent.json. Le
-// cache existait parce que `state()` lisait un fichier JSON et faisait un
-// `existsSync` par entree, jusqu'a deux fois par seconde, sur le fil qui porte
-// le crochet clavier. Un champ en memoire n'a rien a mettre en cache : le
-// defaut a disparu avec sa cause, pas avec un correctif.
-
-// v6 c7 : la racine `staging/`, LEGACY depuis B3a. Plus rien n'y ecrit ; elle
-// n'est plus lue que par le balayage des dossiers laisses par une version
-// precedente de Flow (rescueOrphanedStaging).
-export function stagingRoot(): string {
-  return path.join(dataDir(), "staging");
-}
-
-// C10: a recording nobody explicitly filed at Stop still gets a home instead
-// of sitting invisible in staging forever - it lands here, bucketed by date,
-// and is purged after RETENTION_DAYS. U2a: FIXED under dataDir()/history, no
-// longer configurable (settings.historyDir is gone - two truths about where
-// recordings live was exactly the confusion a fixed folder ends).
-export function historyRoot(): string {
-  return historyRootFor(dataDir());
-}
-
-/** The history folder for a GIVEN data folder. Same rule as historyRoot(),
- * without the process-wide dataDir() cache: it is what lets a test assert the
- * fixed-folder rule against a sandboxed machine (the real dataDir() resolves
- * against the real home and caches its answer for the whole process). */
-export function historyRootFor(dir: string): string {
-  return path.join(dir, "history");
-}
-
-/** Copy a file INTO destDir without ever clobbering an existing user file: a
- * name collision gets a "-1", "-2"... suffix. COPY (not rename), so the source
- * stays put until BOTH files are safely in place - save() deletes the sources
- * only after committing (two-phase). copyFileSync works across volumes, so no
- * EXDEV special-casing is needed. */
-function copyFileInto(destDir: string, src: string): string {
-  const base = path.basename(src);
-  const ext = path.extname(base);
-  const stem = base.slice(0, base.length - ext.length);
-  let dest = path.join(destDir, base);
-  for (let i = 1; fs.existsSync(dest); i++) dest = path.join(destDir, stem + "-" + i + ext);
-  try {
-    fs.copyFileSync(src, dest);
-  } catch (err) {
-    // A failed copy can leave a truncated file (e.g. ENOSPC mid-write): remove it
-    // so the user's folder is never littered with partial debris, then rethrow so
-    // save()'s two-phase rollback runs.
-    try {
-      fs.rmSync(dest);
-    } catch {
-      /* nothing to clean */
-    }
-    throw err;
-  }
-  return dest;
-}
-
-/** Move `src` INTO destDir, with copyFileInto's exact no-clobber discipline
- * ("-1", "-2"... on a name collision). Tries an atomic rename FIRST: staging
- * and history both live under dataDir(), so the rename virtually always
- * applies, it costs the same whatever the file weighs (a multi-hour .wav runs
- * to hundreds of megabytes, and the SYNCHRONOUS quit rescue cannot afford to
- * copy that byte by byte while the user waits for the app to close), and it
- * never leaves a half-written destination behind. Falls back to the two-phase
- * copy-then-delete when rename cannot apply (EXDEV across volumes, a locked
- * file). Throws only when BOTH failed - and then nothing was destroyed. */
-function moveFileInto(destDir: string, src: string): string {
-  const base = path.basename(src);
-  const ext = path.extname(base);
-  const stem = base.slice(0, base.length - ext.length);
-  let dest = path.join(destDir, base);
-  for (let i = 1; fs.existsSync(dest); i++) dest = path.join(destDir, stem + "-" + i + ext);
-  try {
-    fs.renameSync(src, dest);
-    return dest;
-  } catch {
-    /* cross-volume or locked: fall through to the copy that always works */
-  }
-  const copied = copyFileInto(destDir, src);
-  try {
-    fs.rmSync(src);
-  } catch {
-    // The copy is in place, so nothing is lost; a source we could not remove
-    // only costs app-owned disk, and the next startup rescan will see it.
-  }
-  return copied;
-}
-
-/** Remove `dir` and any now-empty ancestor directories, up to but never
- * including `root`. Generalizes the old single-level staging cleanup (v6 c7)
- * to also cover history's two-level layout (C10: <root>/<date>/<title>/,
- * cleaning both the emptied recording folder AND the emptied date folder).
- * NEVER touches anything outside `root` (a user's own folder, or root itself,
- * is left exactly as it is). */
-function cleanEmptyHoldingDirs(root: string, dir: string): void {
-  let cur = dir;
-  for (;;) {
-    try {
-      const rel = path.relative(root, cur);
-      if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return; // outside (or IS) root: stop
-      if (fs.readdirSync(cur).length > 0) return; // not empty: nothing more to clean
-      fs.rmdirSync(cur);
-    } catch {
-      return; // best effort: a leftover folder costs a little disk, never data
-    }
-    cur = path.dirname(cur);
-  }
-}
-
-/** Create a fresh subfolder under `parent`: a name clash (same title within
- * the same minute, or a stray leftover) gets a "-1", "-2"... suffix rather
- * than reusing someone else's folder. Same collision discipline as
- * copyFileInto, one level up. */
-function uniqueDir(parent: string, name: string): string {
-  let dir = path.join(parent, name);
-  for (let i = 1; fs.existsSync(dir); i++) dir = path.join(parent, name + "-" + i);
-  fs.mkdirSync(dir, { recursive: true });
-  return dir;
-}
-
-/** Local YYYY-MM-DD for a Date, matching the stamp style used elsewhere
- * (recordingBaseName): the folder name purgeHistory later parses back. */
-function ymd(d: Date): string {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
-}
-
-// ---- C10: retention purge ----
-
-const RETENTION_DAYS = 90;
-const DATE_DIR_RE = /^\d{4}-\d{2}-\d{2}$/; // must match ymd() exactly
-
-// U2a: historyRoot() is now FIXED (dataDir()/history) - historyDir the setting
-// is gone. Every guardrail below (marker gate, dangerous-root check, item cap)
-// was written back when the folder was user-configurable; they still hold, so
-// they stay, unchanged in behavior.
+// ---------------------------------------------------------------------------
+// B3d : `history/` ET `staging/` ONT DISPARU.
 //
-// U2c: they are NOT sufficient, which is why purgeHistory() gained a suspension
-// switch above them. On a machine that had moved its recordings elsewhere, the
-// fixed folder was frozen the day the user switched - and it carries the marker
-// from when it WAS the default, so the marker gate happily authorizes deleting
-// an untouched years-old archive on the first boot after the update. Only
-// knowing that Flow was not the one filing into it can stop that.
+// Ce qui est parti d'ici, et ou chaque protection est passee :
+//
+//  - `historyRoot()`, `stagingRoot()`, `recentPath()` : trois dossiers sous
+//    dataDir(). Le grep du plan est maintenant vrai - ce module n'appelle plus
+//    `dataDir()` du tout, et le seul chemin qu'il connait lui est INJECTE
+//    (`pendingAudioDir`, le .wav en transit).
+//
+//  - LA PURGE DE RETENTION (90 jours) et ses garde-fous : le marqueur de
+//    dossier, le refus d'operer sur une racine de volume ou un enfant du profil,
+//    le lstat qui ne suit jamais un lien, le nom de dossier qui doit
+//    correspondre exactement a une date. Tous existaient pour rendre sur un
+//    `rm -rf` recursif sur un chemin configurable. Il n'y a plus de rm.
+//
+//    La retention, elle, N'A PAS disparu : elle vit cote base pour les dictees
+//    (Repo.purgeOldDictations), qui est la ou le constat de securite F3/F9 la
+//    demandait. Les enregistrements n'en ont jamais eu besoin - la fenetre de
+//    90 jours etait une propriete du DOSSIER, une facon de ne pas laisser un
+//    disque grossir sans fin, pas une promesse faite a quelqu'un.
+//
+//  - `fileRecordingIntoHistory`, `moveFileInto`, `copyFileInto`,
+//    `cleanEmptyHoldingDirs`, `readStagedSession`, `noteInterruption`,
+//    `spliceMyNotesSync`, `rescueOrphanedStaging` : le classement d'un document
+//    dans un dossier date, et son sauvetage. Remplaces par une ligne du compte
+//    qui existe des le premier instant et que `rescueAbandoned()` ferme.
+//
+// ET LE DOSSIER QUI EXISTE DEJA SUR LA MACHINE DE QUELQU'UN ? Il n'est ni lu ni
+// supprime : main/index.ts le signale comme un dossier d'enregistrements que
+// Flow ne gere plus, par le MEME mecanisme qui signalait deja celui d'une
+// version pre-1.0.0 (main/legacyHistory.ts). La reponse a « ou sont passes mes
+// enregistrements » n'est donc jamais « nulle part » - elle est un chemin, dans
+// Reglages et dans la page Notes.
+// ---------------------------------------------------------------------------
 
-/** True when `p` resolves to a filesystem/volume root (e.g. "C:\", "/"), the
- * user's own profile root, or an IMMEDIATE child of the profile (Documents,
- * Desktop, OneDrive-redirected folders...) - the purge must refuse to operate
- * there even if the history root was ever misdirected at one (non-negotiable
- * guardrail: a bad root must never turn into deleting real folders). Review
- * C10 F1: the profile-child rule still allows the default ~/.agr-flow/history
- * (parent is .agr-flow) and any dedicated folder on another drive. */
-function isDangerousPurgeRoot(p: string): boolean {
-  const resolved = path.resolve(p);
-  if (path.dirname(resolved) === resolved) return true; // a volume/filesystem root
-  const home = path.resolve(os.homedir());
-  if (resolved === home) return true; // the user's profile root
-  if (path.dirname(resolved) === home) return true; // Documents, Desktop, OneDrive... never purge grounds
-  return false;
-}
-
-/** Security scan F1 (MEDIUM, 3/3, 2026-08-02): `/long/save` took the caller's
- * destination folder raw - `statSync` said "is it a directory", nothing said
- * "should we be writing there". That is a write-anywhere-this-user-can-write
- * primitive, and worse, a UNC destination turns a local save into an outbound
- * copy plus an SMB/NTLM authentication to a host the caller names.
+/** Un dossier de destination, refuse quand il n'en est pas un.
  *
- * WHAT THIS REFUSES, and why each one rather than a blanket allowlist:
+ * Security scan F1 (MEDIUM, 3/3, 2026-08-02) : `/long/save` prenait le dossier
+ * de l'appelant tel quel - `statSync` disait « est-ce un dossier », rien ne
+ * disait « devrait-on y ecrire ». C'est une primitive d'ecriture partout ou cet
+ * utilisateur peut ecrire, et pire, une destination UNC transforme un
+ * enregistrement local en copie sortante PLUS une authentification SMB/NTLM vers
+ * un hote que l'appelant nomme.
  *
- *  - Anything not absolute. A relative path resolves against Flow's cwd, which
- *    is a coincidence, never an intention.
- *  - UNC and device paths (`\\host\share`, `\\?\`, `\\.\`). This is the one that
- *    matters: it is the difference between "a file lands in an odd folder" and
- *    "the recording leaves the machine and takes a credential handshake with
- *    it". No legitimate Save flow has ever passed one.
- *  - A junction or symlink that lands on either of the above once resolved -
- *    checked on the REAL path, because otherwise the check is decoration.
+ * CE QUE CA REFUSE, et pourquoi chacun plutot qu'une liste blanche :
  *
- * WHAT IT DELIBERATELY DOES NOT DO: confine the destination to the user's
- * profile. Saving a recording to D:\Recordings is a thing a person does, and
- * this function must not decide it is suspicious. With F2 landed the caller is
- * authenticated - Flow itself or a sibling app - so "writes to an unusual local
- * folder" is a choice, while "writes to a remote host" is an exfiltration.
- * Drawing the line there is the honest place to draw it, and saying so beats
- * implying this returns the destination to a sandbox. */
+ *  - Ce qui n'est pas absolu. Un chemin relatif se resout contre le repertoire
+ *    courant de Flow, ce qui est une coincidence, jamais une intention.
+ *  - Les chemins UNC et peripheriques (`\\host\share`, `\\?\`, `\\.\`). C'est
+ *    celui qui compte : la difference entre « un fichier atterrit dans un dossier
+ *    bizarre » et « l'enregistrement quitte la machine en emportant une poignee
+ *    de main d'authentification ». Aucun flux d'export legitime n'en a jamais
+ *    passe un.
+ *  - Une jonction ou un lien qui aboutit sur l'un des deux apres resolution -
+ *    verifie sur le chemin REEL, sinon la verification est decorative.
+ *
+ * CE QUE CA NE FAIT DELIBEREMENT PAS : confiner la destination au profil de
+ * l'utilisateur. Exporter vers D:\Recordings est une chose qu'une personne fait,
+ * et cette fonction ne doit pas decider que c'est suspect. « Ecrit dans un
+ * dossier local inhabituel » est un choix ; « ecrit vers un hote distant » est
+ * une exfiltration. Tracer la ligne la est l'endroit honnete de la tracer, et le
+ * dire vaut mieux que laisser croire que ceci rend la destination a un bac a
+ * sable. */
 export function refuseUnsafeDestination(dir: string): string | null {
   const looksRemote = (p: string): boolean => {
     const s = p.replace(/\//g, "\\");
@@ -366,9 +222,9 @@ export function refuseUnsafeDestination(dir: string): string | null {
     return "refused: the destination folder must be an absolute path";
   }
   try {
-    // Follows junctions and symlinks. A folder that does not exist yet fails
-    // here and is reported by the caller's own statSync a moment later, so an
-    // unreadable path is never silently treated as safe.
+    // Suit les jonctions et les liens. Un dossier qui n'existe pas encore echoue
+    // ici et est rapporte par le `statSync` de l'appelant un instant plus tard,
+    // donc un chemin illisible n'est jamais traite comme sur en silence.
     if (looksRemote(fs.realpathSync(dir))) {
       return "refused: that folder resolves to a network path";
     }
@@ -378,634 +234,15 @@ export function refuseUnsafeDestination(dir: string): string | null {
   return null;
 }
 
-/** Review C10 F1 (marker gate): the purge only ever operates on a folder AGR
- * Flow itself established as a history root. fileIntoHistory drops this marker
- * when it creates the root; purgeHistoryDirs bails when it is absent. A
- * history root pointed at ANY pre-existing folder (the vault, an export dir)
- * therefore can never be purged, no matter what dated subfolders it holds. */
-const HISTORY_MARKER = ".agr-flow-history";
-function ensureHistoryRoot(root: string): void {
-  fs.mkdirSync(root, { recursive: true });
-  const m = path.join(root, HISTORY_MARKER);
-  if (!fs.existsSync(m))
-    fs.writeFileSync(m, "AGR Flow history root. The retention purge only operates on folders carrying this marker.\n");
+/** Cree un sous-dossier NEUF sous `parent` : une collision de nom (meme titre
+ * dans la meme minute, ou un reste d'un export precedent) recoit un suffixe
+ * « -1 », « -2 »... plutot que de reutiliser le dossier de quelqu'un d'autre. */
+function uniqueDir(parent: string, name: string): string {
+  let dir = path.join(parent, name);
+  for (let i = 1; fs.existsSync(dir); i++) dir = path.join(parent, name + "-" + i);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
 }
-
-/** Delete date-named (YYYY-MM-DD) subfolders of `root` older than
- * RETENTION_DAYS. Guardrails, all non-negotiable (design review):
- *  - only an entry whose NAME matches DATE_DIR_RE is ever considered; age is
- *    judged by that name, never by mtime, and no other entry is touched.
- *  - lstat before acting: a symlink/junction entry is never followed into -
- *    only the link itself may be removed (unlink, never a recursive rm), so
- *    its target is never touched no matter what it points at.
- *  - refuses outright if `root` resolves to a volume root or the user's
- *    profile root.
- * Best-effort and silent beyond one summary log line: a purge failure must
- * NEVER block a recording from starting. */
-function purgeHistoryDirs(root: string, log?: (msg: string) => void): void {
-  try {
-    if (isDangerousPurgeRoot(root)) {
-      log?.(`[long] history purge refused: root looks unsafe (${root})`);
-      return;
-    }
-    // Review C10 F1: no marker = not a folder this app established -> never purge.
-    // Covers both "no history yet" and "root points at someone's real folder".
-    if (!fs.existsSync(path.join(root, HISTORY_MARKER))) return;
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(root, { withFileTypes: true });
-    } catch {
-      return; // no history folder yet: nothing to purge
-    }
-    const cutoff = Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000;
-    let removed = 0;
-    for (const entry of entries) {
-      if (!DATE_DIR_RE.test(entry.name)) continue; // name must match exactly; never touch anything else
-      const full = path.join(root, entry.name);
-      const folderDate = new Date(entry.name + "T00:00:00");
-      if (Number.isNaN(folderDate.getTime()) || folderDate.getTime() >= cutoff) continue; // within retention
-      let st: fs.Stats;
-      try {
-        st = fs.lstatSync(full); // lstat: decide WITHOUT ever following a symlink/junction
-      } catch {
-        continue;
-      }
-      if (st.isSymbolicLink()) {
-        // The stale link entry is app-owned bookkeeping and may be removed,
-        // but its target is never touched: unlink the link, never rm -r it.
-        try {
-          fs.unlinkSync(full);
-          removed++;
-        } catch {
-          /* best effort */
-        }
-        continue;
-      }
-      if (!st.isDirectory()) continue; // a stray file named like a date: leave it alone
-      try {
-        fs.rmSync(full, { recursive: true, force: true });
-        removed++;
-      } catch {
-        /* best effort: a locked file just waits for the next purge */
-      }
-    }
-    if (removed > 0) log?.(`[long] history purge: removed ${removed} folder(s) older than ${RETENTION_DAYS} days`);
-  } catch (err) {
-    log?.(`[long] history purge failed: ${err}`);
-  }
-}
-
-// ---- filing a finished recording into the archive (C10 + U4) ----
-
-/** The date folder a recording is filed under. Normally the day it was
- * recorded, EXCEPT when that day already sits outside the retention window:
- * a recording recovered from a machine that stayed off for four months would
- * then land straight in a bucket the very next purge deletes - Flow would have
- * "rescued" a meeting into the bin. Such a recording is filed under TODAY
- * instead, so the user gets the full window to notice it; the document's own
- * header still states the real recording date, so nothing is misrepresented.
- *
- * The comparison mirrors purgeHistoryDirs' arithmetic exactly: the purge judges
- * a folder by the MIDNIGHT its name decodes to, never by the instant inside it. */
-function historyDateFolder(startedMs: number, now = Date.now()): string {
-  const cutoff = now - RETENTION_DAYS * 24 * 60 * 60 * 1000;
-  if (Number.isFinite(startedMs) && startedMs > 0) {
-    const name = ymd(new Date(startedMs));
-    const midnight = new Date(name + "T00:00:00").getTime();
-    if (!Number.isNaN(midnight) && midnight >= cutoff) return name;
-  }
-  return ymd(new Date(now));
-}
-
-export interface FiledRecording {
-  dir: string;
-  docPath: string;
-  audioPath: string; // "" when no audio was kept
-}
-
-/** File a finished recording into `<historyRoot>/<date>/<name>/`. ONE
- * implementation behind the FOUR ways a recording reaches the archive -
- * finalize()'s normal staged landing, the synchronous quit rescue, the startup
- * rescan of orphaned staging folders, and (V4 D2) an audio file import - so a
- * guardrail cannot hold on one path and quietly not on another.
- *
- * Order of operations, and why it is that order:
- *  - the DOCUMENT moves first and alone. If that fails, nothing was touched:
- *    the caller still has a complete recording exactly where it was, and the
- *    next startup rescan will try again.
- *  - the audio follows only when the user asked to keep it. A failure there is
- *    logged and swallowed: a transcript in the archive beats a rollback that
- *    would put the meeting back into a folder nothing lists.
- *  - the .wav is removed ONLY when keepAudio is false, and only once the
- *    document is safely filed. That is the sole deletion this function can
- *    ever perform, it concerns the audio alone, and it happens because the
- *    user explicitly unchecked "Keep the audio file". The recording itself
- *    (the document) is never deleted by Flow, on any path.
- * Returns null when nothing was filed. Never throws. */
-export function fileRecordingIntoHistory(opts: {
-  historyRoot: string;
-  docPath: string;
-  audioPath: string;
-  keepAudio: boolean;
-  startedMs: number;
-  log?: (msg: string) => void;
-}): FiledRecording | null {
-  const { historyRoot: root, docPath, audioPath, keepAudio, startedMs, log } = opts;
-  let destDir: string;
-  try {
-    ensureHistoryRoot(root); // review C10 F1: the marker makes the root purgeable
-    const dateDir = path.join(root, historyDateFolder(startedMs));
-    fs.mkdirSync(dateDir, { recursive: true });
-    destDir = uniqueDir(dateDir, path.basename(docPath, ".md"));
-  } catch (err) {
-    log?.(`[long] cannot prepare the history folder: ${err}`);
-    return null;
-  }
-  let newDoc: string;
-  try {
-    newDoc = moveFileInto(destDir, docPath);
-  } catch (err) {
-    try {
-      fs.rmdirSync(destDir); // empty by construction: leave no debris behind
-    } catch {
-      /* best effort */
-    }
-    log?.(`[long] could not file the recording into history: ${err}`);
-    return null;
-  }
-  let newAudio = "";
-  if (audioPath && fs.existsSync(audioPath)) {
-    if (keepAudio) {
-      try {
-        newAudio = moveFileInto(destDir, audioPath);
-      } catch (err) {
-        log?.(`[long] the transcript was filed but its .wav could not follow (left where it was): ${err}`);
-      }
-    } else {
-      try {
-        fs.rmSync(audioPath);
-        log?.("[long] audio dropped: the recording asked not to keep the .wav");
-      } catch (err) {
-        log?.(`[long] could not drop the .wav the recording asked not to keep: ${err}`);
-      }
-    }
-  }
-  return { dir: destDir, docPath: newDoc, audioPath: newAudio };
-}
-
-/** Everything needed to file an ORPHANED staging folder, read back from what
- * the folder already carries - no bookkeeping sidecar to keep in sync, and
- * nothing a session that died mid-write could have failed to write: start()
- * writes the document's header (title + start instant) before the first chunk
- * ever arrives, and names the staging folder "<epoch ms>-<random>". */
-function readStagedSession(
-  dir: string,
-  folderName: string,
-): { docPath: string; audioPath: string; title: string; startedMs: number; startedIso: string } | null {
-  let files: fs.Dirent[];
-  try {
-    files = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return null;
-  }
-  let docPath = "";
-  let audioPath = "";
-  for (const f of files) {
-    if (!f.isFile()) continue;
-    // ".md" excludes a ".md.tmp" left by an interrupted atomic swap: a torn
-    // temporary file is never mistaken for the document.
-    if (!docPath && f.name.toLowerCase().endsWith(".md")) docPath = path.join(dir, f.name);
-    else if (!audioPath && f.name.toLowerCase().endsWith(".wav")) audioPath = path.join(dir, f.name);
-  }
-  if (!docPath) return null;
-  let title = path.basename(docPath, ".md");
-  let startedMs = NaN;
-  // D7: the start instant EXACTLY as the header spells it, not re-derived from
-  // startedMs. It is the key the live-notes slot is filed under, and a
-  // round-trip through Date.parse and toISOString would not reproduce it byte
-  // for byte for every ISO form - a mismatch there would silently drop the
-  // user's notes instead of merging them.
-  let startedIso = "";
-  try {
-    const head = fs.readFileSync(docPath, "utf8").slice(0, 512);
-    const t = head.match(/^# (.+)$/m);
-    if (t) title = t[1].trim() || title;
-    const r = head.match(/^- recorded: (.+)$/m);
-    if (r) {
-      startedIso = r[1].trim();
-      const ms = Date.parse(startedIso);
-      if (!Number.isNaN(ms)) startedMs = ms;
-    }
-  } catch {
-    /* the header is a convenience; the folder name below is the floor */
-  }
-  if (Number.isNaN(startedMs)) {
-    const stamp = Number(folderName.split("-")[0]);
-    if (Number.isFinite(stamp) && stamp > 0) startedMs = stamp;
-  }
-  if (Number.isNaN(startedMs)) {
-    try {
-      startedMs = fs.statSync(docPath).mtimeMs;
-    } catch {
-      startedMs = Date.now();
-    }
-  }
-  return { docPath, audioPath, title, startedMs, startedIso };
-}
-
-/** Insert the interruption note at the TOP of the document, right under the
- * header, rather than appending it at the end: whoever opens a three-hour
- * transcript has to learn that it is incomplete without scrolling to the
- * bottom. Best effort and never destructive - a document that cannot be
- * rewritten gets the note appended instead, and if THAT fails too the recording
- * is still filed (a missing note is a disappointment; a lost meeting is the bug
- * being fixed here).
- *
- * V4 D2 reuses it for the partial-import note, which needs the identical
- * treatment for the identical reason: whoever opens the document has to learn
- * that it covers only part of the audio without scrolling to the bottom. The
- * name says "interruption" because that is what it was written for; what it
- * DOES is "put this note right under the header, atomically, best effort". */
-/** D7: write a "## Notes" block into a document, SYNCHRONOUSLY and atomically.
- *
- * Used by the two interrupted paths - the quit rescue (which runs inside
- * before-quit, where Electron awaits nothing) and the boot rescan of an orphaned
- * staging folder - so a meeting that ended in a crash still carries the notes the
- * user typed during it. finalize() does its own splice instead, because it also
- * has generated notes to fold in and a summary to await.
- *
- * ORDER MATTERS, and it is the opposite of what looks right. noteInterruption()
- * puts its warning immediately under the header, so it must run BEFORE this: a
- * splice moves whatever it finds at the top of the body down into the transcript
- * region, so a warning inserted afterwards would end up above the notes block
- * and the body would no longer START with "## Notes" - which is exactly the
- * anchor shared/redact.ts uses to find the derived notes and drop them on a
- * passage removal (see MY_NOTES_HEADING's note in shared/longform.ts). Splicing
- * last therefore keeps the redaction complete, at the cost of the interruption
- * warning sitting just above the transcript instead of just below the header -
- * which is where the existing regenerate path has always put it anyway.
- *
- * Best effort in the strict sense: a document that cannot be rewritten keeps its
- * transcript and loses the block. Returns whether the notes reached the file, so
- * the caller only clears the slot when they actually did. */
-export function spliceMyNotesSync(
-  docPath: string,
-  header: string,
-  notes: ReadonlyArray<{ atMs: number; text: string }>,
-  log?: (msg: string) => void,
-): boolean {
-  const block = renderMyNotes(notes);
-  if (!block) return false;
-  try {
-    const doc = fs.readFileSync(docPath, "utf8");
-    const tmp = docPath + ".tmp";
-    fs.writeFileSync(tmp, spliceNotes(doc, header, block));
-    fs.renameSync(tmp, docPath);
-    return true;
-  } catch (err) {
-    log?.(`[long] could not write the notes you typed into ${docPath} (the transcript is intact): ${err}`);
-    return false;
-  }
-}
-
-export function noteInterruption(docPath: string, note: string, log?: (msg: string) => void): void {
-  try {
-    const doc = fs.readFileSync(docPath, "utf8");
-    const at = doc.indexOf(ENGINE_LINE);
-    if (at < 0) {
-      fs.appendFileSync(docPath, note);
-      return;
-    }
-    const cut = at + ENGINE_LINE.length;
-    // Atomic swap, same discipline as the summary and notes splices.
-    const tmp = docPath + ".tmp";
-    fs.writeFileSync(tmp, doc.slice(0, cut) + note + doc.slice(cut));
-    fs.renameSync(tmp, docPath);
-  } catch (err) {
-    log?.(`[long] could not place the interruption note at the top: ${err}`);
-    try {
-      fs.appendFileSync(docPath, note);
-    } catch {
-      /* filing the recording matters more than annotating it */
-    }
-  }
-}
-
-// ---- Archive 2026-07-14: history browsing (list + resolve) ----
-//
-// The PWA never sends a filesystem path. Every history entry is addressed by
-// an OPAQUE id (base64url of "<date>/<titleFolder>", both single path
-// segments). On every request the engine re-enumerates the real history dirs
-// and only ever serves a directory that (a) decodes to two clean segments,
-// (b) resolves, via path.resolve, INSIDE historyRoot, and (c) still shows up
-// in a fresh listHistory() scan. A forged/stale id is a 404, never a read
-// outside historyRoot (security review: this is the whole point of the id
-// scheme, not an incidental detail).
-
-// The cap itself now lives in shared/longform.ts: the Notes page has to be able
-// to tell the user when the listing was truncated, and a second copy of the
-// number here is a second source of truth the page could drift from (U5 review,
-// MAJEUR 4). The walk below is still the ONE place that enforces it.
-
-/** True when `p` is a REAL directory: lstat says directory, and says it is not
- * a symlink/junction. lstat and never stat, so the decision is made about the
- * entry itself and can never follow a link out of the history root. The ONE
- * expression of that rule, shared by listHistory's walk and by
- * resolveHistoryEntry's direct lookup - the two must not be able to drift. */
-function isRealDirectory(p: string): boolean {
-  try {
-    const st = fs.lstatSync(p);
-    return st.isDirectory() && !st.isSymbolicLink();
-  } catch {
-    return false;
-  }
-}
-
-/** Enumerate `<root>/<YYYY-MM-DD>/<title>/` recordings, newest first. Marker-gated
- * like the purge (never lists a folder AGR Flow did not itself establish as a
- * history root). Never follows a symlinked date or title folder - lstat decides,
- * matching purgeHistoryDirs' discipline. `log` is optional (tests/pure callers
- * don't need one); when given, a truncated listing logs once instead of failing
- * silently. */
-export function listHistory(root: string = historyRoot(), log?: (msg: string) => void): HistoryItem[] {
-  const items: HistoryItem[] = [];
-  try {
-    if (!fs.existsSync(path.join(root, HISTORY_MARKER))) return [];
-    let dateEntries: fs.Dirent[];
-    try {
-      dateEntries = fs.readdirSync(root, { withFileTypes: true });
-    } catch {
-      return [];
-    }
-    // Newest date first, so the cap below keeps the most recent recordings
-    // rather than an arbitrary directory-listing order.
-    const dateNames = dateEntries
-      .filter((e) => DATE_DIR_RE.test(e.name))
-      .map((e) => e.name)
-      .sort()
-      .reverse();
-    let truncated = false;
-    for (const dateName of dateNames) {
-      if (items.length >= MAX_HISTORY_ITEMS) {
-        truncated = true;
-        break;
-      }
-      const dateDir = path.join(root, dateName);
-      if (!isRealDirectory(dateDir)) continue; // never follow a linked date dir
-      let subEntries: fs.Dirent[];
-      try {
-        subEntries = fs.readdirSync(dateDir, { withFileTypes: true });
-      } catch {
-        continue;
-      }
-      const dayItems: HistoryItem[] = [];
-      for (const sub of subEntries) {
-        const folderDir = path.join(dateDir, sub.name);
-        if (!isRealDirectory(folderDir)) continue; // never follow a linked title dir
-        let files: fs.Dirent[];
-        try {
-          files = fs.readdirSync(folderDir, { withFileTypes: true });
-        } catch {
-          continue;
-        }
-        let docFile = "";
-        let audioFile = "";
-        for (const f of files) {
-          if (!f.isFile()) continue;
-          if (!docFile && f.name.toLowerCase().endsWith(".md")) docFile = f.name;
-          else if (!audioFile && f.name.toLowerCase().endsWith(".wav")) audioFile = f.name;
-        }
-        if (!docFile) continue; // no transcript: nothing worth surfacing
-        let docStat: fs.Stats;
-        try {
-          docStat = fs.statSync(path.join(folderDir, docFile));
-        } catch {
-          continue;
-        }
-        let audioBytes = 0;
-        let hasAudio = false;
-        if (audioFile) {
-          try {
-            audioBytes = fs.statSync(path.join(folderDir, audioFile)).size;
-            hasAudio = true;
-          } catch {
-            hasAudio = false;
-          }
-        }
-        dayItems.push({
-          id: historyEntryId(folderDir),
-          date: dateName,
-          title: sub.name,
-          hasAudio,
-          audioBytes,
-          docBytes: docStat.size,
-          savedMs: docStat.mtimeMs,
-        });
-      }
-      dayItems.sort((a, b) => b.savedMs - a.savedMs);
-      for (const item of dayItems) {
-        if (items.length >= MAX_HISTORY_ITEMS) {
-          truncated = true;
-          break;
-        }
-        items.push(item);
-      }
-    }
-    if (truncated) log?.(`[long] history listing truncated at ${MAX_HISTORY_ITEMS} entries`);
-  } catch (err) {
-    log?.(`[long] history listing failed: ${err}`);
-  }
-  return items;
-}
-
-/** True when `s` is anything other than a single clean path segment: empty,
- * contains a separator of either flavor, an embedded "..", or a drive/UNC
- * prefix. Applied to BOTH decoded segments of a history id - the whole point
- * of the id scheme is that neither segment can smuggle a path out of
- * historyRoot. */
-function isUnsafePathSegment(s: string): boolean {
-  if (!s) return true;
-  if (s.includes("\\") || s.includes("/")) return true;
-  if (s.includes("..")) return true;
-  if (/^[a-zA-Z]:/.test(s)) return true; // drive prefix, e.g. "C:"
-  return false;
-}
-
-/** Decode an opaque history id and resolve it to the on-disk recording folder.
- * Returns null on any failure - a forged id, a stale id whose folder was
- * purged, a symlink, or a path that would resolve outside historyRoot - never
- * partial information.
- *
- * U5 review, constat 2: this used to finish with `listHistory(root).find(...)`,
- * i.e. a full SYNCHRONOUS walk of the entire archive (a readdir of the root,
- * then per date folder an lstat + readdir, then per recording an lstat + readdir
- * + one or two stats) on the main process, the one carrying the keyboard hook.
- * That walk ran on every download AND on every Range request - and the audio
- * player emits one Range request per seek, so scrubbing a track re-enumerated
- * years of recordings per drag.
- *
- * The id already encodes everything needed to go straight to the folder: it is
- * the base64url of "<date>/<title>", two single path segments. So the lookup is
- * now direct, and each guarantee the walk used to provide incidentally is
- * asserted explicitly and locally, at O(1) filesystem calls whatever the
- * archive holds:
- *  - marker gate: the same `.agr-flow-history` check listHistory does, so a
- *    root Flow did not itself establish still serves nothing.
- *  - the DATE folder is checked on its own (isRealDirectory, shared with
- *    listHistory): a symlinked/junctioned date folder is never walked into,
- *    which the old code only got by virtue of the enumeration skipping it.
- *  - the recording folder itself: same lstat, unchanged.
- *  - the entry must actually carry a transcript, or it does not exist as far as
- *    this function is concerned - unchanged, and the same rule listHistory uses
- *    to decide an entry is worth surfacing.
- * The containment check (never a path outside historyRoot) was always local and
- * is untouched. */
-export function resolveHistoryEntry(
-  id: string,
-  root: string = historyRoot(),
-): { dir: string; doc: string | null; audio: string | null } | null {
-  if (!id) return null;
-  let rel: string;
-  try {
-    const buf = Buffer.from(id, "base64url");
-    // base64url decoding never throws on garbage input (invalid characters are
-    // just dropped), so a roundtrip check is the actual "did this decode
-    // cleanly" gate: a forged/truncated id will not re-encode to itself.
-    if (buf.toString("base64url") !== id) return null;
-    rel = buf.toString("utf8");
-  } catch {
-    return null;
-  }
-  const slash = rel.indexOf("/");
-  if (slash <= 0 || slash === rel.length - 1) return null;
-  const date = rel.slice(0, slash);
-  const folder = rel.slice(slash + 1);
-  if (isUnsafePathSegment(date) || isUnsafePathSegment(folder)) return null;
-  if (!DATE_DIR_RE.test(date)) return null;
-  const resolvedRoot = path.resolve(root);
-  const dir = path.join(resolvedRoot, date, folder);
-  const resolvedDir = path.resolve(dir);
-  // Containment check (non-negotiable): the resolved dir must sit strictly
-  // inside historyRoot, never AT it (that would mean an empty folder name).
-  if (!resolvedDir.startsWith(resolvedRoot + path.sep)) return null;
-  // Marker gate, byte-for-byte listHistory's own check: a folder AGR Flow did
-  // not establish as a history root is never served, whatever it contains.
-  if (!fs.existsSync(path.join(root, HISTORY_MARKER))) return null;
-  // The date folder, then the recording folder. Both must be real directories,
-  // neither may be a symlink/junction: resolving "through" a linked date folder
-  // would be a read outside historyRoot in everything but the string.
-  if (!isRealDirectory(path.join(resolvedRoot, date))) return null;
-  if (!isRealDirectory(resolvedDir)) return null;
-  let doc: string | null = null;
-  let audio: string | null = null;
-  try {
-    const files = fs.readdirSync(resolvedDir, { withFileTypes: true });
-    for (const f of files) {
-      if (!f.isFile()) continue;
-      if (!doc && f.name.toLowerCase().endsWith(".md")) doc = path.join(resolvedDir, f.name);
-      else if (!audio && f.name.toLowerCase().endsWith(".wav")) audio = path.join(resolvedDir, f.name);
-    }
-  } catch {
-    return null;
-  }
-  if (!doc) return null;
-  return { dir: resolvedDir, doc, audio };
-}
-
-/** The opaque id of a filed recording, derived from its own folder: base64url
- * of "<date>/<title>", the exact string resolveHistoryEntry decodes. The ONE
- * encoder, because there are now two callers - listHistory's walk, and the V4
- * D2 import pipeline, which files a document and then has to hand the window a
- * way to open the note it just produced. Two encoders would be two chances to
- * disagree with the single decoder. */
-/**
- * Delete one capture: its folder, and nothing else.
- *
- * 2026-07-30. The whole of this function's caution is in what it does NOT do.
- * Flow's first invariant is that it never deletes a recording it was not
- * managing, and a delete-by-id is exactly where that could go wrong, so the
- * path is not trusted from the caller at any point:
- *
- *  - the id is resolved through resolveHistoryEntry, whose base64url roundtrip
- *    check already refuses a forged or truncated id;
- *  - and the resolved directory is then re-verified to sit UNDER the history
- *    root, because a resolver that ever grew a traversal bug would otherwise
- *    hand this function a path anywhere on the disk.
- *
- * The second check is redundant today. It is here because "redundant" and
- * "unnecessary" are different words when the failure mode is deleting someone
- * else's folder.
- */
-export function deleteHistoryEntry(
-  id: string,
-  root: string = historyRoot(),
-  log?: (msg: string) => void,
-): { ok: boolean; error?: string } {
-  const found = resolveHistoryEntry(id, root);
-  if (!found) return { ok: false, error: "that capture no longer exists" };
-  const dir = path.resolve(found.dir);
-  const base = path.resolve(root);
-  const inside = dir.startsWith(base + path.sep) && dir !== base;
-  if (!inside) {
-    log?.(`[history] refused to delete ${dir}: outside the recordings folder`);
-    return { ok: false, error: "that capture is not in Flow's recordings folder" };
-  }
-  try {
-    fs.rmSync(dir, { recursive: true, force: true });
-    log?.(`[history] deleted ${path.basename(path.dirname(dir))}/${path.basename(dir)}`);
-    return { ok: true };
-  } catch (err) {
-    const msg = (err as Error).message;
-    log?.(`[history] could not delete ${dir}: ${msg}`);
-    // Said out loud: a user who clicked delete and saw nothing happen would
-    // believe the recording was gone when it is still on their disk.
-    return { ok: false, error: `could not delete it: ${msg}` };
-  }
-}
-
-export function historyEntryId(dir: string): string {
-  const { date, title } = historyEntryLabel(dir);
-  return Buffer.from(`${date}/${title}`, "utf8").toString("base64url");
-}
-
-/** date/title derived from a RESOLVED entry's own folder (root/date/folder,
- * resolveHistoryEntry's own layout) - the one place that decode happens, used
- * everywhere a resolved entry needs to be named for a human (the doc payload
- * below, U5c's downloaded filenames): never re-derived from the id itself. */
-export function historyEntryLabel(dir: string): { date: string; title: string } {
-  return { date: path.basename(path.dirname(dir)), title: path.basename(dir) };
-}
-
-// ~5 MB: a transcript this long is already pathological. Shared by
-// readHistoryDoc (HTTP + IPC) so the two surfaces can never disagree on the cap.
-const MAX_HISTORY_DOC_BYTES = 5 * 1024 * 1024;
-
-/** Read a history entry's transcript for display: resolves the id, reads the
- * document (capped), and derives title/date from the resolved folder - the
- * ONE implementation behind both the HTTP /long/history/doc route and the
- * UI_HISTORY_DOC IPC channel (U5a), so a forged/stale id is refused
- * identically on both surfaces. Returns null when the id does not resolve to
- * a real entry with a document, or the file could not be read. */
-export function readHistoryDoc(id: string, root: string = historyRoot()): HistoryDocPayload | null {
-  const entry = resolveHistoryEntry(id, root);
-  if (!entry || !entry.doc) return null;
-  let text: string;
-  try {
-    const buf = fs.readFileSync(entry.doc);
-    text = (buf.length > MAX_HISTORY_DOC_BYTES ? buf.subarray(0, MAX_HISTORY_DOC_BYTES) : buf).toString("utf8");
-  } catch {
-    return null;
-  }
-  const { date, title } = historyEntryLabel(entry.dir);
-  return { title, date, text };
-}
-
-// B3a : `loadRecent`, `existingRecent`, `saveRecent` et `wavDurationMs` sont
-// partis avec recent.json. Les quatre decrivaient la meme chose - « quelle est
-// la derniere capture, et son fichier existe-t-il encore » - une question qui
-// n'a plus de sens quand la derniere capture est une ligne du compte et non un
-// chemin sur un disque. `state()` la tient maintenant en memoire (lastFinished),
-// ce qui retire au passage le cache que le sondage a 1 Hz avait rendu necessaire.
 
 // ---------------------------------------------------------------------------
 // B3a : LE MAGASIN D'UNE CAPTURE.
@@ -1027,6 +264,11 @@ export interface CaptureStore {
   /** Relire une reunion deja terminee. Jamais appelee pendant une capture : elle
    * sert a exporter ou a annoter un enregistrement dont le tampon a ete lache. */
   read(id: string): Promise<RecordingRow | null>;
+  /** Retire une reunion, ligne comprise. Le seul appelant est l'import qui n'a
+   * RIEN produit : une ligne vide, et surtout une ligne OUVERTE que le sauvetage
+   * du prochain lancement viendrait annoter comme « interrompue », serait pire
+   * que pas de ligne du tout. */
+  remove(id: string): void;
   /** Les lignes restees ouvertes du compte. Pour le sauvetage au demarrage. */
   listOpen(): Promise<OpenRecording[]>;
   /** Les notes tapees pendant une seance, lues depuis le compte.
@@ -1132,97 +374,8 @@ export class LongRecorder {
     return this.active || this.finalizing;
   }
 
-  private stagingBase(): string {
-    return this.deps.stagingRootOverride ?? stagingRoot();
-  }
-
-  private historyBase(): string {
-    return this.deps.historyRootOverride ?? historyRoot();
-  }
-
   private now(): number {
     return this.deps.now?.() ?? Date.now();
-  }
-
-  /** Best-effort retention purge of the LEGACY archive (C10 §5). B3 moved the
-   * documents into the account, so this folder can only hold recordings made by
-   * a Flow older than this build - and the retention promise they were made
-   * under still applies to them. Never throws, so a failure here can never stop
-   * a recording from starting.
-   *
-   * U2c (blocking review finding): SUSPENDED outright when the settings flag
-   * says so. On a machine that used to file its recordings elsewhere, the fixed
-   * folder is a frozen archive Flow never managed - and it carries the marker
-   * from the days it was the default, so every other guardrail below would wave
-   * the deletion through. Flow never deletes recordings it was not managing. */
-  purgeHistory(): void {
-    if (this.deps.historyPurgeSuspended?.()) {
-      this.deps.log?.(
-        `[long] history purge SUSPENDED: ${this.historyBase()} holds recordings Flow was not managing. ` +
-          `Nothing is deleted until "Resume automatic cleanup" in Settings > Storage.`,
-      );
-      return;
-    }
-    purgeHistoryDirs(this.historyBase(), this.deps.log);
-  }
-
-  /**
-   * Le balayage des dossiers `staging/` laisses par une version PRECEDENTE.
-   *
-   * B3 lui a retire sa raison d'etre principale sans le rendre inutile. Une
-   * reunion coupee par un plantage ne laisse plus de dossier : elle laisse une
-   * ligne OUVERTE dans le compte, et c'est `rescueAbandoned()` qui la ferme.
-   * Mais une machine qui met Flow a jour au milieu de rien peut tres bien porter
-   * un dossier orphelin ecrit par la version d'avant, et le perdre en changeant
-   * de support serait exactement la quatrieme lecon des vagues closes - un
-   * correctif qui part avec son support.
-   *
-   * Il ne touche donc plus recent.json (le fichier n'a plus de lecteur) : il
-   * classe l'orphelin dans l'archive locale, ou les pages savent encore le lire,
-   * et le dit dans le journal. Never throws and never deletes. */
-  rescueOrphanedStaging(): number {
-    const staging = this.stagingBase();
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(staging, { withFileTypes: true });
-    } catch {
-      return 0; // pas de dossier staging du tout : le cas normal
-    }
-    let rescued = 0;
-    for (const entry of entries) {
-      const dir = path.join(staging, entry.name);
-      try {
-        // lstat decides, like everywhere else in this file: a symlink/junction
-        // dropped into staging is never followed out of the app-owned root.
-        const st = fs.lstatSync(dir);
-        if (st.isSymbolicLink() || !st.isDirectory()) continue;
-        const session = readStagedSession(dir, entry.name);
-        if (!session) {
-          this.deps.log?.(`[long] staging folder without a transcript, left untouched: ${dir}`);
-          continue;
-        }
-        noteInterruption(session.docPath, interruptedNote("recovered", -1), this.deps.log);
-        const filed = fileRecordingIntoHistory({
-          historyRoot: this.historyBase(),
-          docPath: session.docPath,
-          audioPath: session.audioPath,
-          // Nobody can tell what the user had asked for in a session that died
-          // without a trace, so Flow keeps what it cannot attribute: the rule
-          // that matters is never destroying a recording, not enforcing a
-          // checkbox whose value no longer exists anywhere.
-          keepAudio: true,
-          startedMs: session.startedMs,
-          log: this.deps.log,
-        });
-        if (!filed) continue;
-        rescued++;
-        cleanEmptyHoldingDirs(staging, dir);
-        this.deps.log?.(`[long] recovered an interrupted recording from an older Flow -> ${filed.docPath}`);
-      } catch (err) {
-        this.deps.log?.(`[long] could not recover ${dir}: ${err}`);
-      }
-    }
-    return rescued;
   }
 
   /**
@@ -1359,7 +512,6 @@ export class LongRecorder {
 
   start(opts: LongStartOpts): LongStartResult {
     if (this.active || this.finalizing) return { ok: false, error: "a recording is already in progress" };
-    this.purgeHistory(); // l'archive LEGACY : au plus tot, jamais bloquant
     const now = new Date(this.now());
     this.title = (opts.title || "").trim() || "Recording";
     this.keepAudio = !!opts.keepAudio;

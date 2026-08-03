@@ -88,8 +88,8 @@ import {
   type LongStopResult,
   type LongTranscriptResult,
   type LiveNotesResult,
-  type HistoryItem,
-  type HistoryDocPayload,
+  type RecordingSummary,
+  type RecordingDocPayload,
   type DownloadResult,
   type RedactTarget,
   type RedactResult,
@@ -248,9 +248,9 @@ const ui = {
   // ---- archive browser (U5a): PULL, on demand - never cached like state's
   // `recent` field (see ipcContracts.ts's module note), so the Notes page
   // always sees the exact on-disk archive.
-  historyList: (): Promise<HistoryItem[]> => ipcRenderer.invoke(UI_HISTORY_LIST),
-  historyDelete: (id: string): Promise<HistoryItem[]> => ipcRenderer.invoke(UI_HISTORY_DELETE, id),
-  historyDoc: (id: string): Promise<HistoryDocPayload | null> => ipcRenderer.invoke(UI_HISTORY_DOC, id),
+  historyList: (): Promise<RecordingSummary[]> => ipcRenderer.invoke(UI_HISTORY_LIST),
+  historyDelete: (id: string): Promise<RecordingSummary[]> => ipcRenderer.invoke(UI_HISTORY_DELETE, id),
+  historyDoc: (id: string): Promise<RecordingDocPayload | null> => ipcRenderer.invoke(UI_HISTORY_DOC, id),
   // ---- capture downloads (U5c): id in, never a path - main resolves and
   // writes straight into the OS Downloads folder, no dialog.
   downloadDoc: (id: string): Promise<DownloadResult> => ipcRenderer.invoke(UI_DOWNLOAD_DOC, id),

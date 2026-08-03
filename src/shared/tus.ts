@@ -126,6 +126,12 @@ export function uploadIsGone(status: number): boolean {
   return status === 404 || status === 410 || status === 403;
 }
 
+/** Le seau prive de la premiere migration. Ici, et non dans main/audioUpload.ts,
+ * pour que le depot puisse le nommer sans dependre de la file de televersement :
+ * la lecture et l'ecriture d'un objet audio sont deux modules differents, et le
+ * nom du seau est la seule chose qu'ils doivent partager. */
+export const AUDIO_BUCKET = "recordings";
+
 /** Le chemin de l'objet audio d'une reunion dans le seau `recordings`.
  *
  * Le prefixe EST la frontiere : les politiques de la premiere migration

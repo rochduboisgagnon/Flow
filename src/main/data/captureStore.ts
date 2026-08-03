@@ -44,6 +44,10 @@ export class WorkingCopyCaptureStore implements CaptureStore {
     return this.wc.pending();
   }
 
+  remove(id: string): void {
+    this.wc.deleteRecording(id);
+  }
+
   async read(id: string): Promise<RecordingRow | null> {
     // La copie de travail d'abord : elle detient la ligne tant que l'envoi n'a
     // pas abouti, donc hors ligne elle est la SEULE a la connaitre. Demander au

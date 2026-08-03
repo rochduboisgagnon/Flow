@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { LongRecorder, listHistory, type LongDeps } from "../src/main/longform";
+import { LongRecorder, type LongDeps } from "../src/main/longform";
 import { transcriptHeader, interruptedNote } from "../src/shared/longform";
 import { ABANDON_AFTER_MS } from "../src/shared/recordings";
 import { fakeCaptureStore, type FakeCaptureStore } from "./fixtures/capture-store";
@@ -33,7 +33,6 @@ import type { WhisperSidecar } from "../src/main/asr/sidecar";
 // ---------------------------------------------------------------------------
 
 const SR = 16_000;
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 function tone(ms: number, amp = 6000): Int16Array {
   const out = new Int16Array(Math.round((SR * ms) / 1000));
@@ -74,8 +73,6 @@ function make(over: Partial<LongDeps> = {}): { rec: LongRecorder; store: FakeCap
   const rec = new LongRecorder({
     transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
     store,
-    historyRootOverride: path.join(os.tmpdir(), "flow-rescue-legacy-history"),
-    stagingRootOverride: path.join(os.tmpdir(), "flow-rescue-legacy-staging"),
     schedule: () => () => {},
     log: (m) => logs.push(m),
     ...over,
@@ -316,147 +313,26 @@ test("B3b: quitter hors ligne ne perd rien - la ligne reste OUVERTE et le procha
 });
 
 // ---------------------------------------------------------------------------
-// 3. LE BALAYAGE DES DOSSIERS D'UNE VERSION PRECEDENTE
+// 3. LE BALAYAGE DES DOSSIERS D'UNE VERSION PRECEDENTE : SUPPRIME (B3d).
+//
+// Sept tests vivaient ici, sur `rescueOrphanedStaging` - le classement d'un
+// dossier `staging/` orphelin dans l'archive datee, ses garde-fous, et son refus
+// de detruire quoi que ce soit quand il n'arrivait pas a ecrire.
+//
+// Ils sont partis avec la fonction, et ce n'est PAS la quatrieme lecon des
+// vagues closes (« un correctif de securite qui part avec son support ») : ce
+// qu'ils protegeaient etait la promesse « un enregistrement interrompu est
+// visible comme interrompu », et cette promesse est tenue au-dessus, par
+// `rescueAbandoned()`, sur un mecanisme qui couvre STRICTEMENT PLUS - il voit
+// aussi la reunion coupee sur l'autre ordinateur.
+//
+// Ce qui n'est pas couvert par un test et doit etre dit : un dossier `history/`
+// deja present sur une machine n'est plus lu par l'application. Il n'est pas
+// perdu - main/index.ts le signale par chemin dans Reglages et dans la page
+// Notes (noticeRetiredHistoryFolder) - mais l'application ne sait plus en
+// afficher le contenu, et c'est une consequence assumee du changement de
+// support, pas un oubli.
 // ---------------------------------------------------------------------------
-
-/** Un dossier staging exactement comme une session tuee par un Flow PLUS ANCIEN
- * en laisse un : le dossier nomme « <epoch ms>-<random> », le document ecrit au
- * fil de l'eau avec son entete, et le .wav de la capture. */
-function orphanStagingFolder(
-  staging: string,
-  opts: { title: string; startedMs: number; withAudio?: boolean; base?: string },
-): { dir: string; doc: string; audio: string } {
-  const dir = path.join(staging, String(opts.startedMs) + "-abc123");
-  fs.mkdirSync(dir, { recursive: true });
-  const base = opts.base ?? "orphan-meeting";
-  const doc = path.join(dir, base + ".md");
-  fs.writeFileSync(
-    doc,
-    transcriptHeader(opts.title, new Date(opts.startedMs).toISOString()) + "[00:00:00] Bonjour tout le monde.\n\n",
-  );
-  const audio = path.join(dir, base + ".wav");
-  if (opts.withAudio !== false) fs.writeFileSync(audio, Buffer.alloc(44 + SR * 2 * 3)); // 3 s of PCM
-  return { dir, doc, audio };
-}
-
-test("B3a: un dossier staging laisse par une version PRECEDENTE est classe dans l'archive locale", () => {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "flow-legacy-sweep-"));
-  const staging = path.join(work, "staging");
-  const history = path.join(work, "history");
-  const startedMs = Date.now() - 90 * 60_000;
-  const orphan = orphanStagingFolder(staging, { title: "Board meeting", startedMs });
-
-  const { rec, logs } = make({ stagingRootOverride: staging, historyRootOverride: history });
-  assert.equal(rec.rescueOrphanedStaging(), 1, "one recording rescued");
-
-  assert.equal(fs.existsSync(orphan.doc), false, "the document left staging");
-  assert.equal(fs.existsSync(orphan.dir), false, "the emptied staging session folder is cleaned up");
-
-  const items = listHistory(history);
-  assert.equal(items.length, 1, "the rescued recording shows up in the local archive");
-  assert.equal(items[0].hasAudio, true, "a recovery keeps the audio it cannot attribute");
-  assert.ok(logs.some((m) => /an older Flow/.test(m)), "and the log says where it came from");
-
-  const filed = path.join(history, items[0].date, items[0].title);
-  const doc = fs.readFileSync(path.join(filed, fs.readdirSync(filed).find((f) => f.endsWith(".md"))!), "utf8");
-  assert.ok(doc.includes("Interrupted recording"), "the document is honest about how it ended");
-  assert.ok(doc.includes("# Board meeting"), "the header is preserved");
-  fs.rmSync(work, { recursive: true, force: true });
-});
-
-test("B3a: le balayage est un silence total quand staging est vide ou absent", () => {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "flow-legacy-none-"));
-  const { rec, logs } = make({
-    stagingRootOverride: path.join(work, "staging"), // never created
-    historyRootOverride: path.join(work, "history"),
-  });
-  assert.equal(rec.rescueOrphanedStaging(), 0);
-  assert.deepEqual(logs, [], "nothing to rescue, nothing to say");
-  assert.equal(fs.existsSync(path.join(work, "history")), false, "and no history root is created for nothing");
-
-  fs.mkdirSync(path.join(work, "staging"), { recursive: true });
-  assert.equal(rec.rescueOrphanedStaging(), 0, "an empty staging folder rescues nothing");
-  fs.rmSync(work, { recursive: true, force: true });
-});
-
-test("B3a: un dossier recupere n'est jamais classe dans une date que la purge suivante supprimerait", () => {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "flow-legacy-date-"));
-  const staging = path.join(work, "staging");
-  const history = path.join(work, "history");
-  // Une machine restee eteinte des mois : classer sous sa vraie date la
-  // livrerait a la purge - sauvee dans la poubelle.
-  const orphan = orphanStagingFolder(staging, { title: "Very old meeting", startedMs: Date.now() - 200 * DAY_MS });
-  const { rec } = make({ stagingRootOverride: staging, historyRootOverride: history });
-  assert.equal(rec.rescueOrphanedStaging(), 1);
-  const items = listHistory(history);
-  assert.equal(items.length, 1);
-
-  rec.purgeHistory();
-  assert.deepEqual(
-    listHistory(history).map((i) => i.title),
-    items.map((i) => i.title),
-    "a recording rescued an instant ago is not immediately purgeable",
-  );
-  assert.equal(fs.existsSync(orphan.dir), false, "and it really did leave staging");
-
-  // Un dossier dans la fenetre est classe sous SA date, pas sous celle du jour.
-  // Les deux cotes derivent du MEME instant (U5 review : la version d'avant
-  // comparait a Date.now() et echouait une heure sur vingt-quatre).
-  const startedMs = Date.now() - 60 * 60_000;
-  orphanStagingFolder(staging, { title: "Today", startedMs, base: "today-meeting" });
-  rec.rescueOrphanedStaging();
-  const today = listHistory(history).find((i) => i.title.startsWith("today-meeting"));
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const started = new Date(startedMs);
-  assert.equal(today!.date, `${started.getFullYear()}-${pad(started.getMonth() + 1)}-${pad(started.getDate())}`);
-  fs.rmSync(work, { recursive: true, force: true });
-});
-
-test("B3a: le balayage classe meme quand la purge de retention est suspendue", () => {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "flow-legacy-suspended-"));
-  const staging = path.join(work, "staging");
-  const history = path.join(work, "history");
-  orphanStagingFolder(staging, { title: "Suspended-purge meeting", startedMs: Date.now() - 60_000 });
-  const { rec } = make({
-    stagingRootOverride: staging,
-    historyRootOverride: history,
-    historyPurgeSuspended: () => true, // U2c: rien n'est jamais SUPPRIME ici...
-  });
-  assert.equal(rec.rescueOrphanedStaging(), 1, "...mais classer un enregistrement n'est pas en supprimer un");
-  assert.equal(listHistory(history).length, 1);
-  fs.rmSync(work, { recursive: true, force: true });
-});
-
-test("B3a: un balayage qui ne peut pas ecrire ne detruit rien et ne leve jamais", () => {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "flow-legacy-fail-"));
-  const staging = path.join(work, "staging");
-  // La racine d'archive est un FICHIER : tout mkdir dessous echoue, partout.
-  const history = path.join(work, "history");
-  fs.writeFileSync(history, "not a folder");
-  const orphan = orphanStagingFolder(staging, { title: "Doomed", startedMs: Date.now() - 60_000 });
-
-  const { rec, logs } = make({ stagingRootOverride: staging, historyRootOverride: history });
-  assert.doesNotThrow(() => assert.equal(rec.rescueOrphanedStaging(), 0));
-  assert.equal(fs.existsSync(orphan.doc), true, "still in staging, for the next boot to try again");
-  assert.ok(fs.readFileSync(orphan.doc, "utf8").includes("# Doomed"), "and it is still readable");
-  assert.ok(logs.some((m) => /cannot prepare the history folder/.test(m)), "the failure is journalled, not silent");
-  assert.equal(fs.readFileSync(history, "utf8"), "not a folder", "and nothing outside the app's roots was touched");
-  fs.rmSync(work, { recursive: true, force: true });
-});
-
-test("B3a: un dossier staging sans transcript est laisse exactement ou il est", () => {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "flow-legacy-nodoc-"));
-  const staging = path.join(work, "staging");
-  const dir = path.join(staging, String(Date.now()) + "-zzz999");
-  fs.mkdirSync(dir, { recursive: true });
-  const stray = path.join(dir, "audio-only.wav");
-  fs.writeFileSync(stray, Buffer.alloc(64));
-  const { rec, logs } = make({ stagingRootOverride: staging, historyRootOverride: path.join(work, "history") });
-  assert.equal(rec.rescueOrphanedStaging(), 0, "nothing to file without a document");
-  assert.equal(fs.existsSync(stray), true, "Flow never deletes what it does not understand");
-  assert.ok(logs.some((m) => /without a transcript/.test(m)), "it says so instead of failing silently");
-  fs.rmSync(work, { recursive: true, force: true });
-});
 
 test("U4: the interruption note tells the truth about what was and was not transcribed", () => {
   const quitPending = interruptedNote("quit", 3);

@@ -1,6 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { UiStatePayload } from "../../../shared/ipcContracts";
-import { MAX_HISTORY_ITEMS, type HistoryItem, type HistoryDocPayload } from "../../../shared/longform";
+import {
+  MAX_RECORDINGS_LISTED,
+  type RecordingSummary,
+  type RecordingDocPayload,
+} from "../../../shared/recordings";
 import { parseTranscriptPassages, planRedaction, hms, type TranscriptPassage } from "../../../shared/redact";
 
 // Notes (wave U5). The captures in Flow's own recordings folder, readable and
@@ -27,9 +31,9 @@ import { parseTranscriptPassages, planRedaction, hms, type TranscriptPassage } f
 const PUSH_GAP_MS = 2_500;
 
 export function Notes({ s }: { s: UiStatePayload }) {
-  const [items, setItems] = useState<HistoryItem[] | null>(null);
+  const [items, setItems] = useState<RecordingSummary[] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
-  const [doc, setDoc] = useState<HistoryDocPayload | null>(null);
+  const [doc, setDoc] = useState<RecordingDocPayload | null>(null);
   const [docFor, setDocFor] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [note, setNote] = useState<string | null>(null);
@@ -303,7 +307,7 @@ export function Notes({ s }: { s: UiStatePayload }) {
       <h2>Notes</h2>
       {/* Review U5, MAJEUR 4: this used to read "Every capture Flow has
           produced", which the engine cannot honour - listHistory() stops at
-          MAX_HISTORY_ITEMS (shared/longform.ts) and says so only in the log.
+          MAX_RECORDINGS_LISTED (shared/recordings.ts) and says so only in the log.
           Both halves of the fix are here: the promise is now the one the page
           can keep, and when the cap is actually reached the page says how many
           it is showing instead of letting the older ones vanish silently. */}
@@ -339,9 +343,9 @@ export function Notes({ s }: { s: UiStatePayload }) {
         </p>
       ) : null}
 
-      {items !== null && items.length >= MAX_HISTORY_ITEMS ? (
+      {items !== null && items.length >= MAX_RECORDINGS_LISTED ? (
         <p className="note-legacy">
-          This list stops at the {MAX_HISTORY_ITEMS} most recent captures. The older ones are
+          This list stops at the {MAX_RECORDINGS_LISTED} most recent captures. The older ones are
           untouched in the recordings folder.
           <button className="btn ghost" onClick={() => void window.flowui.openPath("history")}>
             Open the recordings folder
@@ -389,7 +393,7 @@ export function Notes({ s }: { s: UiStatePayload }) {
               >
                 <div className="nt">{i.title}</div>
                 <div className="d">
-                  {i.date}
+                  {localDay(i.startedIso)}
                   {i.hasAudio ? ` - audio ${formatBytes(i.audioBytes)}` : ""}
                 </div>
               </button>
@@ -406,7 +410,7 @@ export function Notes({ s }: { s: UiStatePayload }) {
                 <div className="doc-head">
                   <div>
                     <div className="doc-title">{shownDoc.title}</div>
-                    <div className="d">{shownDoc.date}</div>
+                    <div className="d">{localDay(shownDoc.startedIso)}</div>
                   </div>
                   <div className="doc-actions">
                     <button className="btn" disabled={downloading !== null} onClick={() => void download("doc")}>
@@ -668,6 +672,21 @@ function Removal(props: {
       </div>
     </div>
   );
+}
+
+/** Le jour d'une reunion, dans le fuseau de celui qui regarde.
+ *
+ * B3e : la liste affichait le NOM DU DOSSIER date dans lequel le document
+ * vivait. Elle affiche maintenant l'instant de depart de la reunion, formate
+ * ici - un fait sur la reunion, et non l'endroit ou elle etait rangee. Un ISO
+ * illisible rend une chaine vide plutot que « Invalid Date » : une date qu'on ne
+ * sait pas lire n'est pas une raison de defigurer la liste. */
+function localDay(startedIso: string): string {
+  const ms = Date.parse(startedIso);
+  if (Number.isNaN(ms)) return "";
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
 function formatBytes(n: number): string {

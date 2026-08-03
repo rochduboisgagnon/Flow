@@ -51,6 +51,11 @@ export function fakeCaptureStore(seed: RecordingRow[] = []): FakeCaptureStore {
     pending() {
       return queued.size;
     },
+    remove(id) {
+      writes.push({ ...(rows.get(id) ?? queued.get(id) ?? ({ id } as RecordingRow)), doc: "" });
+      rows.delete(id);
+      queued.delete(id);
+    },
     read(id) {
       // La file d'abord, comme le vrai magasin : hors ligne, elle est la seule a
       // connaitre la derniere version.

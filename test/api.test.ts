@@ -133,9 +133,9 @@ function longDepsStub() {
       calls.push("notes-splice:" + docPath);
       return { ok: true };
     },
-    listHistory: () => [],
-    resolveHistoryEntry: () => null,
-    readHistoryDoc: () => null,
+    listHistory: () => Promise.resolve([]),
+    readHistoryDoc: () => Promise.resolve(null),
+    signAudio: () => Promise.resolve(null),
     canLoopback: () => true,
     hotpathSnapshot: () => {
       calls.push("hotpath-snapshot");
@@ -280,7 +280,11 @@ test("U5a: /long/history/doc returns the readHistoryDoc dep's payload as-is, and
     ...longDepsStub(),
     readHistoryDoc: (id: string) => {
       seen.push(id);
-      return id === "good-id" ? { title: "Client Kickoff", date: "2026-07-27", text: "hello" } : null;
+      return Promise.resolve(
+        id === "good-id"
+          ? { id, title: "Client Kickoff", startedIso: "2026-07-27T13:00:00.000Z", text: "hello" }
+          : null,
+      );
     },
     infoPathOverride: info,
   });
@@ -290,7 +294,12 @@ test("U5a: /long/history/doc returns the readHistoryDoc dep's payload as-is, and
     const port = (JSON.parse(fs.readFileSync(info, "utf8")) as { port: number }).port;
     const ok = await get(port, "/long/history/doc?id=good-id");
     assert.equal(ok.code, 200);
-    assert.deepEqual(ok.body, { title: "Client Kickoff", date: "2026-07-27", text: "hello" });
+    assert.deepEqual(ok.body, {
+      id: "good-id",
+      title: "Client Kickoff",
+      startedIso: "2026-07-27T13:00:00.000Z",
+      text: "hello",
+    });
 
     const missing = await get(port, "/long/history/doc?id=bad-id");
     assert.equal(missing.code, 404);
@@ -302,7 +311,18 @@ test("U5a: /long/history/doc returns the readHistoryDoc dep's payload as-is, and
 
 test("U5a: /long/history returns listHistory()'s items wrapped as { items }", async () => {
   const info = path.join(os.tmpdir(), `agrflow-api-histlist-${process.pid}.json`);
-  const item = { id: "x", date: "2026-07-27", title: "t", hasAudio: true, audioBytes: 12, docBytes: 34, savedMs: 1 };
+  const item = {
+    id: "x",
+    title: "t",
+    startedIso: "2026-07-27T13:00:00.000Z",
+    durationMs: 60_000,
+    docBytes: 34,
+    audioBytes: 12,
+    audioUploaded: 12,
+    hasAudio: true,
+    staged: true,
+    endedIso: "2026-07-27T14:00:00.000Z",
+  };
   const api = new LocalApi({
     version: "0.0.0",
     isListening: () => false,
@@ -310,7 +330,7 @@ test("U5a: /long/history returns listHistory()'s items wrapped as { items }", as
     isEngineWarm: () => true,
     transcribe: () => Promise.resolve({ text: "", ms: 0 }),
     ...longDepsStub(),
-    listHistory: () => [item],
+    listHistory: () => Promise.resolve([item]),
     infoPathOverride: info,
   });
   await api.start();

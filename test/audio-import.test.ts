@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ImportQueue, readWavHead, type ImportDeps } from "../src/main/audioImport";
-import { listHistory, resolveHistoryEntry } from "../src/main/longform";
+import { fakeCaptureStore, type FakeCaptureStore } from "./fixtures/capture-store";
 import {
   DECODE_SLICE_MS,
   MAX_IMPORT_BATCH,
@@ -108,9 +108,13 @@ function sourceFile(dir: string, name: string, bytes = 8192): string {
 }
 
 interface Rig {
+  store: FakeCaptureStore;
+  /** Les identifiants confies a la file de televersement. */
+  uploaded: string[];
   work: string;
-  history: string;
-  staging: string;
+  /** Le dossier de transit de l'audio decode. B3e : le SEUL dossier qu'un import
+   * touche encore - `history/` et `staging/` sont partis avec le document. */
+  pending: string;
   src: string;
   queue: ImportQueue;
   /** Mutated by a test to say the user's voice has the engine. */
@@ -197,16 +201,18 @@ function rig(opts: {
   keepSource?: boolean;
 } = {}): Rig {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "flow-import-"));
-  const history = path.join(work, "history");
-  const staging = path.join(work, "staging");
+  const pending = path.join(work, "pending-audio");
   const drop = path.join(work, "drop");
   fs.mkdirSync(drop, { recursive: true });
-  fs.mkdirSync(staging, { recursive: true });
+  fs.mkdirSync(pending, { recursive: true });
   const src = sourceFile(drop, opts.sourceName ?? "reunion-client_2026-07-12.m4a", opts.sourceBytes ?? 8192);
   const holder: { r?: Rig } = {};
   const calls = { transcribe: 0, concurrent: 0, maxConcurrent: 0, decodes: [] as DecodeCall[] };
   const claim: { value: "dictation" | "recording" | null } = { value: null };
   const logs: string[] = [];
+  // B3e : le magasin du compte remplace les deux dossiers.
+  const store = fakeCaptureStore();
+  const uploaded: string[] = [];
   const queue = new ImportQueue({
     decode: opts.decodeFn ?? fakeDecode(() => holder.r as Rig, opts.decode ?? { durationMs: 30_000 }),
     transcribe:
@@ -220,15 +226,17 @@ function rig(opts: {
         return { text: `line ${calls.transcribe}` };
       }),
     userEngineClaim: () => claim.value,
-    historyRoot: () => history,
-    stagingRoot: () => staging,
+    store,
+    accountId: () => Promise.resolve("uid-1"),
+    uploadAudio: (id) => uploaded.push(id),
+    pendingAudioDir: () => pending,
     summaryModel: () => opts.summaryModel ?? "",
     ollamaModels: async () => (opts.summarize ? ["llama"] : null),
     summarize: opts.summarize,
     log: (m) => logs.push(m),
     decodeBudgetBytes: opts.budgetBytes === undefined ? undefined : () => opts.budgetBytes as number,
   });
-  const r: Rig = { work, history, staging, src, queue, claim, calls, logs };
+  const r: Rig = { work, pending, src, queue, claim, calls, logs, store, uploaded };
   holder.r = r;
   built.push(r);
   return r;
@@ -260,18 +268,22 @@ async function drain(q: ImportQueue, timeoutMs = 20_000): Promise<void> {
   assert.equal(q.snapshot().busy, false, "the queue should have drained");
 }
 
-/** The single filed document, read back from the archive. */
-function filedDoc(history: string): { id: string; text: string; dir: string; hasAudio: boolean } | null {
-  const items = listHistory(history);
-  if (items.length === 0) return null;
-  const entry = resolveHistoryEntry(items[0].id, history);
-  assert.ok(entry?.doc, "a listed history entry must resolve to a document");
-  return {
-    id: items[0].id,
-    dir: entry.dir,
-    text: fs.readFileSync(entry.doc as string, "utf8"),
-    hasAudio: !!entry.audio,
-  };
+/** La reunion que l'import a produite, relue depuis le compte.
+ *
+ * B3e : c'etait une lecture de l'archive disque (lister, resoudre l'identifiant,
+ * lire le fichier). C'est maintenant une lecture de ligne - et `hasAudio` se lit
+ * sur le CHEMIN de l'objet, comme partout ailleurs. Ne rend que les reunions
+ * TERMINEES : une ligne encore ouverte est un import en cours, pas un livrable. */
+function filedDoc(store: FakeCaptureStore): { id: string; text: string; hasAudio: boolean } | null {
+  const rows = [...store.rows.values()].filter((r) => r.endedIso);
+  if (rows.length === 0) return null;
+  return { id: rows[0].id, text: rows[0].doc, hasAudio: rows[0].audioPath !== "" };
+}
+
+/** Combien de reunions terminees le compte detient. Le remplacant de
+ * `listHistory(root).length`. */
+function filedCount(store: FakeCaptureStore): number {
+  return [...store.rows.values()].filter((r) => r.endedIso).length;
 }
 
 /** Files left in the app-owned staging root (the folder a document is built in
@@ -487,7 +499,7 @@ test("an import produces the SAME document shape as a live capture, filed in the
   assert.equal(started.accepted.length, 1);
   await drain(r.queue);
 
-  const doc = filedDoc(r.history);
+  const doc = filedDoc(r.store);
   assert.ok(doc, "the finished document must be in the archive");
   assert.match(doc.text, /^# reunion client 2026 07 12$/m);
   assert.match(doc.text, /^- source file: reunion-client_2026-07-12\.m4a$/m);
@@ -504,7 +516,7 @@ test("an import produces the SAME document shape as a live capture, filed in the
   assert.equal(row.progress, 1);
   assert.equal(row.partial, undefined);
   assert.equal(row.historyId, doc.id, "the row points at the entry the page can open");
-  assert.deepEqual(stagingEntries(r.staging), [], "nothing is left in staging once the document is filed");
+  assert.deepEqual(stagingEntries(r.pending), [], "nothing is left in staging once the document is filed");
   assert.deepEqual(fingerprint(r.src), before, "THE SOURCE FILE IS UNTOUCHED");
 });
 
@@ -512,7 +524,7 @@ test("neither the document nor the queue snapshot ever carries the source PATH",
   const r = rig({ decode: { durationMs: 12_000 } });
   r.queue.start({ paths: [r.src] });
   await drain(r.queue);
-  const doc = filedDoc(r.history);
+  const doc = filedDoc(r.store);
   assert.ok(doc);
   assert.ok(!doc.text.includes(r.src), "the path is not stable; only the file NAME belongs in the document");
   assert.ok(!doc.text.includes(path.dirname(r.src)));
@@ -524,16 +536,18 @@ test("keepAudio off keeps no audio; keepAudio on keeps a 16 kHz mono wav of the 
   const off = rig({ decode: { durationMs: 12_000 } });
   off.queue.start({ paths: [off.src] });
   await drain(off.queue);
-  assert.equal(filedDoc(off.history)?.hasAudio, false, "the user's own file is the archive of the audio");
+  assert.equal(filedDoc(off.store)?.hasAudio, false, "the user's own file is the archive of the audio");
 
   const on = rig({ decode: { durationMs: 12_000 } });
   const before = fingerprint(on.src);
   on.queue.start({ paths: [on.src], keepAudio: true });
   await drain(on.queue);
-  const doc = filedDoc(on.history);
+  const doc = filedDoc(on.store);
   assert.equal(doc?.hasAudio, true);
-  const entry = resolveHistoryEntry(doc?.id as string, on.history);
-  const pcm = pcmFromWav(fs.readFileSync(entry?.audio as string));
+  // Le .wav decode attend dans le dossier de transit, sous l'identifiant de sa
+  // ligne, et il a ete confie a la file de televersement.
+  assert.deepEqual(on.uploaded, [doc!.id], "l'audio est confie a la file, une fois");
+  const pcm = pcmFromWav(fs.readFileSync(path.join(on.pending, doc!.id + ".wav")));
   assert.equal(pcm.length, 12 * SAMPLE_RATE, "the kept wav holds exactly the decoded audio, and parses as 16 kHz mono");
   assert.deepEqual(fingerprint(on.src), before, "THE SOURCE FILE IS UNTOUCHED");
 });
@@ -551,8 +565,8 @@ test("cancelled before any transcription: nothing is filed, nothing is left, not
   const before = fingerprint(r.src);
   id = r.queue.start({ paths: [r.src] }).accepted[0];
   await drain(r.queue);
-  assert.equal(listHistory(r.history).length, 0, "a cancellation with no work behind it files nothing");
-  assert.deepEqual(stagingEntries(r.staging), [], "and leaves nothing behind either");
+  assert.equal(filedCount(r.store), 0, "a cancellation with no work behind it files nothing");
+  assert.deepEqual(stagingEntries(r.pending), [], "and leaves nothing behind either");
   const row = r.queue.snapshot().items[0];
   assert.equal(row.phase, "cancelled");
   assert.equal(row.partial, undefined);
@@ -576,7 +590,7 @@ test("cancelled after real work: ONE document, filed, and it SAYS it is partial 
   id = r.queue.start({ paths: [r.src] }).accepted[0];
   await drain(r.queue);
 
-  const doc = filedDoc(r.history);
+  const doc = filedDoc(r.store);
   assert.ok(doc, "work that exists is kept");
   const note = doc.text.indexOf("[Partial import:");
   assert.ok(note > 0, "the document says it is partial");
@@ -588,7 +602,7 @@ test("cancelled after real work: ONE document, filed, and it SAYS it is partial 
   assert.equal(row.phase, "cancelled");
   assert.equal(row.partial, true, "the page must be able to say it too");
   assert.ok(row.progress > 0 && row.progress < 1, "the progress freezes at what was really covered");
-  assert.deepEqual(stagingEntries(r.staging), []);
+  assert.deepEqual(stagingEntries(r.pending), []);
   assert.deepEqual(fingerprint(r.src), before, "THE SOURCE FILE IS UNTOUCHED");
 });
 
@@ -597,7 +611,7 @@ test("a decode that breaks half way keeps the work and labels it, and never touc
   const before = fingerprint(r.src);
   r.queue.start({ paths: [r.src] });
   await drain(r.queue);
-  const doc = filedDoc(r.history);
+  const doc = filedDoc(r.store);
   assert.ok(doc);
   assert.match(doc.text, /Flow could not read the whole file\./);
   const row = r.queue.snapshot().items[0];
@@ -613,8 +627,8 @@ test("a file too long to decode is refused before anything is written, and the f
   const before = fingerprint(r.src);
   r.queue.start({ paths: [r.src] });
   await drain(r.queue);
-  assert.equal(listHistory(r.history).length, 0);
-  assert.deepEqual(stagingEntries(r.staging), []);
+  assert.equal(filedCount(r.store), 0);
+  assert.deepEqual(stagingEntries(r.pending), []);
   const row = r.queue.snapshot().items[0];
   assert.equal(row.phase, "failed");
   // planDecode's own sentence, word for word: it names the length, the limit and
@@ -635,7 +649,7 @@ test("an undecodable format is refused in words a human can act on, never an exc
   assert.equal(row.phase, "failed");
   assert.match(row.error ?? "", /could not be read/);
   assert.match(row.error ?? "", /M4A/, "the sentence names the format the user chose");
-  assert.equal(listHistory(r.history).length, 0);
+  assert.equal(filedCount(r.store), 0);
   assert.deepEqual(fingerprint(r.src), before, "THE SOURCE FILE IS UNTOUCHED");
 });
 
@@ -652,7 +666,7 @@ test("what is refused up front: the wrong extension, a folder, a file that is no
   assert.match(res.rejected[1].reason, /not a file/);
   assert.match(res.rejected[2].reason, /not there any more/);
   assert.equal(r.queue.snapshot().busy, false, "a refused batch never becomes a running import");
-  assert.equal(listHistory(r.history).length, 0);
+  assert.equal(filedCount(r.store), 0);
   assert.deepEqual(fingerprint(r.src), before, "THE SOURCE FILE IS UNTOUCHED");
 });
 
@@ -661,8 +675,8 @@ test("a file with no speech in it files nothing, and says which of the two silen
   const before = fingerprint(quiet.src);
   quiet.queue.start({ paths: [quiet.src] });
   await drain(quiet.queue);
-  assert.equal(listHistory(quiet.history).length, 0, "an empty document in the archive is worse than a refusal");
-  assert.deepEqual(stagingEntries(quiet.staging), []);
+  assert.equal(filedCount(quiet.store), 0, "an empty document in the archive is worse than a refusal");
+  assert.deepEqual(stagingEntries(quiet.pending), []);
   assert.match(quiet.queue.snapshot().items[0].error ?? "", /found no speech/);
   assert.deepEqual(fingerprint(quiet.src), before, "THE SOURCE FILE IS UNTOUCHED");
 
@@ -674,7 +688,7 @@ test("a file with no speech in it files nothing, and says which of the two silen
   });
   broken.queue.start({ paths: [broken.src] });
   await drain(broken.queue);
-  assert.equal(listHistory(broken.history).length, 0);
+  assert.equal(filedCount(broken.store), 0);
   assert.match(
     broken.queue.snapshot().items[0].error ?? "",
     /failed on every segment/,
@@ -694,7 +708,7 @@ test("one failed segment is an honest gap, and the import goes on", async () => 
   });
   r.queue.start({ paths: [r.src] });
   await drain(r.queue);
-  const doc = filedDoc(r.history);
+  const doc = filedDoc(r.store);
   assert.ok(doc);
   assert.match(doc.text, /could not be transcribed/);
   assert.match(doc.text, /^\[00:00:00\] line 1$/m);
@@ -742,7 +756,7 @@ test("one transcription at a time, and the files run in the order they were drop
   assert.equal(r.queue.snapshot().items.map((i) => i.fileName).join(","), "reunion-client_2026-07-12.m4a,standup.mp3");
   await drain(r.queue);
   assert.equal(r.calls.maxConcurrent, 1, "whisper is one bottleneck: never two segments at once");
-  assert.equal(listHistory(r.history).length, 2, "both documents are filed");
+  assert.equal(filedCount(r.store), 2, "both documents are filed");
   assert.deepEqual([fingerprint(r.src), fingerprint(second)], before, "BOTH SOURCE FILES ARE UNTOUCHED");
 });
 
@@ -762,11 +776,11 @@ test("quitting mid-import files the work with the note that says the app closed"
   const before = fingerprint(r.src);
   r.queue.start({ paths: [r.src] });
   await drain(r.queue);
-  const doc = filedDoc(r.history);
+  const doc = filedDoc(r.store);
   assert.ok(doc, "a quit must not bury the work in a folder nothing lists");
   assert.match(doc.text, /Flow closed before this import finished\./);
   assert.equal(r.queue.snapshot().items[0].partial, true);
-  assert.deepEqual(stagingEntries(r.staging), []);
+  assert.deepEqual(stagingEntries(r.pending), []);
   assert.deepEqual(fingerprint(r.src), before, "THE SOURCE FILE IS UNTOUCHED");
 });
 
@@ -775,8 +789,8 @@ test("quitting before any transcription leaves nothing at all", async () => {
   const before = fingerprint(r.src);
   r.queue.start({ paths: [r.src] });
   await drain(r.queue);
-  assert.equal(listHistory(r.history).length, 0);
-  assert.deepEqual(stagingEntries(r.staging), [], "no orphan folder for the next boot to puzzle over");
+  assert.equal(filedCount(r.store), 0);
+  assert.deepEqual(stagingEntries(r.pending), [], "no orphan folder for the next boot to puzzle over");
   assert.deepEqual(fingerprint(r.src), before, "THE SOURCE FILE IS UNTOUCHED");
 });
 
@@ -802,7 +816,7 @@ test("a WAV past the budget is decoded in slices, read-only ranges, and ONE cont
     assert.ok(typeof call.source.start === "number" && (call.source.start as number) > prevStart, "ranges advance");
     prevStart = call.source.start as number;
   }
-  const doc = filedDoc(r.history);
+  const doc = filedDoc(r.store);
   assert.ok(doc);
   const stamps = [...doc.text.matchAll(/^\[(\d\d):(\d\d):(\d\d)\]/gm)].map(
     (m) => Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]),
@@ -818,7 +832,7 @@ test("a container that carries no duration gets the MEASURED length in its heade
   const r = rig({ sourceName: "stream.ogg", decode: { durationMs: 0, pcmMs: 21_000 } });
   r.queue.start({ paths: [r.src] });
   await drain(r.queue);
-  const doc = filedDoc(r.history);
+  const doc = filedDoc(r.store);
   assert.ok(doc);
   assert.match(doc.text, new RegExp(`^- source length: ${hms(21_000)}$`, "m"));
   assert.equal(r.queue.snapshot().items[0].durationMs, 21_000);
@@ -838,7 +852,7 @@ test("a partial import of a file with no stated duration says the length is unkn
   });
   id = r.queue.start({ paths: [r.src] }).accepted[0];
   await drain(r.queue);
-  const doc = filedDoc(r.history);
+  const doc = filedDoc(r.store);
   assert.ok(doc);
   assert.match(doc.text, /^- source length: unknown$/m, "the part is never reported as the whole");
 });
@@ -847,11 +861,11 @@ test("dismissing a finished row removes it from the queue and touches nothing on
   const r = rig({ decode: { durationMs: 12_000 } });
   const id = r.queue.start({ paths: [r.src] }).accepted[0];
   await drain(r.queue);
-  const doc = filedDoc(r.history);
+  const doc = filedDoc(r.store);
   assert.ok(doc);
   assert.equal(r.queue.cancel(id).ok, true, "the button must do something");
   assert.equal(r.queue.snapshot().items.length, 0, "and what it does is visible");
-  assert.equal(listHistory(r.history).length, 1, "dismissing a row is bookkeeping, never a deletion");
+  assert.equal(filedCount(r.store), 1, "dismissing a row is bookkeeping, never a deletion");
   assert.equal(r.queue.cancel(id).ok, false, "an unknown id is refused, not invented");
 });
 
@@ -903,14 +917,18 @@ test("every file handle the import opens is read-only, except its OWN copy of th
   }
 });
 
-test("the pipeline's only destructive call is bounded to a folder it made itself under staging", () => {
+test("B3e: la SEULE suppression du pipeline est bornee au dossier de transit qu'il remplit lui-meme", () => {
+  // La garde n'a pas change de nature en changeant de dossier : elle existe pour
+  // que « un import qui n'a rien produit ne laisse rien » soit une suppression qui
+  // ne peut JAMAIS atteindre un fichier de l'utilisateur. Le fichier source, lui,
+  // n'est meme pas dans le perimetre.
   const rm = /private discard\(job: Job\): void \{[\s\S]*?\n {2}\}/.exec(PIPELINE_SRC);
   assert.ok(rm, "discard() is the one place this module removes anything");
-  assert.match(rm[0], /this\.underStaging\(dir\)/, "and it refuses any path outside the app-owned staging root");
+  assert.match(rm[0], /this\.underPendingAudio\(audio\)/, "et elle refuse tout chemin hors du dossier de transit");
   const all = [...PIPELINE_SRC.matchAll(/fs\.(rmSync|rmdirSync|unlinkSync|renameSync)\(/g)].map((m) => m[1]);
   assert.deepEqual(
     all.sort(),
-    ["renameSync", "renameSync", "rmSync", "rmdirSync"],
-    "the removals are discard()'s rmSync and dropEmptyStagingDir()'s rmdirSync; the renames are the two atomic document swaps",
+    ["rmSync"],
+    "une seule : celle de discard(). Les deux renommages atomiques de document sont partis avec le fichier - le document est un tampon en memoire, personne ne peut le surprendre a moitie ecrit",
   );
 });

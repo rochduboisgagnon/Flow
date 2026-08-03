@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { TUS_CHUNK_BYTES, audioObjectName, chunkCount, nextChunk } from "../shared/tus";
+import { AUDIO_BUCKET, TUS_CHUNK_BYTES, audioObjectName, chunkCount, nextChunk } from "../shared/tus";
 import type { AudioUploadProgress } from "../shared/recordings";
 import type { RecordingRow } from "../shared/recordings";
 import type { TusUpload } from "./data/tusUpload";
@@ -76,9 +76,6 @@ export interface AudioUploadDeps {
   schedule?(fn: () => void, ms: number): void;
   now?(): number;
 }
-
-/** Le seau de la premiere migration. Prive, et son prefixe est le compte. */
-export const AUDIO_BUCKET = "recordings";
 
 export class AudioUploadQueue {
   private deps: AudioUploadDeps;
@@ -160,6 +157,54 @@ export class AudioUploadQueue {
     }
     if (resumed > 0) this.deps.log?.(`[audio] ${resumed} televersement(s) a reprendre`);
     return resumed;
+  }
+
+  /**
+   * Un televersement DIRECT, sans aucune comptabilite de ligne.
+   *
+   * Un seul appelant : le retrait d'un passage, qui remplace l'audio d'une
+   * reunion par sa version nettoyee. Il ne peut pas passer par `enqueue` - il n'y
+   * a pas de .wav en transit sous l'identifiant de la reunion, l'objet existe
+   * DEJA, et il n'y a pas d'offset a garder pour plus tard : cet envoi doit
+   * reussir maintenant ou echouer maintenant, parce que l'appelant refuse
+   * d'ecrire le document tant qu'il n'a pas reussi.
+   *
+   * Il partage donc la seule chose qui compte - le protocole, les tranches de
+   * 6 Mo, l'offset lu de la reponse - et rien du reste.
+   */
+  async uploadFile(objectName: string, srcPath: string): Promise<{ ok: boolean; error: string }> {
+    let total: number;
+    try {
+      total = (await fsp.stat(srcPath)).size;
+    } catch (err) {
+      return { ok: false, error: `le fichier a televerser est introuvable : ${err}` };
+    }
+    const made = await this.deps.tus.create({ bucket: AUDIO_BUCKET, objectName, totalBytes: total });
+    if (!made.ok) return { ok: false, error: made.error };
+    const fh = await fsp.open(srcPath, "r");
+    const buf = Buffer.allocUnsafe(TUS_CHUNK_BYTES);
+    let sent = 0;
+    try {
+      for (;;) {
+        const plan = nextChunk(sent, total);
+        if (plan.length === 0) break;
+        const read = await fh.read(buf, 0, plan.length, plan.start);
+        if (read.bytesRead === 0) return { ok: false, error: "le fichier a rapetisse pendant l'envoi" };
+        const res = await this.deps.tus.patch(made.url, plan.start, buf.subarray(0, read.bytesRead));
+        if (res.conflict) {
+          const at = await this.deps.tus.offset(made.url);
+          if (!at.ok) return { ok: false, error: at.error || "offset illisible" };
+          sent = at.offset;
+          continue;
+        }
+        if (!res.ok) return { ok: false, error: res.error || "une tranche a ete refusee" };
+        sent = res.offset;
+        if (res.complete || sent >= total) break;
+      }
+    } finally {
+      await fh.close();
+    }
+    return sent >= total ? { ok: true, error: "" } : { ok: false, error: "le televersement s'est arrete avant la fin" };
   }
 
   private async dropLocal(id: string, why: string): Promise<void> {
@@ -330,6 +375,8 @@ export class AudioUploadQueue {
     }
   }
 }
+
+export { AUDIO_BUCKET };
 
 /** La taille qu'un .wav de cette duree atteindra, pour l'afficher AVANT d'avoir
  * le fichier. 16 kHz mono 16 bits, plus l'entete de 44 octets : 32 Ko par

@@ -63,7 +63,6 @@ test(
       // B3a : le document va dans le compte. Ici, un magasin en memoire - ce
       // test mesure de la VRAIE parole traversant le moteur, pas le reseau.
       store,
-      historyRootOverride: path.join(work, "history"),
       schedule: () => () => {},
     });
     try {

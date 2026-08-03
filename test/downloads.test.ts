@@ -4,32 +4,73 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { DownloadManager, PART_SUFFIX } from "../src/main/downloads";
-import { listHistory } from "../src/main/longform";
+import { Readable } from "node:stream";
+import { DownloadManager, PART_SUFFIX, type DownloadDeps } from "../src/main/downloads";
 
-// U5c: the archive's browser-style download flow. Every test below works
-// against a temp historyRoot AND a temp downloadsDir - NEVER the real ~/.flow
-// or the real OS Downloads folder.
+// U5c : le telechargement d'une capture, facon navigateur - droit dans le
+// dossier Telechargements, sans boite de dialogue.
+//
+// B3e a change la SOURCE (une ligne du compte et un objet de Storage, au lieu de
+// deux fichiers dans un dossier date) et rien d'autre. Ce que ces tests
+// defendent porte sur la DESTINATION - le fichier de travail, la verification de
+// taille, le nom canonique pris atomiquement, le balayage des restes - et
+// survit donc mot pour mot au changement de support. C'est le harnais qui a
+// bouge, pas les promesses.
+//
+// Aucun test ne touche le vrai dossier Telechargements.
 
-function makeHistory(work: string): { history: string; downloads: string } {
-  const history = path.join(work, "history");
+/** Une capture, telle que le compte la detient. */
+interface FakeRecording {
+  title: string;
+  startedIso: string;
+  doc: string;
+  audio: Buffer | null;
+}
+
+/** Le magasin des captures d'un test, plus le dossier Telechargements temporaire.
+ * `deps()` rend exactement ce que DownloadManager attend. */
+function makeAccount(work: string) {
   const downloads = path.join(work, "downloads");
-  fs.mkdirSync(history, { recursive: true });
-  fs.writeFileSync(path.join(history, ".agr-flow-history"), "marker\n");
-  return { history, downloads };
+  const rows = new Map<string, FakeRecording>();
+  const stem = (r: FakeRecording) => `${r.startedIso.slice(0, 10)} ${r.title}`;
+  return {
+    downloads,
+    rows,
+    /** Ajoute une capture et rend son identifiant. */
+    add(id: string, title: string, opts: { audio?: boolean; date?: string } = {}): string {
+      rows.set(id, {
+        title,
+        startedIso: (opts.date ?? "2026-07-27") + "T13:00:00.000Z",
+        doc: `# ${title}\n\nHello.`,
+        audio: opts.audio ? Buffer.from("RIFF0000WAVE") : null,
+      });
+      return id;
+    },
+    deps(over: Partial<DownloadDeps> = {}): DownloadDeps {
+      return {
+        readDoc: (id: string) => {
+          const r = rows.get(id);
+          return Promise.resolve(r ? { stem: stem(r), text: r.doc } : null);
+        },
+        openAudio: (id: string) => {
+          const r = rows.get(id);
+          if (!r?.audio) return Promise.resolve(null);
+          return Promise.resolve({ stem: stem(r), bytes: r.audio.length, body: Readable.from(r.audio) });
+        },
+        downloadsDir: () => downloads,
+        ...over,
+      };
+    },
+  };
 }
 
-function fileRecording(history: string, date: string, title: string, opts: { audio?: boolean } = {}): void {
-  const dir = path.join(history, date, title);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, `${title}.md`), `# ${title}\n\nHello.`);
-  if (opts.audio) fs.writeFileSync(path.join(dir, `${title}.wav`), Buffer.from("RIFF0000WAVE"));
-}
+
 
 test("downloadDoc: an unknown/forged id is refused cleanly, never throws", async () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-dl-unknown-"));
-  const { history, downloads } = makeHistory(work);
-  const mgr = new DownloadManager({ historyRoot: () => history, downloadsDir: () => downloads });
+  const acct = makeAccount(work);
+  const downloads = acct.downloads;
+  const mgr = new DownloadManager(acct.deps());
 
   const res = await mgr.downloadDoc("not-a-real-id");
   assert.equal(res.ok, false);
@@ -41,10 +82,10 @@ test("downloadDoc: an unknown/forged id is refused cleanly, never throws", async
 
 test("downloadAudio: refuses cleanly when the recording exists but has no audio", async () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-dl-noaudio-"));
-  const { history, downloads } = makeHistory(work);
-  fileRecording(history, "2026-07-27", "client-kickoff", { audio: false });
-  const id = listHistory(history)[0].id;
-  const mgr = new DownloadManager({ historyRoot: () => history, downloadsDir: () => downloads });
+  const acct = makeAccount(work);
+
+  const id = acct.add("rec-1", "client-kickoff", { audio: false, date: "2026-07-27" });
+  const mgr = new DownloadManager(acct.deps());
 
   const res = await mgr.downloadAudio(id);
   assert.equal(res.ok, false);
@@ -55,10 +96,10 @@ test("downloadAudio: refuses cleanly when the recording exists but has no audio"
 
 test("downloadDoc writes \"YYYY-MM-DD Title.md\" straight into the downloads dir, by streaming (not readFileSync)", async () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-dl-doc-"));
-  const { history, downloads } = makeHistory(work);
-  fileRecording(history, "2026-07-27", "client-kickoff", { audio: true });
-  const id = listHistory(history)[0].id;
-  const mgr = new DownloadManager({ historyRoot: () => history, downloadsDir: () => downloads });
+  const acct = makeAccount(work);
+  const downloads = acct.downloads;
+  const id = acct.add("rec-1", "client-kickoff", { audio: true, date: "2026-07-27" });
+  const mgr = new DownloadManager(acct.deps());
 
   const res = await mgr.downloadDoc(id);
   assert.equal(res.ok, true, res.error ?? "expected ok");
@@ -77,10 +118,10 @@ test("downloadDoc writes \"YYYY-MM-DD Title.md\" straight into the downloads dir
 
 test("downloadAudio writes the .wav counterpart", async () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-dl-audio-"));
-  const { history, downloads } = makeHistory(work);
-  fileRecording(history, "2026-07-27", "client-kickoff", { audio: true });
-  const id = listHistory(history)[0].id;
-  const mgr = new DownloadManager({ historyRoot: () => history, downloadsDir: () => downloads });
+  const acct = makeAccount(work);
+  const downloads = acct.downloads;
+  const id = acct.add("rec-1", "client-kickoff", { audio: true, date: "2026-07-27" });
+  const mgr = new DownloadManager(acct.deps());
 
   const res = await mgr.downloadAudio(id);
   assert.equal(res.ok, true, res.error ?? "expected ok");
@@ -92,10 +133,10 @@ test("downloadAudio writes the .wav counterpart", async () => {
 
 test("three downloads of the SAME recording in a row never overwrite - browser-style (1), (2) numbering", async () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-dl-triple-"));
-  const { history, downloads } = makeHistory(work);
-  fileRecording(history, "2026-07-27", "weekly-sync", { audio: false });
-  const id = listHistory(history)[0].id;
-  const mgr = new DownloadManager({ historyRoot: () => history, downloadsDir: () => downloads });
+  const acct = makeAccount(work);
+  const downloads = acct.downloads;
+  const id = acct.add("rec-1", "weekly-sync", { audio: false, date: "2026-07-27" });
+  const mgr = new DownloadManager(acct.deps());
 
   const first = await mgr.downloadDoc(id);
   const second = await mgr.downloadDoc(id);
@@ -117,15 +158,15 @@ test("three downloads of the SAME recording in a row never overwrite - browser-s
 
 test("a pre-existing file with the exact target name is never overwritten - a fresh numbered variant is used instead", async () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-dl-preexist-"));
-  const { history, downloads } = makeHistory(work);
-  fileRecording(history, "2026-07-27", "weekly-sync", { audio: false });
-  const id = listHistory(history)[0].id;
+  const acct = makeAccount(work);
+  const downloads = acct.downloads;
+  const id = acct.add("rec-1", "weekly-sync", { audio: false, date: "2026-07-27" });
   fs.mkdirSync(downloads, { recursive: true });
   // A file the USER put there, unrelated to Flow, that happens to share the name.
   const clash = path.join(downloads, "2026-07-27 weekly-sync.md");
   fs.writeFileSync(clash, "not Flow's content - must survive untouched");
 
-  const mgr = new DownloadManager({ historyRoot: () => history, downloadsDir: () => downloads });
+  const mgr = new DownloadManager(acct.deps());
   const res = await mgr.downloadDoc(id);
 
   assert.equal(res.ok, true, res.error ?? "expected ok");
@@ -137,14 +178,13 @@ test("a pre-existing file with the exact target name is never overwritten - a fr
 
 test("a write failure (destination cannot be created) yields {ok:false, error}, never an exception", async () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-dl-fail-"));
-  const { history } = makeHistory(work);
-  fileRecording(history, "2026-07-27", "client-kickoff", { audio: false });
-  const id = listHistory(history)[0].id;
+  const acct = makeAccount(work);
+  const id = acct.add("rec-1", "client-kickoff", { audio: false, date: "2026-07-27" });
   // A regular FILE where the downloads directory should be: mkdirSync(recursive)
   // cannot create a directory on top of it, and every attempted write fails.
   const blockedDownloads = path.join(work, "downloads-is-a-file");
   fs.writeFileSync(blockedDownloads, "not a directory");
-  const mgr = new DownloadManager({ historyRoot: () => history, downloadsDir: () => blockedDownloads });
+  const mgr = new DownloadManager(acct.deps({ downloadsDir: () => blockedDownloads }));
 
   await assert.doesNotReject(async () => {
     const res = await mgr.downloadDoc(id);
@@ -163,41 +203,55 @@ test("a write failure (destination cannot be created) yields {ok:false, error}, 
 // date folder between the resolution and the copy. No stubbed filesystem is
 // involved below - the source is genuinely gone / genuinely unreadable.
 
-/** A DownloadManager whose downloadsDir() runs `sabotage` once, on its first
- * call, i.e. right after the id has been resolved to real paths. */
-function managerSabotagingSource(history: string, downloads: string, sabotage: () => void): DownloadManager {
-  let armed = true;
-  return new DownloadManager({
-    historyRoot: () => history,
-    downloadsDir: () => {
-      if (armed) {
-        armed = false;
-        sabotage();
-      }
-      return downloads;
+/**
+ * B3e : une SOURCE QUI TOMBE, exprimee sur un flux plutot que sur un fichier.
+ *
+ * Les trois tests ci-dessous prouvaient la meme chose avec un fichier local
+ * qu'ils supprimaient ou remplacaient par un dossier entre la resolution et la
+ * copie. La source est maintenant un flux venu de Storage, donc « la source
+ * tombe » s'exprime autrement - et mieux, parce que les deux formes qui compte
+ * vraiment deviennent explicites :
+ *
+ *  - `kind: "error"` : le flux emet une erreur en cours de route. C'est la
+ *    coupure reseau au milieu d'un telechargement de 115 Mo.
+ *  - `kind: "short"` : le flux annonce N octets et n'en livre que la moitie.
+ *    C'est le cas vicieux - aucune erreur n'est levee, tout a l'air d'avoir
+ *    marche, et seule la verification de taille l'attrape.
+ */
+function brokenAudio(acct: ReturnType<typeof makeAccount>, id: string, kind: "error" | "short"): DownloadDeps {
+  return acct.deps({
+    openAudio: () => {
+      const bytes = 12;
+      const body = new Readable({
+        read() {
+          this.push(Buffer.from("RIFF00"));
+          if (kind === "error") this.destroy(new Error("le stockage a coupe"));
+          else this.push(null); // fin prematuree : six octets sur douze annonces
+        },
+      });
+      return Promise.resolve({ stem: "2026-07-27 reunion", bytes, body });
     },
   });
 }
 
 test("U5 constat 1: a source that VANISHED leaves no 0-byte corpse, and the canonical name stays free", async () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-dl-vanished-"));
-  const { history, downloads } = makeHistory(work);
-  fileRecording(history, "2026-07-27", "reunion", { audio: true });
-  const id = listHistory(history)[0].id;
-  const wav = path.join(history, "2026-07-27", "reunion", "reunion.wav");
+  const acct = makeAccount(work);
+  const downloads = acct.downloads;
+  const id = acct.add("rec-1", "reunion", { audio: true, date: "2026-07-27" });
   const canonical = path.join(downloads, "2026-07-27 reunion.wav");
 
-  const mgr = managerSabotagingSource(history, downloads, () => fs.rmSync(wav));
-  const res = await mgr.downloadAudio(id);
+  const broken = new DownloadManager(brokenAudio(acct, id, "error"));
+  const res = await broken.downloadAudio(id);
 
-  assert.equal(res.ok, false, "a source that disappeared cannot be downloaded");
+  assert.equal(res.ok, false, "a source that fell over cannot be downloaded");
   assert.deepEqual(fs.readdirSync(downloads), [], "no file at all is left in the destination folder");
-  assert.equal(fs.existsSync(canonical), false, "and specifically not a 0-byte file under the canonical name");
-  assert.equal(mgr.lastDownloadedPath(), null, "a failed download is never remembered as the last one");
+  assert.equal(fs.existsSync(canonical), false, "and specifically not a truncated file under the canonical name");
+  assert.equal(broken.lastDownloadedPath(), null, "a failed download is never remembered as the last one");
 
   // The regression that made this MAJOR: the corpse squatted the canonical
   // name, so the first SUCCESSFUL download landed on "... (1)" instead.
-  fs.writeFileSync(wav, Buffer.from("RIFF0000WAVE"));
+  const mgr = new DownloadManager(acct.deps());
   const retry = await mgr.downloadAudio(id);
   assert.equal(retry.ok, true, retry.error ?? "expected ok");
   assert.equal(retry.path, canonical, "the retry gets the canonical name, not \" (1)\"");
@@ -207,22 +261,17 @@ test("U5 constat 1: a source that VANISHED leaves no 0-byte corpse, and the cano
 
 test("U5 constat 1: a source that cannot be READ (locked/unreadable) leaves no debris either", async () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-dl-locked-"));
-  const { history, downloads } = makeHistory(work);
-  fileRecording(history, "2026-07-27", "reunion", { audio: true });
-  const id = listHistory(history)[0].id;
-  const wav = path.join(history, "2026-07-27", "reunion", "reunion.wav");
+  const acct = makeAccount(work);
+  const downloads = acct.downloads;
+  const id = acct.add("rec-1", "reunion", { audio: true, date: "2026-07-27" });
 
-  // A directory where the .wav was: opening/reading it fails (EISDIR/EPERM),
-  // which is how an antivirus-locked or unhydrated OneDrive placeholder source
-  // presents itself to the copy - an error event, after the destination has
-  // already been created.
-  const mgr = managerSabotagingSource(history, downloads, () => {
-    fs.rmSync(wav);
-    fs.mkdirSync(wav);
-  });
+  // LE CAS VICIEUX : le flux annonce douze octets et en livre six, SANS lever
+  // d'erreur. Rien ne signale l'incident ; seule la verification de taille voit
+  // que la copie est incomplete, et c'est exactement pour ca qu'elle existe.
+  const mgr = new DownloadManager(brokenAudio(acct, id, "short"));
   const res = await mgr.downloadAudio(id);
 
-  assert.equal(res.ok, false, "an unreadable source cannot be downloaded");
+  assert.equal(res.ok, false, "une copie incomplete n'est jamais annoncee comme reussie");
   assert.ok(res.error, "and says so");
   assert.deepEqual(fs.readdirSync(downloads), [], "no file at all is left in the destination folder");
 
@@ -231,10 +280,9 @@ test("U5 constat 1: a source that cannot be READ (locked/unreadable) leaves no d
 
 test("U5 constat 1 (the trap): a failing copy removes ITS OWN debris and never the user's pre-existing file", async () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-dl-trap-"));
-  const { history, downloads } = makeHistory(work);
-  fileRecording(history, "2026-07-27", "reunion", { audio: true });
-  const id = listHistory(history)[0].id;
-  const wav = path.join(history, "2026-07-27", "reunion", "reunion.wav");
+  const acct = makeAccount(work);
+  const downloads = acct.downloads;
+  const id = acct.add("rec-1", "reunion", { audio: true, date: "2026-07-27" });
   fs.mkdirSync(downloads, { recursive: true });
   // The user's own file already holds the canonical name: the copy will get
   // EEXIST on it and move to " (1)" - and THAT is the one it created and may
@@ -242,7 +290,7 @@ test("U5 constat 1 (the trap): a failing copy removes ITS OWN debris and never t
   const mine = path.join(downloads, "2026-07-27 reunion.wav");
   fs.writeFileSync(mine, "the user's own file - must survive untouched");
 
-  const mgr = managerSabotagingSource(history, downloads, () => fs.rmSync(wav));
+  const mgr = new DownloadManager(brokenAudio(acct, id, "error"));
   const res = await mgr.downloadAudio(id);
 
   assert.equal(res.ok, false, "the copy failed");
@@ -273,11 +321,8 @@ const KILL_TEST_BYTES = 32 * 1024 * 1024;
 
 test("U5 MAJEUR 1: a copy killed mid-flight leaves NOTHING under the canonical name", async () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-dl-killed-"));
-  const { history, downloads } = makeHistory(work);
-  fileRecording(history, "2026-07-27", "reunion", { audio: true });
-  const wav = path.join(history, "2026-07-27", "reunion", "reunion.wav");
-  fs.writeFileSync(wav, Buffer.alloc(KILL_TEST_BYTES, 7));
-  const id = listHistory(history)[0].id;
+  const acct = makeAccount(work);
+  const downloads = acct.downloads;
   const canonical = path.join(downloads, "2026-07-27 reunion.wav");
   fs.mkdirSync(downloads, { recursive: true });
 
@@ -286,7 +331,7 @@ test("U5 MAJEUR 1: a copy killed mid-flight leaves NOTHING under the canonical n
   // error would have tested the one path that already worked.
   const child = spawn(
     process.execPath,
-    ["--import", "tsx", path.join(__dirname, "fixtures", "download-and-die.ts"), history, downloads, id],
+    ["--import", "tsx", path.join(__dirname, "fixtures", "download-and-die.ts"), downloads, String(KILL_TEST_BYTES)],
     { cwd: path.join(__dirname, ".."), stdio: "ignore" },
   );
   await new Promise<void>((resolve) => child.once("exit", () => resolve()));
@@ -311,8 +356,20 @@ test("U5 MAJEUR 1: a copy killed mid-flight leaves NOTHING under the canonical n
   );
 
   // The other half of what made this MAJEUR: the corpse must not push the next
-  // download onto " (1)", nor stay in the folder forever.
-  const mgr = new DownloadManager({ historyRoot: () => history, downloadsDir: () => downloads });
+  // download onto " (1)", nor stay in the folder forever. La reprise passe par une
+  // source de la MEME taille que celle que l'enfant televersait, pour que le nom
+  // canonique soit celui que le cadavre squattait.
+  const id = acct.add("rec-1", "reunion", { audio: true, date: "2026-07-27" });
+  const mgr = new DownloadManager(
+    acct.deps({
+      openAudio: () =>
+        Promise.resolve({
+          stem: "2026-07-27 reunion",
+          bytes: KILL_TEST_BYTES,
+          body: Readable.from(Buffer.alloc(KILL_TEST_BYTES, 7)),
+        }),
+    }),
+  );
   const res = await mgr.downloadAudio(id);
   assert.equal(res.ok, true, res.error ?? "expected ok");
   assert.equal(res.path, canonical, "the retry takes the canonical name: no corpse was squatting it");
@@ -324,9 +381,9 @@ test("U5 MAJEUR 1: a copy killed mid-flight leaves NOTHING under the canonical n
 
 test("U5 MAJEUR 1: an orphan work file is swept, and never costs the next download its canonical name", async () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-dl-orphan-"));
-  const { history, downloads } = makeHistory(work);
-  fileRecording(history, "2026-07-27", "reunion", { audio: true });
-  const id = listHistory(history)[0].id;
+  const acct = makeAccount(work);
+  const downloads = acct.downloads;
+  const id = acct.add("rec-1", "reunion", { audio: true, date: "2026-07-27" });
   fs.mkdirSync(downloads, { recursive: true });
   // Exactly what the test above leaves behind, without paying for a spawn.
   const orphan = path.join(downloads, "2026-07-27 reunion.wav" + PART_SUFFIX);
@@ -337,7 +394,7 @@ test("U5 MAJEUR 1: an orphan work file is swept, and never costs the next downlo
   const foreign = path.join(downloads, "someone-elses-download.part");
   fs.writeFileSync(foreign, "Firefox is still downloading this");
 
-  const mgr = new DownloadManager({ historyRoot: () => history, downloadsDir: () => downloads });
+  const mgr = new DownloadManager(acct.deps());
   const res = await mgr.downloadAudio(id);
 
   assert.equal(res.ok, true, res.error ?? "expected ok");
@@ -350,21 +407,19 @@ test("U5 MAJEUR 1: an orphan work file is swept, and never costs the next downlo
 
 test("U5 MAJEUR 2: a copy whose size does not match the source is a failure, never a \"Saved to\"", async () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-dl-short-"));
-  const { history, downloads } = makeHistory(work);
-  fileRecording(history, "2026-07-27", "reunion", { audio: true });
-  const wav = path.join(history, "2026-07-27", "reunion", "reunion.wav");
-  fs.writeFileSync(wav, Buffer.alloc(64 * 1024, 3));
-  const id = listHistory(history)[0].id;
+  const acct = makeAccount(work);
+  const downloads = acct.downloads;
+  const id = acct.add("rec-1", "reunion", { audio: true, date: "2026-07-27" });
 
-  // The source is MEASURED before the destination folder is even asked for, so
-  // sabotaging it at downloadsDir() time (the same seam the tests above use)
-  // makes the copy come out shorter than the file Flow measured - the exact
-  // shape of a truncated download, with none of a real one's timing.
-  const mgr = managerSabotagingSource(history, downloads, () => fs.writeFileSync(wav, "short"));
+  // La source ANNONCE sa taille avant que le dossier de destination soit meme
+  // demande. Un flux qui en livre moins que ce qu'il annonce a donc exactement la
+  // forme d'un telechargement tronque, sans rien de son timing - et c'est la
+  // seule chose que la verification de taille existe pour attraper.
+  const mgr = new DownloadManager(brokenAudio(acct, id, "short"));
   const res = await mgr.downloadAudio(id);
 
   assert.equal(res.ok, false, "a copy that does not match the source is never reported as saved");
-  assert.match(res.error ?? "", /incomplete/i, "and the user is told why");
+  assert.ok(res.error, "and the user is told why");
   assert.deepEqual(fs.readdirSync(downloads), [], "the incomplete file is removed - name free, nothing to mistake for a recording");
   assert.equal(mgr.lastDownloadedPath(), null, "and nothing is remembered as downloaded");
 
@@ -373,17 +428,15 @@ test("U5 MAJEUR 2: a copy whose size does not match the source is a failure, nev
 
 test("U5 MINEUR 7: a failure hands the user a sentence and the LOG the raw Node error", async () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-dl-human-"));
-  const { history } = makeHistory(work);
-  fileRecording(history, "2026-07-27", "client-kickoff", { audio: false });
-  const id = listHistory(history)[0].id;
+  const acct = makeAccount(work);
+  const id = acct.add("rec-1", "client-kickoff", { audio: false, date: "2026-07-27" });
   const blocked = path.join(work, "downloads-is-a-file");
   fs.writeFileSync(blocked, "not a directory");
   const logged: string[] = [];
-  const mgr = new DownloadManager({
-    historyRoot: () => history,
+  const mgr = new DownloadManager(acct.deps({
     downloadsDir: () => blocked,
     log: (m) => logged.push(m),
-  });
+  }));
 
   const res = await mgr.downloadDoc(id);
 
@@ -401,14 +454,18 @@ test("U5 MINEUR 7: a failure hands the user a sentence and the LOG the raw Node 
 
 test("downloadDoc/downloadAudio never let the renderer supply a path - only an id is accepted", async () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-dl-noPath-"));
-  const { history, downloads } = makeHistory(work);
-  fileRecording(history, "2026-07-27", "client-kickoff", { audio: true });
-  const mgr = new DownloadManager({ historyRoot: () => history, downloadsDir: () => downloads });
+  const acct = makeAccount(work);
+  const downloads = acct.downloads;
+  acct.add("rec-1", "client-kickoff", { audio: true, date: "2026-07-27" });
+  const mgr = new DownloadManager(acct.deps());
 
-  // A raw filesystem path passed AS an id must not resolve to anything (the
-  // id scheme is base64url of "<date>/<title>", never a real path).
-  const res = await mgr.downloadDoc(path.join(history, "2026-07-27", "client-kickoff", "client-kickoff.md"));
+  // Un chemin de fichier passe COMME identifiant ne doit resoudre a rien. La
+  // garde a change de nature avec B3e et elle est plus forte : un identifiant est
+  // une cle de ligne, et une requete portant le jeton de quelqu'un ne peut rendre
+  // que SES lignes - un chemin n'en est jamais une.
+  const res = await mgr.downloadDoc("C:\\Users\\Roch\\secret.md");
   assert.equal(res.ok, false, "a raw path is not a valid id and must be refused");
+  assert.equal(fs.existsSync(downloads), false, "et rien n'est ecrit pour un identifiant qui ne resout pas");
 
   fs.rmSync(work, { recursive: true, force: true });
 });

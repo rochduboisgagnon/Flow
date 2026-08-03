@@ -127,3 +127,32 @@ export function looksAbandoned(heartbeatIso: string, nowMs: number, afterMs = AB
   if (Number.isNaN(beat)) return true;
   return nowMs - beat > afterMs;
 }
+
+/** Une reunion ouverte dans la page Notes : son texte, et de quoi le titrer.
+ *
+ * L'ancien `HistoryDocPayload` portait `date` - le nom du dossier date dans
+ * lequel le document vivait. Il porte maintenant `startedIso`, qui est un FAIT
+ * sur la reunion et non l'endroit ou elle etait rangee. La page formate la date
+ * elle-meme, ce qui lui permet enfin d'afficher l'heure. */
+export interface RecordingDocPayload {
+  id: string;
+  title: string;
+  startedIso: string;
+  text: string;
+}
+
+/** ~5 Mo : un transcript plus long est deja pathologique. La borne suit le
+ * document depuis l'epoque du fichier (MAX_HISTORY_DOC_BYTES) et garde son
+ * role - une page ne doit pas essayer d'afficher un document sans fin - mais
+ * elle s'applique maintenant a la LECTURE d'une ligne, et le tampon en amont
+ * (shared/captureDoc.ts) l'empeche deja d'etre atteinte par une vraie reunion. */
+export const MAX_DOC_DISPLAY_BYTES = 5 * 1024 * 1024;
+
+/** Le meme plafond que l'ancienne archive disque (MAX_HISTORY_ITEMS valait
+ * 2000). Il n'a pas change de valeur en changeant de support : ce qu'il borne
+ * est ce qu'une PAGE peut afficher, pas ce qu'un dossier peut contenir.
+ *
+ * Il vit ici et non dans le depot parce que la page Notes doit pouvoir DIRE que
+ * la liste s'arrete la - une troncature silencieuse se lit comme « voila tout ce
+ * que vous avez ».  */
+export const MAX_RECORDINGS_LISTED = 2000;
