@@ -196,6 +196,49 @@ export const UI_LIST_MICS = "ui:list-mics";
  * modele Ollama : D1 dit « aucun reglage visible », et le choix se fait
  * maintenant tout seul dans index.ts.) */
 export const UI_DOWNLOAD_NOTES_MODEL = "ui:download-notes-model";
+
+/** A2 : se connecter et se deconnecter, depuis l'onglet Account.
+ *
+ * IL N'Y A PAS DE CANAL D'INSCRIPTION, et c'est delibere : Roch cree les
+ * comptes lui-meme depuis la console Supabase (decision du 2026-08-03). Le
+ * projet refuse d'ailleurs les inscriptions cote serveur, ce qui est la moitie
+ * qui compte - la clef publiable part dans l'installeur, donc une porte fermee
+ * seulement dans cette interface ne serait pas fermee du tout.
+ *
+ * Le mot de passe traverse ce canal une fois, du champ de saisie vers le
+ * processus principal, et n'est jamais garde : ni dans un magasin, ni dans
+ * l'etat de la page, ni dans le journal. Ce qui revient est un instantane a
+ * trois champs qui ne contient aucun jeton (voir main/data/client.ts).
+ *
+ * L'ETAT, lui, voyage dans `account` de la poussee a 1 Hz plutot que par un
+ * canal a part : c'est trois scalaires, et une page qui affiche « connecte en
+ * tant que ... » ne doit pas avoir a inventer sa propre boucle. */
+export const UI_SIGN_IN = "ui:sign-in";
+export const UI_SIGN_OUT = "ui:sign-out";
+
+/** Tout ce que le reste de Flow a le droit de savoir d'une session.
+ *
+ * Il vit ICI, dans le contrat partage, et pas a cote du client Supabase : ce
+ * type est la frontiere, et une frontiere qui habite du cote du moteur est une
+ * frontiere que le moteur peut elargir sans que la page s'en apercoive.
+ *
+ * Ce qui n'y est pas : access_token, refresh_token, provider_token. Les trois
+ * ouvrent le compte. `expires_at` non plus - il n'ouvre rien, mais un champ
+ * sans appelant dans une frontiere est une invitation a la traverser. */
+export interface AccountSnapshot {
+  signedIn: boolean;
+  /** Vide tant que personne n'est connecte. */
+  email: string;
+  /** L'identifiant du compte. C'est lui qui prefixe les objets audio dans
+   * Storage, donc il sert ailleurs ; il n'ouvre rien tout seul. */
+  userId: string;
+}
+
+export interface SignInResult {
+  ok: boolean;
+  error: string;
+  account: AccountSnapshot;
+}
 // (U5c: "downloaded-file" reveals the LAST file U5c's downloads wrote, tracked
 // in main - never a path the renderer supplies).
 export const UI_OPEN_PATH = "ui:open-path";
@@ -358,6 +401,14 @@ export interface UiStatePayload {
    * recording still produces its full timestamped transcript without it. Only
    * the notes are missing. */
   notesModel: ModelStatePayload;
+  /** A2: qui est connecte sur CETTE machine. Trois scalaires, donc la poussee a
+   * 1 Hz, comme modelState juste au-dessus.
+   *
+   * AUCUN JETON N'ENTRE ICI, et ce n'est pas un oubli a corriger plus tard :
+   * cet objet est re-serialise chaque seconde vers une page web. C'est la
+   * regression numero 6 du plan, et le type est la premiere chose qui
+   * l'empeche. */
+  account: AccountSnapshot;
   /** F1: what the SECOND (batch) engine is doing. Four scalars at most, derived
    * fresh in main from the live settings and the live process, so it rides the
    * 1 Hz push like modelState above rather than being pulled: Settings > Engine

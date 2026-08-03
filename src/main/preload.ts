@@ -33,6 +33,8 @@ import {
   UI_RECORD_SHORTCUT,
   UI_LIST_MICS,
   UI_DOWNLOAD_NOTES_MODEL,
+  UI_SIGN_IN,
+  UI_SIGN_OUT,
   UI_OPEN_PATH,
   UI_GET_LOGIN_ITEM,
   UI_SET_LOGIN_ITEM,
@@ -76,6 +78,7 @@ import {
   type ImportQueueSnapshot,
   type ImportStartResult,
   type UiStatePayload,
+  type SignInResult,
   type UpdateCheckResult,
   type DictInput,
   type DictResult,
@@ -201,6 +204,11 @@ const ui = {
   listMics: (): Promise<Array<{ id: string; label: string }>> =>
     ipcRenderer.invoke(UI_LIST_MICS),
   downloadNotesModel: (): Promise<void> => ipcRenderer.invoke(UI_DOWNLOAD_NOTES_MODEL),
+  // A2. Pas de `signUp` : Roch cree les comptes lui-meme et le projet refuse
+  // les inscriptions cote serveur (verifie : 422 signup_disabled).
+  signIn: (email: string, password: string): Promise<SignInResult> =>
+    ipcRenderer.invoke(UI_SIGN_IN, email, password),
+  signOut: (): Promise<{ ok: boolean; error: string }> => ipcRenderer.invoke(UI_SIGN_OUT),
   openPath: (which: "log" | "data" | "history" | "legacy-history" | "repo" | "downloaded-file"): Promise<void> =>
     ipcRenderer.invoke(UI_OPEN_PATH, which),
   getLoginItem: (): Promise<boolean> => ipcRenderer.invoke(UI_GET_LOGIN_ITEM),

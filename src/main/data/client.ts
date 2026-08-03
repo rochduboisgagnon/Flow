@@ -1,5 +1,6 @@
 import { createClient, type SupabaseClient, type Session } from "@supabase/supabase-js";
 import { supabaseUrl, supabaseAnonKey } from "../../shared/supabaseConfig";
+import type { AccountSnapshot } from "../../shared/ipcContracts";
 import type { SupabaseStorage } from "./sessionStore";
 
 // ---------------------------------------------------------------------------
@@ -63,21 +64,11 @@ export function createFlowClient(deps: FlowClientDeps): SupabaseClient {
   });
 }
 
-/** Ce que le reste de l'application a le droit de savoir d'une session.
- *
- * DELIBEREMENT SANS LES JETONS. C'est la fuite numero 6 de la liste des
- * regressions du plan, et elle n'arrive jamais par malveillance : elle arrive
- * parce qu'un jour quelqu'un passe l'objet `Session` complet a une page, ou a
- * `/status`, ou a `selfCheck()`, pour en afficher le courriel. Le type ci-
- * dessous rend ce geste impossible sans le remarquer. */
-export interface AccountSnapshot {
-  signedIn: boolean;
-  /** Vide tant que personne n'est connecte. */
-  email: string;
-  /** L'identifiant du compte : c'est LUI qui prefixe les objets audio dans
-   * Storage, donc il est utile ailleurs. Il n'ouvre rien tout seul. */
-  userId: string;
-}
+// `AccountSnapshot` vit dans shared/ipcContracts.ts, pas ici : c'est la
+// frontiere entre le moteur et la page, et une frontiere qui habite du cote du
+// moteur est une frontiere que le moteur peut elargir sans que la page s'en
+// apercoive.
+export type { AccountSnapshot } from "../../shared/ipcContracts";
 
 /** La seule facon de transformer une Session en quelque chose de montrable.
  *

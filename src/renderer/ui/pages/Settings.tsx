@@ -8,7 +8,7 @@ import { Toggle, Row } from "../components";
 // control: Theme in General (the wave that ships the light theme).
 
 type SettingsTab =
-  | "general" | "dictation" | "audio" | "engine" | "localai"
+  | "account" | "general" | "dictation" | "audio" | "engine" | "localai"
   | "storage" | "updates" | "about";
 
 type Patch = (p: Record<string, unknown>) => Promise<void>;
@@ -16,6 +16,11 @@ type Patch = (p: Record<string, unknown>) => Promise<void>;
 export function SettingsPage({ s, patch }: { s: UiStatePayload; patch: Patch }) {
   const [tab, setTab] = useState<SettingsTab>("general");
   const tabs: Array<[SettingsTab, string]> = [
+    // A2 : Account en PREMIER, parce que rien d'autre ne fonctionne sans lui.
+    // Depuis la refonte, les reglages, le dictionnaire, les dictees et les
+    // reunions vivent dans le compte : un Flow deconnecte n'a pas de reglages
+    // a montrer dans les huit onglets suivants.
+    ["account", "Account"],
     ["general", "General"], ["dictation", "Dictation"], ["audio", "Audio"],
     ["engine", "Engine"], ["localai", "Local AI"], ["storage", "Storage & Privacy"],
     ["updates", "Updates"], ["about", "About"],
@@ -31,6 +36,7 @@ export function SettingsPage({ s, patch }: { s: UiStatePayload; patch: Patch }) 
           </button>
         ))}
       </div>
+      {tab === "account" ? <TabAccount s={s} /> : null}
       {tab === "general" ? <TabGeneral s={s} patch={patch} /> : null}
       {tab === "dictation" ? <TabDictation s={s} patch={patch} /> : null}
       {tab === "audio" ? <TabAudio s={s} patch={patch} /> : null}
@@ -40,6 +46,104 @@ export function SettingsPage({ s, patch }: { s: UiStatePayload; patch: Patch }) 
       {tab === "updates" ? <TabUpdates s={s} /> : null}
       {tab === "about" ? <TabAbout s={s} /> : null}
     </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// A2 : le compte.
+//
+// IL N'Y A PAS DE BOUTON « CREER UN COMPTE », et ce n'est pas une etape
+// remise a plus tard. Decision de Roch, 2026-08-03 : il cree les comptes
+// lui-meme depuis la console Supabase ; s'il veut donner acces a quelqu'un, il
+// lui fabrique son compte. Le projet REFUSE d'ailleurs les inscriptions cote
+// serveur - verifie, 422 signup_disabled - ce qui est la moitie qui compte,
+// puisqu'une porte fermee seulement dans cette page ne serait pas fermee du
+// tout.
+//
+// LE MOT DE PASSE NE SURVIT PAS A LA SOUMISSION. Il vit dans l'etat de ce
+// composant le temps de la frappe, part une fois vers le processus principal,
+// et le champ est vide immediatement apres - y compris quand la connexion
+// echoue. Un mot de passe qui reste dans un champ est un mot de passe visible
+// par-dessus l'epaule, et lisible par les outils de developpement.
+// ---------------------------------------------------------------------------
+function TabAccount({ s }: { s: UiStatePayload }) {
+  const a = s.account;
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function signIn(ev: React.FormEvent) {
+    ev.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const r = await window.flowui.signIn(email, password);
+      if (!r.ok) setError(r.error || "Connexion impossible.");
+    } finally {
+      // Dans le `finally` : le mot de passe s'efface meme quand ca a rate.
+      setPassword("");
+      setBusy(false);
+    }
+  }
+
+  async function signOut() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const r = await window.flowui.signOut();
+      // Une erreur ici veut dire « le serveur n'a pas repondu », pas « vous
+      // etes encore connecte » : sur cette machine, le jeton est parti.
+      setError(r.error ? "Deconnecte sur cette machine. Le serveur n'a pas repondu." : "");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (a.signedIn) {
+    return (
+      <div className="rows">
+        <Row label="Signed in as" help="Your settings, dictionary, dictations and meetings live in this account, not on this computer. Sign in on another machine and they follow you.">
+          <span className="pinned">{a.email}</span>
+        </Row>
+        <Row label="Sign out" help="Signs out THIS computer only. Other machines you are signed in on keep working - a recording in progress elsewhere is not interrupted.">
+          <button className="btn" disabled={busy} onClick={() => void signOut()}>
+            {busy ? "Signing out..." : "Sign out"}
+          </button>
+        </Row>
+        {error ? <p className="sub">{error}</p> : null}
+      </div>
+    );
+  }
+
+  return (
+    <form className="rows" onSubmit={(e) => void signIn(e)}>
+      <Row label="Email" help="Accounts are created for you. There is no sign-up here, and none on the server either.">
+        <input
+          type="email"
+          value={email}
+          autoComplete="username"
+          onChange={(e) => setEmail(e.target.value)}
+          aria-label="Email"
+        />
+      </Row>
+      <Row label="Password" help="Sent once to Flow's engine to open a session, and never stored by this page.">
+        <input
+          type="password"
+          value={password}
+          autoComplete="current-password"
+          onChange={(e) => setPassword(e.target.value)}
+          aria-label="Password"
+        />
+      </Row>
+      <Row label="" help="">
+        <button className="btn" type="submit" disabled={busy || !email || !password}>
+          {busy ? "Signing in..." : "Sign in"}
+        </button>
+      </Row>
+      {error ? <p className="sub">{error}</p> : null}
+    </form>
   );
 }
 

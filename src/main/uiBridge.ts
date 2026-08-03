@@ -5,6 +5,8 @@ import {
   UI_RECORD_SHORTCUT,
   UI_LIST_MICS,
   UI_DOWNLOAD_NOTES_MODEL,
+  UI_SIGN_IN,
+  UI_SIGN_OUT,
   UI_OPEN_PATH,
   UI_GET_LOGIN_ITEM,
   UI_SET_LOGIN_ITEM,
@@ -41,6 +43,7 @@ import {
   type ImportQueueSnapshot,
   type ImportStartResult,
   type UiStatePayload,
+  type SignInResult,
   type UpdateCheckResult,
   type DictResult,
   type LongStateSnapshot,
@@ -80,6 +83,11 @@ export interface UiBridgeDeps {
    * quand le telechargement est fini ou a echoue ; l'avancement, lui, voyage
    * dans `notesModel` de la poussee d'etat. */
   downloadNotesModel(): Promise<void>;
+  /** A2 : l'onglet Account. Il n'y a PAS d'equivalent d'inscription, ici ni
+   * ailleurs - Roch cree les comptes lui-meme, et le projet Supabase refuse
+   * les inscriptions cote serveur. */
+  signIn(email: string, password: string): Promise<SignInResult>;
+  signOut(): Promise<{ ok: boolean; error: string }>;
   historyRootDir(): string;
   /** U2b: the pre-1.0.0 recordings folder, or null when there is none. Null is
    * the normal case and makes "legacy-history" a refused destination. U2c: main
@@ -350,6 +358,32 @@ export class UiBridge {
     // fetches is pinned in modelStore (immutable revision, hash checked before
     // the rename), so the renderer chooses NOTHING here, it only asks.
     this.guarded<[], void>(UI_DOWNLOAD_NOTES_MODEL, undefined, () => this.deps.downloadNotesModel());
+
+    // A2. Les deux arguments sont valides ICI plutot que crus sur parole : ce
+    // canal est joignable depuis le preload que partagent l'overlay et la
+    // fenetre de capture, et il porte un mot de passe.
+    //
+    // Le repli en cas de sender refuse est un ECHEC explicite, jamais un
+    // « ok: true » : une page qui croit avoir connecte quelqu'un afficherait
+    // une application vide.
+    this.guarded<[unknown, unknown], SignInResult>(
+      UI_SIGN_IN,
+      { ok: false, error: "refuse", account: { signedIn: false, email: "", userId: "" } },
+      (email, password) => {
+        if (typeof email !== "string" || typeof password !== "string") {
+          return Promise.resolve({
+            ok: false,
+            error: "adresse ou mot de passe manquant",
+            account: { signedIn: false, email: "", userId: "" },
+          });
+        }
+        return this.deps.signIn(email.trim(), password);
+      },
+    );
+
+    this.guarded<[], { ok: boolean; error: string }>(UI_SIGN_OUT, { ok: false, error: "refuse" }, () =>
+      this.deps.signOut(),
+    );
 
     this.guarded<[unknown], void>(UI_OPEN_PATH, undefined, async (which) => {
       // Fixed destinations only: the renderer never passes a path, so a

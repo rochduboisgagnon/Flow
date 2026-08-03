@@ -90,22 +90,48 @@ export class SessionStore implements SupabaseStorage {
     return path.join(this.deps.dir(), FILE);
   }
 
+  /**
+   * Le trousseau repond-il MAINTENANT ?
+   *
+   * UN « NON » N'EST JAMAIS MIS EN CACHE, ET C'EST TOUT L'INTERET DE CETTE
+   * FONCTION. La premiere version gardait la reponse, quelle qu'elle soit. Le
+   * lancement de l'application a montre ce que ca donne : le client Supabase
+   * interroge son stockage des sa construction, c'est-a-dire au chargement du
+   * module, BIEN AVANT `app.whenReady()` - et sur Windows, safeStorage repond
+   * faux tant que l'application n'est pas prete. Le magasin concluait donc « pas
+   * de trousseau sur cette machine » pour toute la session, sur une machine ou
+   * le trousseau marche parfaitement.
+   *
+   * La panne etait silencieuse au sens qui compte : rien ne casse, la dictee
+   * fonctionne, l'utilisateur se reconnecte a chaque lancement en croyant que
+   * Flow est comme ca. Une seule ligne de journal la trahissait, et c'est elle
+   * qui l'a trahie.
+   *
+   * Un « oui », lui, est definitif : le trousseau ne redevient pas indisponible.
+   */
   private canPersist(): boolean {
-    if (this.usable === null) {
-      try {
-        this.usable = this.deps.isEncryptionAvailable();
-      } catch {
-        this.usable = false;
-      }
-      if (!this.usable) {
-        // Dit une fois, pas a chaque ecriture : le journal doit rester lisible.
-        this.deps.log?.(
-          "[session] le trousseau du systeme est indisponible : la session vit en memoire seulement, " +
-            "et il faudra se reconnecter au prochain lancement. Rien n'est ecrit en clair.",
-        );
-      }
+    if (this.usable === true) return true;
+    let now = false;
+    try {
+      now = this.deps.isEncryptionAvailable();
+    } catch {
+      now = false;
     }
-    return this.usable;
+    if (now) {
+      this.usable = true;
+      return true;
+    }
+    if (this.usable === null) {
+      // Dit UNE fois, pas a chaque ecriture : le journal doit rester lisible.
+      // `usable` passe a false uniquement pour retenir qu'on l'a deja dit - la
+      // question, elle, sera reposee au prochain appel.
+      this.usable = false;
+      this.deps.log?.(
+        "[session] le trousseau du systeme ne repond pas encore : la session vit en memoire pour l'instant. " +
+          "Rien n'est ecrit en clair.",
+      );
+    }
+    return false;
   }
 
   /** Relit le fichier une fois par lancement. Un fichier illisible - trousseau
@@ -115,8 +141,14 @@ export class SessionStore implements SupabaseStorage {
    * connexion, pas un plantage. */
   private load(): void {
     if (this.loaded) return;
-    this.loaded = true;
+    // PAS de `loaded = true` avant de savoir si on a pu lire. Meme defaut que
+    // celui de canPersist(), et il aurait survecu a sa correction : la toute
+    // premiere lecture arrive avant que l'application soit prete, donc elle ne
+    // trouve rien. La marquer « faite » condamnerait la session enregistree a
+    // ne jamais etre relue, et l'utilisateur se reconnecterait a chaque
+    // lancement avec son jeton valide sagement pose a cote sur le disque.
     if (!this.canPersist()) return;
+    this.loaded = true;
     let raw: Buffer;
     try {
       raw = fs.readFileSync(this.filePath());

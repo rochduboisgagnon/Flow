@@ -8,6 +8,8 @@ import {
   UI_RECORD_SHORTCUT,
   UI_LIST_MICS,
   UI_DOWNLOAD_NOTES_MODEL,
+  UI_SIGN_IN,
+  UI_SIGN_OUT,
   UI_OPEN_PATH,
   UI_GET_LOGIN_ITEM,
   UI_SET_LOGIN_ITEM,
@@ -85,6 +87,13 @@ test("every ui:* invoke channel this bridge owns is registered through guarded()
     UI_RECORD_SHORTCUT,
     UI_LIST_MICS,
     UI_DOWNLOAD_NOTES_MODEL,
+    // A2: l'onglet Account. Deux verbes, et deliberement pas trois - il n'y a
+    // pas d'inscription, ni ici ni cote serveur (422 signup_disabled).
+    // UI_SIGN_IN porte un MOT DE PASSE, ce qui en fait l'un des canaux qu'il
+    // serait le plus grave de laisser degarde : le meme preload est charge par
+    // l'overlay et la fenetre de capture.
+    UI_SIGN_IN,
+    UI_SIGN_OUT,
     // D1: the Local AI tab's one button. It fetches a PINNED file (immutable
     // revision, hash checked before the rename) - the renderer names nothing.
     UI_OPEN_PATH,

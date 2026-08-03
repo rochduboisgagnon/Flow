@@ -1,4 +1,4 @@
-import { app, session, ipcMain, nativeTheme, BrowserWindow, powerMonitor, dialog } from "electron";
+import { app, session, ipcMain, nativeTheme, BrowserWindow, powerMonitor, dialog, safeStorage } from "electron";
 import path from "node:path";
 import fs from "node:fs";
 import { HotkeyAdapter } from "./hotkey";
@@ -23,6 +23,9 @@ import { OllamaProvider, listOllamaModels, type LlmProvider } from "./llm/provid
 import { LocalSidecarProvider } from "./llm/localSidecar";
 import { LlamaServer } from "./llm/llamaServer";
 import { notesModelPath, ensureNotesModel } from "./asr/modelStore";
+import { SessionStore } from "./data/sessionStore";
+import { createFlowClient } from "./data/client";
+import { Auth } from "./data/auth";
 import { LocalApi } from "./api";
 import { LongRecorder, historyRoot, stagingRoot, listHistory, deleteHistoryEntry, resolveHistoryEntry, readHistoryDoc } from "./longform";
 import { LiveNotesStore } from "./liveNotes";
@@ -66,6 +69,7 @@ import {
   type CaptureDonePayload,
   type CaptureTimingPayload,
   type ModelStatePayload,
+  type AccountSnapshot,
   type UiStatePayload,
 } from "../shared/ipcContracts";
 
@@ -457,6 +461,8 @@ if (!app.requestSingleInstanceLock()) {
         recordShortcut: recordShortcutAndApply,
         listMics: () => listMicsValidated(),
         downloadNotesModel: () => downloadNotesModel(),
+        signIn: (email, password) => auth.signIn(email, password),
+        signOut: () => auth.signOut(),
         historyRootDir: () => historyRoot(),
         // U2b: resolved in MAIN, never passed in by the renderer - the bridge
         // opens fixed destinations only (see UI_OPEN_PATH).
@@ -615,6 +621,8 @@ function getUiState(): UiStatePayload {
     // D1: l'autre modele - celui qui redige - a son propre etat, parce que c'est
     // un autre fichier, un autre telechargement et une autre panne.
     notesModel: notesModelSnapshot(),
+    // A2: qui est connecte. Jamais son jeton - voir shared/ipcContracts.ts.
+    account: accountSnapshot,
     // F1: derived on every snapshot from the live settings AND the live process,
     // never remembered here - the Settings row that reads it must not be able to
     // outlive the fact it describes.
@@ -979,6 +987,45 @@ async function downloadNotesModel(): Promise<void> {
     notesModelDownloading = false;
   }
 }
+
+// ---------------------------------------------------------------------------
+// A2 : le compte.
+//
+// Construit au demarrage mais SANS aucun appel reseau : le magasin relit le
+// jeton chiffre du disque a son premier acces, et le client ne parle a Supabase
+// que lorsqu'on lui demande quelque chose. Flow doit pouvoir se lancer, armer
+// le clavier et dicter sans qu'une connexion Internet soit necessaire.
+// ---------------------------------------------------------------------------
+const sessionStore = new SessionStore({
+  dir: () => dataDir(),
+  // safeStorage est passe en trois fonctions plutot qu'en objet : c'est ce qui
+  // rend le magasin testable sans Electron, et surtout ce qui rend testable le
+  // chemin « pas de trousseau », qui ne s'execute jamais sur une vraie machine
+  // Windows et pourrirait donc sans bruit.
+  encryptString: (plain) => safeStorage.encryptString(plain),
+  decryptString: (cipher) => safeStorage.decryptString(cipher),
+  isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
+  log: flowLog,
+});
+const supabase = createFlowClient({ storage: sessionStore });
+const auth = new Auth({ client: supabase, store: sessionStore, log: flowLog });
+
+/** Le dernier etat de compte connu, rafraichi par la poussee a 1 Hz.
+ *
+ * Une COPIE plutot qu'un appel dans getUiState(), parce que getUiState est
+ * synchrone et que lire la session ne l'est pas. Le decalage maximal est d'une
+ * seconde, ce qui est invisible pour un ecran qui affiche « connecte en tant
+ * que ... » - et bien preferable a rendre synchrone une chose qui ne l'est
+ * pas. */
+let accountSnapshot: AccountSnapshot = { signedIn: false, email: "", userId: "" };
+void auth.account().then((a) => {
+  accountSnapshot = a;
+});
+// Et ensuite par evenement, jamais par sondage : connexion, deconnexion, et le
+// rafraichissement automatique du jeton toutes les heures.
+auth.onChange((a) => {
+  accountSnapshot = a;
+});
 
 const overlay = new OverlayWindow(flowLog);
 // C2: the hidden native-capture window (Windows-only). Created at startup so

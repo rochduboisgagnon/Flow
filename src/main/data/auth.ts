@@ -1,4 +1,5 @@
-import { snapshotOf, type AccountSnapshot, type SupabaseClient } from "./client";
+import { snapshotOf, type SupabaseClient } from "./client";
+import type { SignInResult, AccountSnapshot } from "../../shared/ipcContracts";
 import type { SessionStore } from "./sessionStore";
 
 // ---------------------------------------------------------------------------
@@ -39,12 +40,6 @@ import type { SessionStore } from "./sessionStore";
 // Session complet a une page pour en afficher le courriel.
 // ---------------------------------------------------------------------------
 
-export interface SignInResult {
-  ok: boolean;
-  error: string;
-  account: AccountSnapshot;
-}
-
 export interface AuthDeps {
   client: SupabaseClient;
   /** Le magasin du jeton. `clear()` est appele a la deconnexion, en plus de
@@ -68,6 +63,8 @@ function readable(err: { message?: string } | null): string {
   return m;
 }
 
+export type { SignInResult, AccountSnapshot };
+
 export class Auth {
   private deps: AuthDeps;
 
@@ -83,6 +80,20 @@ export class Auth {
   async account(): Promise<AccountSnapshot> {
     const { data } = await this.deps.client.auth.getSession();
     return snapshotOf(data.session ?? null);
+  }
+
+  /** Previent a chaque changement de session : connexion, deconnexion, et - le
+   * cas qu'on oublie - RAFRAICHISSEMENT AUTOMATIQUE du jeton, toutes les
+   * heures.
+   *
+   * Ecoute plutot que sondage, delibere. La poussee d'etat de Flow tourne a
+   * 1 Hz : demander « qui est connecte ? » a cette cadence ferait une promesse
+   * par seconde pour une valeur qui change trois fois par jour. Ici, main
+   * garde une copie et ne la met a jour que lorsqu'elle bouge vraiment. */
+  onChange(cb: (account: AccountSnapshot) => void): void {
+    this.deps.client.auth.onAuthStateChange((_event, session) => {
+      cb(snapshotOf(session ?? null));
+    });
   }
 
   async signIn(email: string, password: string): Promise<SignInResult> {

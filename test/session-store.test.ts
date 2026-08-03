@@ -112,6 +112,65 @@ test("A2: SANS trousseau, rien n'est ecrit - et la session marche quand meme", (
   assert.match(logs[0], /memoire/);
 });
 
+test("A2: un trousseau qui repond en RETARD est rattrape, pas condamne", () => {
+  // LE DEFAUT QUE LE LANCEMENT DE L'APPLICATION A TROUVE, et qu'aucune des
+  // quatre portes ne pouvait voir.
+  //
+  // Le client Supabase interroge son stockage des sa CONSTRUCTION, donc au
+  // chargement du module, bien avant `app.whenReady()`. Sur Windows,
+  // safeStorage repond faux tant que l'application n'est pas prete. La premiere
+  // version mettait cette reponse en cache et concluait « pas de trousseau sur
+  // cette machine » pour toute la session - sur une machine ou le trousseau
+  // marche parfaitement.
+  //
+  // Panne silencieuse au sens qui compte : rien ne casse, la dictee fonctionne,
+  // et l'utilisateur se reconnecte a chaque lancement en croyant que Flow est
+  // comme ca.
+  const dir = tmpDir();
+  const crypto = fakeCrypto();
+  let ready = false;
+  const logs: string[] = [];
+  const s = new SessionStore({
+    dir: () => dir,
+    encryptString: crypto.encryptString,
+    decryptString: crypto.decryptString,
+    isEncryptionAvailable: () => ready,
+    log: (m) => logs.push(m),
+  });
+
+  // Avant que l'application soit prete : rien sur le disque, et c'est correct.
+  s.setItem("k", "avant");
+  assert.equal(fs.existsSync(path.join(dir, "session.bin")), false);
+
+  // L'application devient prete. L'ecriture SUIVANTE doit atterrir.
+  ready = true;
+  s.setItem("k", "apres");
+  assert.equal(fs.existsSync(path.join(dir, "session.bin")), true, "le trousseau repond : on persiste");
+  assert.equal(logs.length, 1, "l'avertissement ne doit pas se repeter une fois le trousseau la");
+});
+
+test("A2: une session ecrite AVANT est relue une fois le trousseau disponible", () => {
+  // Le second defaut, jumeau du premier et qui aurait survecu a sa correction :
+  // la toute premiere lecture arrive trop tot et ne trouve rien. La marquer
+  // « faite » condamnerait la session enregistree a ne jamais etre relue, et
+  // l'utilisateur se reconnecterait a chaque lancement avec son jeton valide
+  // sagement pose a cote sur le disque.
+  const dir = tmpDir();
+  const crypto = fakeCrypto();
+  new SessionStore({ dir: () => dir, ...crypto }).setItem("k", "v");
+
+  let ready = false;
+  const s = new SessionStore({
+    dir: () => dir,
+    encryptString: crypto.encryptString,
+    decryptString: crypto.decryptString,
+    isEncryptionAvailable: () => ready,
+  });
+  assert.equal(s.getItem("k"), null, "trop tot : rien a rendre, et c'est normal");
+  ready = true;
+  assert.equal(s.getItem("k"), "v", "l'application est prete : la session doit revenir");
+});
+
 test("A2: un fichier illisible vaut « pas de session », jamais un plantage", () => {
   // Cas reel : le trousseau d'un AUTRE utilisateur Windows, ou un profil
   // restaure depuis une sauvegarde. La bonne reponse a « je n'arrive pas a te
