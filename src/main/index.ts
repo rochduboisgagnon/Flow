@@ -333,6 +333,8 @@ if (!app.requestSingleInstanceLock()) {
       // C2: engine captures the PC's sound + mic natively (no picker), then feeds
       // the long recorder directly. Windows-only barrier.
       if (!NativeCapture.available()) return { ok: false, error: "native capture is only available on a Windows PC" };
+      const refusal = refuseIfNoAccount();
+      if (refusal) return { ok: false, error: refusal };
       const started = longRec.start({ title: opts.title, keepAudio: !!opts.keepAudio, native: true });
       if (!started.ok) return started;
       nativeActive = true;
@@ -362,6 +364,32 @@ if (!app.requestSingleInstanceLock()) {
       );
       return started;
     };
+    /**
+     * B4 : POURQUOI UN ENREGISTREMENT PEUT ETRE REFUSE.
+     *
+     * Trouve en LANCANT l'application apres B3, et par aucun test : Flow demarre,
+     * arme le raccourci, chauffe le moteur et ecoute sur son API locale SANS que
+     * personne soit connecte. Avant B3 ca ne coutait rien - tout allait sur le
+     * disque. Maintenant, une reunion demarree hors compte n'a nulle part ou
+     * aller : sa ligne echoue a l'envoi (« personne n'est connecte »), reste en
+     * tete de file, et meurt avec le processus. Une seule ligne de journal.
+     *
+     * Refuser AVANT est donc la seule reponse honnete. Refuser APRES une heure de
+     * reunion serait exactement la panne que toute cette vague existe pour
+     * empecher.
+     *
+     * `isReady()` et non `signedIn` : etre connecte ne suffit pas. La copie de
+     * travail peut avoir echoue a charger - hors ligne au lancement, par exemple -
+     * et un enregistrement demarre sur une copie non prete ecrirait ses tranches
+     * dans une file qui ne sait pas encore a quel compte elle appartient.
+     */
+    const refuseIfNoAccount = (): string => {
+      if (workingCopy.isReady()) return "";
+      return accountSnapshot.signedIn
+        ? "Flow n'a pas encore charge votre compte. Attendez un instant, ou verifiez votre connexion : une reunion enregistree maintenant n'aurait nulle part ou aller."
+        : "Connectez-vous d'abord. Les reunions sont enregistrees dans votre compte, et sans compte celle-ci serait perdue a la fermeture.";
+    };
+
     const longStopDep = (): LongStopResult => {
       // C2: native mode finalizes the recorder AFTER the renderer flushes its tail
       // (nativeCapture.stop's callback), so the last ~1 s is not lost. Report success
@@ -437,7 +465,10 @@ if (!app.requestSingleInstanceLock()) {
       // deliberately UNTRACED - see processUtterance's module note.
       transcribe: (wav) => processUtterance(wav),
       longState: longStateDep,
-      longStart: (opts) => longRec.start({ title: opts.title, keepAudio: !!opts.keepAudio }),
+      longStart: (opts) => {
+        const refusal = refuseIfNoAccount();
+        return refusal ? { ok: false, error: refusal } : longRec.start({ title: opts.title, keepAudio: !!opts.keepAudio });
+      },
       longStartNative: longStartNativeDep,
       longStop: longStopDep,
       longSave: (dir) => longRec.save(dir), // v6 c7: file the recording at Stop
@@ -669,6 +700,14 @@ function getUiState(): UiStatePayload {
     notesModel: notesModelSnapshot(),
     // A2: qui est connecte. Jamais son jeton - voir shared/ipcContracts.ts.
     account: accountSnapshot,
+    // B4 : etre connecte ne suffit pas a pouvoir enregistrer - la copie de travail
+    // peut ne pas avoir charge. La fenetre a besoin des DEUX pour dire la verite
+    // plutot que « connecte » au-dessus d'un bouton qui refuse.
+    accountDataReady: workingCopy.isReady(),
+    // Ce qui n'est pas encore monte dans le compte, toutes files confondues. Pour
+    // le DIRE : une reunion en cours hors ligne est en securite, mais quelqu'un
+    // doit pouvoir le savoir plutot que de l'esperer.
+    unsent: workingCopy.pending() + audioUploads.pending(),
     // F1: derived on every snapshot from the live settings AND the live process,
     // never remembered here - the Settings row that reads it must not be able to
     // outlive the fact it describes.

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import type { UiStatePayload } from "../../../shared/ipcContracts";
 import { Toggle, Row } from "../components";
+import { SignInForm } from "../SignIn";
 
 // Settings (wave U1 restyle): the eight tabs' LOGIC is transplanted verbatim
 // from the pre-split main.tsx - same window.flowui calls, same state shapes.
@@ -68,25 +69,8 @@ export function SettingsPage({ s, patch }: { s: UiStatePayload; patch: Patch }) 
 // ---------------------------------------------------------------------------
 function TabAccount({ s }: { s: UiStatePayload }) {
   const a = s.account;
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-
-  async function signIn(ev: React.FormEvent) {
-    ev.preventDefault();
-    if (busy) return;
-    setBusy(true);
-    setError("");
-    try {
-      const r = await window.flowui.signIn(email, password);
-      if (!r.ok) setError(r.error || "Connexion impossible.");
-    } finally {
-      // Dans le `finally` : le mot de passe s'efface meme quand ca a rate.
-      setPassword("");
-      setBusy(false);
-    }
-  }
 
   async function signOut() {
     if (busy) return;
@@ -95,7 +79,7 @@ function TabAccount({ s }: { s: UiStatePayload }) {
       const r = await window.flowui.signOut();
       // Une erreur ici veut dire « le serveur n'a pas repondu », pas « vous
       // etes encore connecte » : sur cette machine, le jeton est parti.
-      setError(r.error ? "Deconnecte sur cette machine. Le serveur n'a pas repondu." : "");
+      setError(r.error ? "Signed out on this computer. The server did not answer." : "");
     } finally {
       setBusy(false);
     }
@@ -107,6 +91,19 @@ function TabAccount({ s }: { s: UiStatePayload }) {
         <Row label="Signed in as" help="Your settings, dictionary, dictations and meetings live in this account, not on this computer. Sign in on another machine and they follow you.">
           <span className="pinned">{a.email}</span>
         </Row>
+        {/* B4 : dire quand le compte est connecte mais pas CHARGE. Sans cette
+            ligne, « connecte » s'afficherait au-dessus d'une application qui
+            refuse d'enregistrer, sans expliquer pourquoi. */}
+        {!s.accountDataReady ? (
+          <Row label="Your data" help="Flow has a session but has not been able to load your dictionary and settings yet - usually the network. Dictation and recording wait until it has, rather than writing somewhere you could not read back.">
+            <span className="sub">Loading...</span>
+          </Row>
+        ) : null}
+        {s.unsent > 0 ? (
+          <Row label="Waiting to upload" help="Changes made while offline. They are held in memory and go up as soon as the network is back; nothing is lost, and nothing waits on them.">
+            <span className="pinned">{s.unsent}</span>
+          </Row>
+        ) : null}
         <Row label="Sign out" help="Signs out THIS computer only. Other machines you are signed in on keep working - a recording in progress elsewhere is not interrupted.">
           <button className="btn" disabled={busy} onClick={() => void signOut()}>
             {busy ? "Signing out..." : "Sign out"}
@@ -117,34 +114,10 @@ function TabAccount({ s }: { s: UiStatePayload }) {
     );
   }
 
-  return (
-    <form className="rows" onSubmit={(e) => void signIn(e)}>
-      <Row label="Email" help="Accounts are created for you. There is no sign-up here, and none on the server either.">
-        <input
-          type="email"
-          value={email}
-          autoComplete="username"
-          onChange={(e) => setEmail(e.target.value)}
-          aria-label="Email"
-        />
-      </Row>
-      <Row label="Password" help="Sent once to Flow's engine to open a session, and never stored by this page.">
-        <input
-          type="password"
-          value={password}
-          autoComplete="current-password"
-          onChange={(e) => setPassword(e.target.value)}
-          aria-label="Password"
-        />
-      </Row>
-      <Row label="" help="">
-        <button className="btn" type="submit" disabled={busy || !email || !password}>
-          {busy ? "Signing in..." : "Sign in"}
-        </button>
-      </Row>
-      {error ? <p className="sub">{error}</p> : null}
-    </form>
-  );
+  // B4 : LE MEME formulaire que l'ecran de lancement, jamais une seconde copie.
+  // Deux formulaires divergent, et un seul des deux se souviendrait dans six mois
+  // que le mot de passe doit quitter le champ meme quand la connexion echoue.
+  return <SignInForm />;
 }
 
 function TabGeneral({ s, patch }: { s: UiStatePayload; patch: Patch }) {

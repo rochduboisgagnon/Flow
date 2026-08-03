@@ -409,6 +409,16 @@ export interface UiStatePayload {
    * regression numero 6 du plan, et le type est la premiere chose qui
    * l'empeche. */
   account: AccountSnapshot;
+  /** B4 : la copie de travail a-t-elle charge ?
+   *
+   * `account.signedIn` dit qu'une session existe ; celui-ci dit que les donnees
+   * du compte sont en memoire. Les deux sont necessaires pour enregistrer, et
+   * afficher « connecte » au-dessus d'un bouton qui refuse serait mentir sur
+   * l'etat du moteur. */
+  accountDataReady: boolean;
+  /** Ce qui n'est pas encore monte dans le compte, toutes files confondues. Pour
+   * le DIRE, jamais pour l'attendre. */
+  unsent: number;
   /** F1: what the SECOND (batch) engine is doing. Four scalars at most, derived
    * fresh in main from the live settings and the live process, so it rides the
    * 1 Hz push like modelState above rather than being pulled: Settings > Engine

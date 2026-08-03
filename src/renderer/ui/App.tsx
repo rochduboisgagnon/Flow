@@ -11,6 +11,7 @@ import { Notes } from "./pages/Notes";
 import { Dictionary } from "./pages/Dictionary";
 import { Statistics } from "./pages/Statistics";
 import { Import } from "./pages/Import";
+import { SignInScreen } from "./SignIn";
 
 // Flow main window shell (wave U1). State discipline unchanged since A1/A2:
 // the window renders ONE snapshot pushed by the engine (UiStatePayload),
@@ -69,6 +70,17 @@ export function App() {
         <main className="content">
           {s === null ? (
             <p className="sub">Connecting to the engine...</p>
+          ) : !s.accountDataReady ? (
+            // B4 : LA PORTE. Tant que le compte n'est pas charge, il n'y a rien
+            // d'utile a montrer - le dictionnaire, les reglages et les reunions
+            // vivent dedans. Montrer l'application quand meme laisserait quelqu'un
+            // demarrer une reunion qui n'aurait nulle part ou aller, ce qui est
+            // exactement le defaut que le lancement d'apres-B3 a revele.
+            //
+            // Le rail reste VISIBLE a cote, delibere : il dit ce que Flow est,
+            // pendant qu'on se connecte. Ses sections repondront quand le compte
+            // sera la.
+            <SignInScreen s={s} />
           ) : (
             // key remounts the section wrapper so the pagein animation plays
             // on every navigation (reduced-motion disables it in CSS).
