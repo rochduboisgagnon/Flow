@@ -12,3 +12,22 @@ desktop.ini
 # cette ligne, pas par la bonne volonte. Les TEXTES du corpus (corpus.json) sont
 # versionnes, eux, parce qu'ils sont la reference commune de toutes les mesures.
 test/fixtures/wer-corpus/audio/
+
+# Z1 (2026-08-03, refonte Supabase). Ce depot est PUBLIC, et rien ici ne
+# couvrait les fichiers d'environnement : un `.env` cree pour Supabase serait
+# parti sur GitHub au premier `git add -A`. La ligne existe donc AVANT qu'il y
+# ait un secret a proteger, pas apres.
+#
+# Trois valeurs Supabase, trois statuts differents, et les confondre est
+# l'erreur qui coute cher :
+#   - l'URL du projet et la cle ANON sont publiques par conception. Elles
+#     finissent dans l'installeur que tout le monde telecharge, et c'est normal :
+#     ce qui protege les donnees est le Row Level Security, jamais le secret de
+#     cette cle.
+#   - la cle de SERVICE contourne le RLS. Elle ne doit exister que dans les
+#     Edge Functions. Jamais dans l'app, jamais ici, jamais dans un journal.
+.env
+.env.*
+!.env.example
+supabase/.temp/
+supabase/.branches/
