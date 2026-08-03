@@ -523,17 +523,18 @@ export function chunkTranscript(transcript: string, maxChars = 24_000): string[]
 // disk (a document the user already saved into their own folder stays intact).
 export const RECENT_MAX = 1;
 
+/** La derniere capture terminee, telle que l'interface la montre.
+ *
+ * B3 : `dir`, `docPath` et `audioPath` ont disparu avec le support. Une capture
+ * n'a plus de chemin - elle a un identifiant dans le compte - et garder trois
+ * champs de chemins vides aurait laisse croire le contraire a chaque lecteur. */
 export interface RecentEntry {
+  id: string;
   title: string;
   startedIso: string;
-  dir: string;
-  docPath: string; // the ONE document (summary + transcript), v3 chantier 4
-  audioPath: string; // "" unless the user chose to keep the full audio
   durationMs: number;
-  // v6 c7: true while the document still lives in the app-owned staging folder
-  // (no destination chosen yet). Cleared once the user saves it into their own
-  // folder (/long/save). Optional so older recent.json files still parse.
-  staged?: boolean;
+  /** Vrai tant que personne ne l'a exportee dans un dossier a lui. */
+  staged: boolean;
 }
 
 export function pushRecent(list: RecentEntry[], entry: RecentEntry): RecentEntry[] {
@@ -553,14 +554,17 @@ export interface LongStateSnapshot {
   active: boolean;
   finalizing: boolean;
   startedIso: string;
+  /** B3 : l'identifiant de la ligne du compte. Ce qui remplace `docPath`, et ce
+   * par quoi toute autre surface designe cette reunion. */
+  recordingId: string;
   durationMs: number;
   segments: number; // transcribed so far
   pending: number; // queued behind the ASR
+  /** Ce qui n'est pas encore monte dans le compte. Pour le DIRE - la page
+   * l'affiche quand le reseau manque - jamais pour l'attendre. */
+  unsent: number;
   marks: number;
   title: string;
-  dir: string;
-  docPath: string;
-  audioPath: string;
   lastError: string;
   recent: RecentEntry[];
 }
@@ -570,15 +574,14 @@ export interface LongStateSnapshot {
 export interface LongStartResult {
   ok: boolean;
   error?: string;
-  docPath?: string;
-  audioPath?: string;
+  recordingId?: string;
 }
 
 /** The result of stopping a long-form recording - shared by /long/stop and
  * UI_LONG_STOP. */
 export interface LongStopResult {
   ok: boolean;
-  docPath: string;
+  recordingId: string;
 }
 
 /** A transcript increment from byte `since` onward, plus the offset to poll

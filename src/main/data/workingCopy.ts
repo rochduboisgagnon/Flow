@@ -2,6 +2,7 @@ import type { Repo, Snapshot } from "./repo";
 import type { DictEntry } from "../../shared/ipcContracts";
 import type { StatsDay } from "../../shared/stats";
 import type { HistoryEntry } from "../../shared/dictationHistory";
+import type { RecordingRow } from "../../shared/recordings";
 
 // ---------------------------------------------------------------------------
 // B1 : la copie de travail.
@@ -76,7 +77,9 @@ type Job =
   | { kind: "stats-clear" }
   | { kind: "note-upsert"; startedIso: string; note: { id: string; atMs: number; text: string } }
   | { kind: "note-delete"; id: string }
-  | { kind: "notes-clear"; startedIso: string };
+  | { kind: "notes-clear"; startedIso: string }
+  | { kind: "recording"; id: string }
+  | { kind: "recording-delete"; id: string };
 
 /** Deux travaux qui se remplacent l'un l'autre plutot que de s'empiler. Les
  * reglages et une journee de statistiques sont des ETATS : seule la derniere
@@ -89,6 +92,17 @@ function jobKey(j: Job): string | null {
   // qu'on la corrige ne merite qu'un envoi, le dernier.
   if (j.kind === "note-upsert") return `note:${j.note.id}`;
   if (j.kind === "note-delete") return `note:${j.id}`;
+  // B3 : une reunion en cours produit une tranche toutes les vingt secondes, et
+  // chaque tranche contient DEJA tout ce que les precedentes contenaient - le
+  // document ne fait que grandir. Hors ligne pendant dix minutes, s'empiler
+  // voudrait dire televerser trente fois le meme document a la reconnexion, le
+  // plus vieux d'abord. La derniere version est la seule qui compte, et c'est ce
+  // qui rend la coupure reseau indolore plutot que couteuse.
+  //
+  // La suppression partage la cle : supprimer puis re-enregistrer n'arrive pas,
+  // et l'inverse - enregistrer une ligne qu'on vient de supprimer - doit gagner
+  // avec la derniere intention, pas avec la premiere.
+  if (j.kind === "recording" || j.kind === "recording-delete") return `rec:${j.id}`;
   return null; // dictations et purges : jamais fusionnees
 }
 
@@ -160,6 +174,12 @@ export class WorkingCopy {
     this.dictations = [];
     this.ready = false;
     this.queue = [];
+    // B3 : y compris la reunion en cours d'ecriture. Le document de quelqu'un ne
+    // reste pas en memoire apres sa deconnexion, pour la meme raison que son
+    // dictionnaire. L'appelant refuse la deconnexion pendant un enregistrement
+    // (main/index.ts), donc ce qui est lache ici est au pire la derniere tranche
+    // d'une reunion deja terminee et deja montee.
+    this.recordings.clear();
   }
 
   isReady(): boolean {
@@ -259,6 +279,57 @@ export class WorkingCopy {
     this.enqueue({ kind: "stats-clear" });
   }
 
+  // --- B3 : les enregistrements ---------------------------------------------
+  //
+  // Un enregistrement n'est PAS charge a la connexion, contrairement aux quatre
+  // magasins ci-dessus, et la difference n'est pas un oubli. Les quatre sont lus
+  // a chaud - le dictionnaire a chaque enonce - donc ils doivent etre en memoire
+  // avant le premier mot. Une reunion d'une heure pese des centaines de
+  // kilooctets et n'est lue que quand quelqu'un ouvre la page Notes : les
+  // charger toutes a la connexion couterait l'archive entiere a chaque
+  // lancement, pour un ecran que personne n'a demande.
+  //
+  // Ce que cette classe garde en memoire, ce sont donc les reunions EN COURS
+  // D'ECRITURE, et elles seules : la ligne dont la file doit pouvoir renvoyer la
+  // derniere version quand le reseau revient.
+
+  private recordings = new Map<string, RecordingRow>();
+
+  /**
+   * Une tranche de reunion : la memoire d'abord, l'envoi derriere.
+   *
+   * Le tampon appelle ca toutes les vingt secondes pendant une heure. La ligne
+   * en memoire est REMPLACEE (le document contient deja tout le precedent) et le
+   * travail en file est fusionne - voir jobKey.
+   */
+  writeRecording(r: RecordingRow): void {
+    this.recordings.set(r.id, r);
+    this.enqueue({ kind: "recording", id: r.id });
+  }
+
+  /** Ce que la file detient encore pour cette reunion, ou null. Sert a DIRE ce
+   * qui n'est pas monte (la page Record l'affiche), jamais a l'attendre. */
+  readRecording(id: string): RecordingRow | null {
+    return this.recordings.get(id) ?? null;
+  }
+
+  deleteRecording(id: string): void {
+    this.recordings.delete(id);
+    this.enqueue({ kind: "recording-delete", id });
+  }
+
+  /**
+   * La reunion est terminee ET montee : on peut lacher sa copie en memoire.
+   *
+   * Appele par personne d'autre que la file elle-meme (voir `run`), et c'est
+   * volontaire : lacher la ligne avant que l'envoi ait reussi rendrait la file
+   * incapable de reessayer, ce qui est exactement la panne que B3b interdit.
+   */
+  private forgetIfSettled(id: string): void {
+    const r = this.recordings.get(id);
+    if (r && r.endedIso) this.recordings.delete(r.id);
+  }
+
   // -------------------------------------------------------------------------
   // LA FILE
   // -------------------------------------------------------------------------
@@ -342,6 +413,19 @@ export class WorkingCopy {
           return (await repo.deleteLiveNote(j.id)).ok;
         case "notes-clear":
           return (await repo.clearLiveNotes(j.startedIso)).ok;
+        case "recording": {
+          const r = this.recordings.get(j.id);
+          // La ligne a ete supprimee entre la mise en file et l'envoi : le
+          // travail de suppression est deja derriere dans la file. Meme
+          // raisonnement qu'un terme de dictionnaire supprime avant son envoi -
+          // c'est un succes, pas un echec.
+          if (!r) return true;
+          const ok = (await repo.saveRecording(r)).ok;
+          if (ok) this.forgetIfSettled(j.id);
+          return ok;
+        }
+        case "recording-delete":
+          return (await repo.deleteRecording(j.id)).ok;
       }
     } catch (err) {
       this.deps.log?.(`[data] envoi echoue : ${(err as Error).message}`);

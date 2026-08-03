@@ -28,6 +28,7 @@ import { createFlowClient } from "./data/client";
 import { Auth } from "./data/auth";
 import { Repo } from "./data/repo";
 import { WorkingCopy } from "./data/workingCopy";
+import { WorkingCopyCaptureStore } from "./data/captureStore";
 import { LocalApi } from "./api";
 import { LongRecorder, historyRoot, stagingRoot, listHistory, deleteHistoryEntry, resolveHistoryEntry, readHistoryDoc } from "./longform";
 import { LiveNotesStore } from "./liveNotes";
@@ -364,7 +365,7 @@ if (!app.requestSingleInstanceLock()) {
         nativeActive = false;
         const snap = longRec.state();
         nativeCapture.stop(() => longRec.stop());
-        return { ok: true, docPath: snap.docPath };
+        return { ok: true, recordingId: snap.recordingId };
       }
       return longRec.stop();
     };
@@ -400,11 +401,11 @@ if (!app.requestSingleInstanceLock()) {
       // deliberately UNTRACED - see processUtterance's module note.
       transcribe: (wav) => processUtterance(wav),
       longState: longStateDep,
-      longStart: (opts) => longRec.start({ dir: opts.dir, title: opts.title, keepAudio: !!opts.keepAudio }),
+      longStart: (opts) => longRec.start({ title: opts.title, keepAudio: !!opts.keepAudio }),
       longStartNative: longStartNativeDep,
       longStop: longStopDep,
       longSave: (dir) => longRec.save(dir), // v6 c7: file the recording at Stop
-      longNotesSplice: (docPath, notes) => longRec.notesSplice(docPath, notes),
+      longNotesSplice: (recordingId, notes) => longRec.notesSplice(recordingId, notes),
       longMark: longMarkDep,
       longChunk: (pcm) => {
         markActivity(); // streamed audio = the engine is working (quiet window)
@@ -1027,12 +1028,14 @@ const auth = new Auth({ client: supabase, store: sessionStore, log: flowLog });
 // module, AVANT que quoi que ce soit ne lise un reglage. Les brancher plus tard
 // laisserait une fenetre pendant laquelle loadSettings() rendrait les defauts a
 // des appelants qui les garderaient.
-const workingCopy = new WorkingCopy({
-  repo: new Repo({ client: supabase, log: flowLog }),
-  log: flowLog,
-});
+const repo = new Repo({ client: supabase, log: flowLog });
+const workingCopy = new WorkingCopy({ repo, log: flowLog });
 useSettingsBacking(workingCopy);
 useDictionaryBacking(workingCopy);
+
+// B3a : le magasin d'une capture. Nomme ici, a cote de la copie de travail dont
+// il depend, et non a cote du recorder : c'est une piece de la couche donnees.
+const captureStore = new WorkingCopyCaptureStore({ workingCopy, repo });
 
 /** Charge le compte, puis reveille ce qui en depend.
  *
@@ -1378,10 +1381,19 @@ const longRec = new LongRecorder({
   // U2c: read lazily, so the Settings button that resumes cleanup takes effect
   // on the very next purge instead of needing a restart.
   historyPurgeSuspended: () => settings.historyPurgeSuspended,
+  // B3a : le document part ICI, et nulle part ailleurs. Le recorder ne sait pas
+  // que Supabase existe.
+  store: captureStore,
+  // B3a : le .wav en transit. `dataDir()` est appele ici - main/index.ts a le
+  // droit, longform.ts non - pour que le recorder n'ait plus aucune idee de
+  // l'endroit ou vivent les donnees de cette machine.
+  pendingAudioDir: path.join(dataDir(), "pending-audio"),
   // D7: the recorder opens the slot at start() and folds it into the document on
-  // all three of its end paths (normal finalize, quit rescue, boot rescan of an
-  // orphaned staging folder). Narrowed to those three methods on purpose: the
-  // recorder has no business listing or editing notes, which is the page's job.
+  // both of its end paths (normal finalize, quit rescue). Narrowed to those three
+  // methods on purpose: the recorder has no business listing or editing notes,
+  // which is the page's job. Le sauvetage au demarrage, lui, lit les notes depuis
+  // le COMPTE (captureStore.readLiveNotes) : celles d'une seance morte ne sont
+  // dans la memoire de personne.
   liveNotes: {
     open: (startedIso) => liveNotes.open(startedIso),
     read: (startedIso) => liveNotes.read(startedIso),

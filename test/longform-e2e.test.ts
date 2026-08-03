@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { LongRecorder } from "../src/main/longform";
+import { fakeCaptureStore } from "./fixtures/capture-store";
 import { WhisperSidecar } from "../src/main/asr/sidecar";
 import { modelPath, DEFAULT_MODEL_FILE } from "../src/main/asr/modelStore";
 
@@ -56,14 +57,17 @@ test(
   async () => {
     const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-lt-"));
     const sc = new WhisperSidecar({ binaryPaths: BINS, modelPath: MODEL });
+    const store = fakeCaptureStore();
     const rec = new LongRecorder({
       transcribeSegment: (wav) => sc.transcribe(wav),
-      recentPathOverride: path.join(work, "recent.json"),
-      // C10: start() now runs a retention purge; keep it off the real ~/.agr-flow.
+      // B3a : le document va dans le compte. Ici, un magasin en memoire - ce
+      // test mesure de la VRAIE parole traversant le moteur, pas le reseau.
+      store,
       historyRootOverride: path.join(work, "history"),
+      schedule: () => () => {},
     });
     try {
-      const started = rec.start({ dir: work, title: "Sprint Review" });
+      const started = rec.start({ title: "Sprint Review" });
       assert.equal(started.ok, true, started.error ?? "expected ok");
       const a = tts("The first topic today is the quarterly budget review.");
       const b = tts("The second topic is the hiring plan for the new team.");
@@ -87,7 +91,7 @@ test(
       // that real speech reaches the transcript, and it still proves it.
       for (let i = 0; i < 3000 && rec.isBusy; i++) await new Promise((r) => setTimeout(r, 100));
       assert.equal(rec.isBusy, false, "finalize must complete");
-      const transcript = fs.readFileSync(stopped.docPath, "utf8").toLowerCase();
+      const transcript = store.rows.get(stopped.recordingId)!.doc.toLowerCase();
       assert.ok(transcript.includes("budget"), transcript);
       assert.ok(transcript.includes("hiring"), transcript);
       assert.ok(

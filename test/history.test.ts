@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { LongRecorder, historyRoot, historyRootFor, listHistory, deleteHistoryEntry, resolveHistoryEntry, readHistoryDoc } from "../src/main/longform";
+import { LongRecorder, historyRoot, historyRootFor, listHistory, deleteHistoryEntry, resolveHistoryEntry, readHistoryDoc, type LongDeps } from "../src/main/longform";
+import { fakeCaptureStore } from "./fixtures/capture-store";
 import { dataDir, sanitizeSettings } from "../src/main/settings";
 import { resolveDataDir, runMigration, DATA_DIR_NEW } from "../src/main/migrate";
-import type { WhisperSidecar } from "../src/main/asr/sidecar";
 
 // C10: recording history (3-month retention). A staged recording (no
 // destination chosen at Stop) is filed into <historyRoot>/<YYYY-MM-DD>/<title>/
@@ -54,173 +54,84 @@ function ymd(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-test("C10 (a): a staged recording without a destination is filed into history at finalize, not left in staging", async () => {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-hist-a-"));
-  const staging = path.join(work, "staging");
-  const history = path.join(work, "history");
-  const recent = path.join(work, "recent.json");
-  const mockSidecar = {
-    transcribe: () => Promise.resolve({ text: "Bonjour tout le monde.", ms: 5 }),
-  } as unknown as WhisperSidecar;
-  const rec = new LongRecorder({
-    transcribeSegment: (wav) => mockSidecar.transcribe(wav),
-    recentPathOverride: recent,
-    stagingRootOverride: staging,
-    historyRootOverride: history,
-  });
-
-  const started = rec.start({ title: "Client Kickoff", keepAudio: true });
-  assert.equal(started.ok, true, started.error ?? "expected ok");
-  const stagingDoc = started.docPath!;
-  assert.ok(stagingDoc.startsWith(staging), "recording starts in staging");
-
-  rec.onChunk(speechy(5000));
-  rec.onChunk(speechy(5000));
-  rec.onChunk(concat(speechy(2000), silence(1500)));
-  rec.stop();
-  // Stand in for the Pilot server writing chunks as they stream (device mode),
-  // BEFORE finalize files the recording away.
-  fs.writeFileSync(started.audioPath!, Buffer.from("RIFF0000WAVE"));
-  for (let i = 0; i < 100 && rec.isBusy; i++) await new Promise((r) => setTimeout(r, 50));
-  assert.equal(rec.isBusy, false, "finalize must complete");
-
-  assert.equal(fs.existsSync(stagingDoc), false, "the staging doc is gone");
-  assert.equal(fs.existsSync(path.dirname(stagingDoc)), false, "the emptied staging session folder is cleaned");
-
-  const list = JSON.parse(fs.readFileSync(recent, "utf8"));
-  assert.equal(list.length, 1);
-  assert.equal(list[0].staged, true, "still not filed by the user - just parked in history");
-  const docPath: string = list[0].docPath;
-  assert.ok(docPath.startsWith(history), "recent.json now points into history");
-  assert.ok(docPath.startsWith(path.join(history, ymd(new Date()))), "filed under today's date folder");
-  assert.equal(fs.existsSync(docPath), true, "the document really is on disk in history");
-  assert.ok(docPath.endsWith(".md"));
-  assert.ok(String(list[0].audioPath).length > 0, "the .wav path is preserved in history");
-  assert.ok(String(list[0].audioPath).startsWith(history), "the .wav itself lives in history");
-  assert.equal(fs.existsSync(list[0].audioPath), true, "the .wav really is on disk in history");
-
-  fs.rmSync(work, { recursive: true, force: true });
-});
-
-test("C10 (b): save() files a history entry into the chosen folder and cleans the emptied date folder (bounded to historyRoot)", async () => {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-hist-b-"));
-  const history = path.join(work, "history");
-  const dest = path.join(work, "dest");
-  fs.mkdirSync(dest, { recursive: true });
-  const recent = path.join(work, "recent.json");
-  const dateDir = path.join(history, "2026-01-01");
-  const recDir = path.join(dateDir, "meeting-note");
-  fs.mkdirSync(recDir, { recursive: true });
-  const doc = path.join(recDir, "meeting-note.md");
-  fs.writeFileSync(doc, "# hi");
-  fs.writeFileSync(
-    recent,
-    JSON.stringify([{ title: "T", startedIso: "", dir: recDir, docPath: doc, audioPath: "", durationMs: 0, staged: true }]),
-  );
-  const rec = new LongRecorder({
+/** Un enregistreur branche sur un magasin en memoire. Les tests de ce fichier
+ * portent sur l'archive LOCALE - celle qu'une version precedente de Flow a
+ * remplie - donc ils lui donnent une vraie racine sur disque et un magasin de
+ * compte qui ne sert qu'a satisfaire le contrat. */
+function make(over: Partial<LongDeps> = {}): LongRecorder {
+  return new LongRecorder({
     transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
-    recentPathOverride: recent,
-    historyRootOverride: history,
+    store: fakeCaptureStore(),
+    stagingRootOverride: path.join(os.tmpdir(), "flow-hist-legacy-staging"),
+    schedule: () => () => {},
+    ...over,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// B3a : LA CASE « GARDER L'AUDIO » DECIDE ENCORE QUELQUE CHOSE.
+//
+// Les quatre tests que ces deux-la remplacent verifiaient le trajet
+// staging/ -> history/ : un trajet qui n'existe plus, parce que le document ne
+// touche plus le disque. La PROMESSE, elle, survit sans changer d'un mot - le
+// .wav est ecrit pendant toute la capture, quoi que dise la case (c'est la seule
+// chose qui peut encore sauver une reunion dont la transcription tombe), et
+// c'est a la FIN que la case tranche.
+// ---------------------------------------------------------------------------
+
+test("U4-2: keepAudio decoche - le .wav en transit est supprime des que le document est sur", async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "flow-hist-audio-off-"));
+  const pending = path.join(work, "pending");
+  const rec = make({
+    transcribeSegment: () => Promise.resolve({ text: "Bonjour.", ms: 5 }),
+    pendingAudioDir: pending,
+    historyRootOverride: path.join(work, "history"),
   });
 
-  const res = (await rec.save(dest)) as { ok: boolean; error?: string; docPath?: string };
-  assert.equal(res.ok, true, res.error ?? "expected ok");
-  // 2026-07-21: the capture gets its own subfolder in the chosen dir.
-  assert.equal(fs.existsSync(path.join(dest, "meeting-note", "meeting-note.md")), true, "the document is filed into the chosen folder");
-  assert.equal(fs.existsSync(recDir), false, "the emptied per-recording folder is gone");
-  assert.equal(fs.existsSync(dateDir), false, "the emptied date folder is gone too");
-  assert.equal(fs.existsSync(history), true, "historyRoot itself is never removed");
-
-  const list = JSON.parse(fs.readFileSync(recent, "utf8"));
-  assert.equal(list[0].staged, false);
-  assert.equal(list[0].dir, path.join(dest, "meeting-note"));
-
-  fs.rmSync(work, { recursive: true, force: true });
-});
-
-// U4 constat 2 (rewritten): C10 (d) used to assert that a staged recording kept
-// its .wav in history EVEN with keepAudio off - which made the "Keep the audio
-// file" checkbox a decoration, since the IPC path never passes a dir and every
-// UI recording is therefore staged. The .wav is still WRITTEN during the
-// capture (it is the only thing that can save a meeting whose transcription
-// falls over, and a crash gives no second chance to start writing it), but it
-// does not enter the 90-day archive when the user asked not to keep it.
-test("U4-2: a staged recording still gets an audio path, but keepAudio off means the .wav does NOT enter history", async () => {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-hist-d-"));
-  const staging = path.join(work, "staging");
-  const history = path.join(work, "history");
-  const recent = path.join(work, "recent.json");
-  const mockSidecar = {
-    transcribe: () => Promise.resolve({ text: "Bonjour.", ms: 5 }),
-  } as unknown as WhisperSidecar;
-  const rec = new LongRecorder({
-    transcribeSegment: (wav) => mockSidecar.transcribe(wav),
-    recentPathOverride: recent,
-    stagingRootOverride: staging,
-    historyRootOverride: history,
-  });
-
-  // keepAudio explicitly OFF, and no destination: the capture must still hand
-  // out an audio path so the wav gets written by the caller while the meeting
-  // runs (device mode: AGR Pilot's server writes the bytes to the path we
-  // return; native mode: the engine's own stream).
   const started = rec.start({ title: "No Audio Please", keepAudio: false });
   assert.equal(started.ok, true, started.error ?? "expected ok");
-  assert.ok(started.audioPath && started.audioPath.length > 0, "staged recordings get an audio path during the capture");
+  // Le .wav est ouvert MEME avec la case decochee : pendant la capture, c'est le
+  // dernier recours si la transcription tombe, et un plantage ne donne pas de
+  // seconde chance de commencer a l'ecrire.
+  const wav = path.join(pending, started.recordingId! + ".wav");
+  assert.equal(fs.existsSync(wav), true, "l'audio est ecrit pendant la capture, quoi que dise la case");
 
-  // Stand in for the Pilot server writing chunks as they stream (device mode),
-  // BEFORE finalize files the recording away.
-  fs.writeFileSync(started.audioPath!, Buffer.from("RIFF0000WAVE"));
   rec.onChunk(speechy(5000));
   rec.onChunk(concat(speechy(2000), silence(1500)));
   rec.stop();
-  for (let i = 0; i < 100 && rec.isBusy; i++) await new Promise((r) => setTimeout(r, 50));
+  for (let i = 0; i < 200 && rec.isBusy; i++) await new Promise((r) => setTimeout(r, 50));
   assert.equal(rec.isBusy, false);
 
-  const list = JSON.parse(fs.readFileSync(recent, "utf8"));
-  assert.equal(list[0].audioPath, "", "keepAudio off: no audio is referenced once the recording is filed");
-  assert.equal(fs.existsSync(started.audioPath!), false, "and the working .wav is gone from staging, not left behind");
-  assert.equal(fs.existsSync(list[0].docPath), true, "the document itself is safely in history");
-  assert.ok(String(list[0].docPath).startsWith(history));
-  // The archive agrees: the entry is listable, simply without audio.
-  const items = listHistory(history);
-  assert.equal(items.length, 1);
-  assert.equal(items[0].hasAudio, false, "the archive shows no audio for it");
-
+  assert.equal(fs.existsSync(wav), false, "et il disparait a la fin : la case decrit ce que Flow GARDE");
   fs.rmSync(work, { recursive: true, force: true });
 });
 
-test("U4-2: keepAudio ON keeps the .wav all the way into history (the checkbox works both ways)", async () => {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-hist-d2-"));
-  const staging = path.join(work, "staging");
-  const history = path.join(work, "history");
-  const recent = path.join(work, "recent.json");
-  const mockSidecar = {
-    transcribe: () => Promise.resolve({ text: "Bonjour.", ms: 5 }),
-  } as unknown as WhisperSidecar;
-  const rec = new LongRecorder({
-    transcribeSegment: (wav) => mockSidecar.transcribe(wav),
-    recentPathOverride: recent,
-    stagingRootOverride: staging,
-    historyRootOverride: history,
+test("U4-2: keepAudio cochee - le .wav survit a la fin, pour partir vers Storage", async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "flow-hist-audio-on-"));
+  const pending = path.join(work, "pending");
+  const rec = make({
+    transcribeSegment: () => Promise.resolve({ text: "Bonjour.", ms: 5 }),
+    pendingAudioDir: pending,
+    historyRootOverride: path.join(work, "history"),
   });
-
   const started = rec.start({ title: "Keep It", keepAudio: true });
   assert.equal(started.ok, true, started.error ?? "expected ok");
-  fs.writeFileSync(started.audioPath!, Buffer.from("RIFF0000WAVE"));
   rec.onChunk(speechy(5000));
   rec.onChunk(concat(speechy(2000), silence(1500)));
   rec.stop();
-  for (let i = 0; i < 100 && rec.isBusy; i++) await new Promise((r) => setTimeout(r, 50));
+  for (let i = 0; i < 200 && rec.isBusy; i++) await new Promise((r) => setTimeout(r, 50));
   assert.equal(rec.isBusy, false);
 
-  const list = JSON.parse(fs.readFileSync(recent, "utf8"));
-  assert.ok(String(list[0].audioPath).startsWith(history), "the .wav lives in history");
-  assert.equal(fs.existsSync(list[0].audioPath), true, "the wav really landed in history");
-  assert.equal(listHistory(history)[0].hasAudio, true, "and the archive says so");
-
+  const wav = path.join(pending, started.recordingId! + ".wav");
+  assert.equal(fs.existsSync(wav), true, "la case cochee garde l'audio");
+  // Et son entete de taille a ete corrigee : un fichier deplace avant la
+  // fermeture du flux parait vide a tous les lecteurs.
+  const head = fs.readFileSync(wav);
+  assert.equal(head.subarray(0, 4).toString(), "RIFF");
+  assert.equal(head.readUInt32LE(4), 36 + head.readUInt32LE(40), "RIFF et data se repondent");
   fs.rmSync(work, { recursive: true, force: true });
 });
+
 
 test("C10 (c): purgeHistory removes only date-named folders older than 90 days, never symlink targets or non-date names", () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-purge-"));
@@ -257,7 +168,7 @@ test("C10 (c): purgeHistory removes only date-named folders older than 90 days, 
     symlinked = false; // not every environment allows creating a link; the rest of the test still holds
   }
 
-  const rec = new LongRecorder({ transcribeSegment: () => Promise.reject(new Error("speech engine not ready")), historyRootOverride: history });
+  const rec = make({ historyRootOverride: history });
   rec.purgeHistory();
 
   assert.equal(fs.existsSync(oldDir), false, "older than 90 days is removed");
@@ -276,7 +187,7 @@ test("C10 F1: a folder WITHOUT the app marker is never purged, whatever dated su
   const oldDir = path.join(work, ymd(new Date(Date.now() - 200 * dayMs)));
   fs.mkdirSync(oldDir);
   fs.writeFileSync(path.join(oldDir, "real-user-file.md"), "someone's real export");
-  const rec = new LongRecorder({ transcribeSegment: () => Promise.reject(new Error("speech engine not ready")), historyRootOverride: work });
+  const rec = make({ historyRootOverride: work });
   rec.purgeHistory();
   assert.equal(fs.existsSync(path.join(oldDir, "real-user-file.md")), true, "no marker = not our folder = untouched");
   fs.rmSync(work, { recursive: true, force: true });
@@ -284,8 +195,7 @@ test("C10 F1: a folder WITHOUT the app marker is never purged, whatever dated su
 
 test("C10 F1: purgeHistory refuses an immediate child of the user profile (Documents-like)", () => {
   const logs: string[] = [];
-  const rec = new LongRecorder({
-    transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
+  const rec = make({
     historyRootOverride: path.join(os.homedir(), "Documents"),
     log: (m) => logs.push(m),
   });
@@ -295,8 +205,7 @@ test("C10 F1: purgeHistory refuses an immediate child of the user profile (Docum
 
 test("C10: purgeHistory refuses to operate on the user's profile root", () => {
   const logs: string[] = [];
-  const rec = new LongRecorder({
-    transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
+  const rec = make({
     historyRootOverride: os.homedir(),
     log: (m) => logs.push(m),
   });
@@ -307,8 +216,7 @@ test("C10: purgeHistory refuses to operate on the user's profile root", () => {
 test("C10: purgeHistory refuses to operate on a filesystem/volume root", () => {
   const logs: string[] = [];
   const root = path.parse(process.cwd()).root; // e.g. "C:\\" on Windows, "/" elsewhere
-  const rec = new LongRecorder({
-    transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
+  const rec = make({
     historyRootOverride: root,
     log: (m) => logs.push(m),
   });
@@ -320,8 +228,7 @@ test("C10: purgeHistory is a silent no-op when the history folder does not exist
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "agrflow-purge-empty-"));
   const history = path.join(work, "history"); // never created
   const logs: string[] = [];
-  const rec = new LongRecorder({
-    transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
+  const rec = make({
     historyRootOverride: history,
     log: (m) => logs.push(m),
   });
@@ -402,8 +309,7 @@ test("U2c: a suspended purge deletes NOTHING, however old the folders are", () =
   fs.writeFileSync(precious, "a meeting that cannot be re-recorded");
 
   const logs: string[] = [];
-  const rec = new LongRecorder({
-    transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
+  const rec = make({
     historyRootOverride: history,
     historyPurgeSuspended: () => true,
     log: (m) => logs.push(m),
@@ -429,8 +335,7 @@ test("U2c: with the flag off, the purge still does its job (no regression)", () 
   fs.mkdirSync(keepDir);
   fs.writeFileSync(path.join(keepDir, "note.md"), "recent");
 
-  const rec = new LongRecorder({
-    transcribeSegment: () => Promise.reject(new Error("speech engine not ready")),
+  const rec = make({
     historyRootOverride: history,
     historyPurgeSuspended: () => false, // explicitly NOT suspended
   });

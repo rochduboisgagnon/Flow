@@ -30,11 +30,25 @@ const ROOT = path.join(__dirname, "..");
 /** Les colonnes declarees par la premiere migration, table par table. */
 function schemaColumns(): Map<string, Set<string>> {
   const dir = path.join(ROOT, "supabase", "migrations");
-  const sql = fs
+  const raw = fs
     .readdirSync(dir)
     .filter((f) => f.endsWith(".sql"))
+    .sort()
     .map((f) => fs.readFileSync(path.join(dir, f), "utf8"))
     .join("\n");
+
+  // LES COMMENTAIRES SONT RETIRES AVANT TOUTE ANALYSE, et ce n'est pas de la
+  // prudence gratuite : ces migrations sont abondamment commentees, en francais,
+  // et le francais met un point-virgule au milieu d'une phrase. Un « ; » dans un
+  // commentaire terminait l'instruction aux yeux de l'analyse ci-dessous, qui
+  // voyait alors une colonne sur quatre - et le disait sous la forme « cette
+  // colonne n'existe pas dans la migration », c'est-a-dire en accusant le code
+  // plutot qu'elle-meme. Trouve en ajoutant les colonnes de B3.
+  //
+  // Le retrait est naif (« -- » jusqu'a la fin de la ligne). Il le reste : aucune
+  // chaine litterale de ces fichiers ne contient « -- », et une porte qui essaie
+  // d'etre un analyseur SQL complet est une porte qu'on ne relit plus.
+  const sql = raw.replace(/--[^\n]*/g, "");
 
   const out = new Map<string, Set<string>>();
   const tableRe = /create table public\.(\w+)\s*\(([\s\S]*?)\n\);/g;
@@ -50,6 +64,24 @@ function schemaColumns(): Map<string, Set<string>> {
       if (c) cols.add(c[1]);
     }
     out.set(m[1], cols);
+  }
+  // B3 : les colonnes AJOUTEES apres coup.
+  //
+  // Sans ca, cette porte etait a moitie aveugle, et d'une facon qui se
+  // remarquait mal : une premiere migration se lit en entier, une deuxieme
+  // s'ajoute, et le jour ou le depot ecrit une colonne d'`alter table` la porte
+  // aurait crie « n'existe pas dans la migration » alors que le vrai schema
+  // l'avait. Une porte qui a tort est plus couteuse qu'une porte absente : on
+  // finit par contourner celle-la.
+  //
+  // La regex accepte les deux formes qu'un `alter table` prend ici : une colonne
+  // par instruction, ou plusieurs `add column` separes par des virgules dans une
+  // seule instruction.
+  const alterRe = /alter table public\.(\w+)\s*([\s\S]*?);/g;
+  while ((m = alterRe.exec(sql)) !== null) {
+    const cols = out.get(m[1]);
+    if (!cols) continue; // un alter sur une table qu'aucun create ne declare : les portes ci-dessous le diront
+    for (const add of m[2].matchAll(/\badd column\s+(\w+)/gi)) cols.add(add[1]);
   }
   return out;
 }

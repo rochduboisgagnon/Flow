@@ -242,7 +242,7 @@ const LIVE_NOTES_UNAVAILABLE: LiveNotesResult = {
 // sender (guarded()'s fromMain() gate) gets back, shaped like every real
 // answer so a caller never has to special-case "refused" vs "genuinely empty".
 const LONG_START_UNAVAILABLE: LongStartResult = { ok: false, error: "unavailable" };
-const LONG_STOP_UNAVAILABLE: LongStopResult = { ok: false, docPath: "" };
+const LONG_STOP_UNAVAILABLE: LongStopResult = { ok: false, recordingId: "" };
 
 // U5c: same fallback discipline - what a refused sender gets back for a
 // download, shaped like every real DownloadResult so the page never has to
