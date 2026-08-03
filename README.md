@@ -2,54 +2,83 @@
 
 by AGR Labs
 
-**Local, on-device voice transcription for your PC - two modes, one engine.**
+**On-device voice transcription for your PC - two modes, one engine.**
 
 1. **Quick dictation.** Hold `Ctrl+Win` anywhere, speak, release: the transcribed
    text lands at your cursor. If no text field has focus, it goes to the
    clipboard instead. Double-tap the shortcut for hands-free dictation.
 2. **Long recording** (Plaud-style). Record a meeting for hours: it is
-   transcribed locally as it goes, deposited (transcript + AI meeting notes)
-   into a folder you choose.
+   transcribed locally as it goes, and lands in your account as one document
+   (timestamped transcript + AI meeting notes).
 
-Two things make it different from the tools it is inspired by:
+What makes it different from the tools it is inspired by:
 
-- **Nothing ever leaves your machine.** The speech-to-text engine runs locally
-  (whisper.cpp as a warm sidecar); the optional cleanup and the meeting
-  summaries run on a local LLM (Ollama). No cloud, no account, no API key.
-- **Nothing you dictate leaves this machine, and Flow keeps a history of it.**
-  Those are two separate promises and only the first is absolute. Until
-  2026-07-30 this line read "Dictation is never written down. No history, no
-  database, no transcript on disk." That was true, it was this product's
-  central claim, and it is gone - because a dictation that vanished the moment
-  the clipboard was overwritten was losing work that mattered more than the
-  sentence did. Saying so here, rather than quietly deleting the old wording,
-  is the whole point: a promise that changes and does not announce itself was
-  never a promise.
+- **Your voice is never sent to anyone.** The speech-to-text engine runs on this
+  machine (whisper.cpp as a warm sidecar); the optional cleanup and the meeting
+  notes run on a local LLM. No audio and no transcript is ever handed to a
+  speech or AI service, there is no API key, and that is the promise that has
+  not moved and will not.
 
-  What Flow now keeps, and what still bounds it:
+- **Flow now has accounts, and that is a change to the product's central
+  claim.** Until 2026-08-03 the line above read "Nothing ever leaves your
+  machine. No cloud, no account, no API key." Saying so here, rather than
+  quietly deleting the old wording, is the whole point - and it is the second
+  time this README has had to do it. **A promise that changes and does not
+  announce itself was never a promise.**
 
-  - **Your dictations, as text, for a rolling month.** They are listed on the
-    Home page, they are stored in `history.json` under Flow's own data folder,
-    and anything older than 31 days is dropped from the file itself - not
-    filtered out when it is displayed. One click erases the lot, and that
-    erase deletes the file rather than emptying it.
+  Why it changed: the same information has to follow you to a second computer.
+  A dictionary of technical terms typed one word at a time over months, and the
+  meetings you recorded, were trapped on whichever machine you happened to be
+  at.
 
-    *Corrected on 2026-08-02, and worth saying out loud because the old wording
-    was the bug.* This used to read "dropped when the file is written", and a
-    security scan showed that sentence was doing the lying: the file was only
-    ever written after a NEW dictation, so an installation that stopped being
-    used kept everything forever while the Home page showed it correctly
-    purged. The retention now runs every time Flow opens and closes the file,
-    whether or not you dictated. The honest remaining limit: this happens when
-    Flow runs. Nothing purges a machine where Flow is never launched again.
-  - **The audio is still never written.** A dictation's sound exists for
-    exactly one utterance and reaches no file, ever. Only the long-recording
-    mode writes audio, and only into the folder you picked.
-  - **Still no cloud, no account, no telemetry.** The history is a file on your
-    disk. Nothing about it is sent anywhere, which is the promise that has not
-    moved and will not.
-  - Flow also keeps **one** audio buffer in memory, half a second long,
-    described in full below.
+  What that means, precisely:
+
+  - **Your data lives in a Supabase project in Canada** (`ca-central-1`), under
+    an account that is yours: settings, dictionary, statistics, dictation
+    history, meeting documents, and meeting audio.
+  - **One account cannot see another's data.** Every table and the audio bucket
+    are closed by row-level security, and that is not a claim read off a policy
+    file - a test signs in to two real accounts, writes with one, and tries to
+    read, write, modify and delete with the other. It runs against the real
+    project.
+  - **The audio bucket is private.** A request without a session token gets
+    nothing, which the same test checks. Audio of a meeting says as much as its
+    transcript.
+  - **There is no sign-up.** Accounts are created deliberately, not by anyone
+    who downloads the installer, and the project refuses sign-ups server-side -
+    the publishable key ships inside the app, so a door closed only in the
+    interface would not be closed at all.
+  - **Dictation never waits for the network.** Everything the hot path reads is
+    served from memory by synchronous calls - a synchronous read *cannot* wait
+    on Supabase - and writes go out behind you. Pull the network cable and
+    dictation is unchanged; the changes queue in memory and go up when it
+    returns.
+
+- **What is left on the disk of this machine** is the application, your session
+  token (encrypted by the OS keychain), the window's position, `flow.log`,
+  `api.json`, and - while it is being uploaded - the `.wav` of a meeting whose
+  audio you asked to keep. Nothing else. The five local stores Flow used to keep
+  (`settings.json`, `dictionary.json`, `stats.json`, `history.json`,
+  `live-notes.json`) and the `history/` folder of recordings are gone.
+
+- **Your dictations, as text, for a rolling month.** Listed on the Home page,
+  and anything older than 31 days is deleted from the database itself - not
+  filtered out when it is displayed. One click erases the lot.
+
+  *This retention has been wrong twice, so here is where it stands.* It first
+  ran only when a new dictation was written, so an installation that stopped
+  being used kept everything forever while the page showed it correctly purged
+  (found by a security scan, 2026-08-02). It now runs every time you sign in,
+  whether or not you dictate - and moving it into the database bought something
+  the file version could not have: it also covers the rows your **other**
+  computer wrote. The honest remaining limit: it happens when Flow runs.
+
+- **A dictation's audio is still never written down.** It exists for exactly one
+  utterance and reaches no file, ever. Only the long-recording mode keeps audio,
+  and only when you ask it to.
+
+- Flow also keeps **one** audio buffer in memory, half a second long, described
+  in full below.
 
 Status: **Windows, shipping** - autonomous app distributed via
 [GitHub Releases](https://github.com/rochduboisgagnon/Flow/releases) with built-in automatic updates.
@@ -113,8 +142,7 @@ release       ──> energy VAD (silence never reaches the model)
    otherwise  ──> leave the text on the clipboard, ready for Ctrl+V
 ```
 
-Settings live in AGR Manager's AGR Flow view (the engine itself is headless and
-is driven over its local API): shortcut (recorded through the low-level hook,
+Settings live in Flow's own window: shortcut (recorded through the low-level hook,
 modifier-only combos welcome), microphone, language, model (tiny through
 large-v3-turbo, the French-friendly default), a soft start/stop sound cue (off by
 default), insertion mode (clipboard paste, or typed keystrokes for paste-hostile
@@ -124,16 +152,34 @@ summaries.
 ## How the long mode works
 
 ```
-start (from AGR Pilot's Long recording page, folder of your choice)
-   ──> continuous capture, streamed in slices (bounded memory)
-   ──> pause-aware segmentation (cuts on silences, caps at 25 s)
+start (Record page)                       the row exists from the first instant,
+   ──> continuous capture, streamed in slices (bounded memory)      still OPEN
+   ──> pause-aware segmentation (cuts on silences)
    ──> one warm-whisper pass per segment
-   ──> transcript grows ON DISK as the meeting runs (crash-safe)
-   ──> "mark this moment" drops anchors the summary emphasizes
+   ──> the document grows IN MEMORY and a slice goes up every 20 s
+   ──> "mark this moment" drops anchors the notes emphasize
+   ──> notes you type during the meeting are saved as you type them
 stop
-   ──> local Ollama summary (meeting notes / client interaction templates)
-   ──> transcript + notes sit in your folder; the 10 last stay one tap away
+   ──> local LLM notes, spliced into the SAME document
+   ──> the row is closed; the audio (if kept) uploads in resumable 6 MB chunks
 ```
+
+Three things that only matter when something goes wrong, which is when they
+matter most:
+
+- **A network cut mid-meeting loses nothing.** The document is in memory; the
+  queue keeps the latest version of it and sends that when the network returns.
+  Ten minutes offline costs one upload, not thirty.
+- **A meeting Flow did not finish is visible AS interrupted, never gone.** Its
+  row stays open, and the next sign-in closes it with a note at the top of the
+  document saying how it ended and what was never transcribed. This covers a
+  crash, a power cut and a forced quit - none of which run any shutdown code -
+  and it covers a meeting cut short on your *other* computer, which nothing
+  could see before. A meeting still being recorded elsewhere is left alone: the
+  row's heartbeat says the difference.
+- **An interrupted audio upload resumes.** A one-hour `.wav` is 115 MB. The
+  upload address is kept with the meeting, so closing Flow halfway does not mean
+  starting over - only an address that has expired (24 h) costs a fresh start.
 
 ## Known limits on Windows
 
@@ -215,7 +261,8 @@ utterance, and every table states which source it measured.
 
 The architecture is informed by studying [OpenWhispr](https://github.com/OpenWhispr/openwhispr)
 (MIT), notably its warm `whisper-server` sidecar pattern and its native helper
-approach. AGR Flow shares no product goals with it (no history, no cloud paths,
-no accounts) but gladly stands on what it proved workable.
+approach. Flow's product goals are its own - it keeps a bounded history, and
+since 2026-08-03 it keeps it in an account - but it gladly stands on what
+OpenWhispr proved workable.
 
 License: [MIT](LICENSE).
