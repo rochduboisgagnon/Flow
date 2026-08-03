@@ -254,13 +254,21 @@ test("B3a: quitter en cours de reunion ferme la ligne avec son avertissement, sa
 test("B3a: quitter recolle les notes tapees, et ne vide la fente qu'apres avoir ecrit le document", () => {
   const notes = [{ atMs: 12_000, text: "penser au devis" }];
   const cleared: string[] = [];
+  /** Combien d'ecritures etaient DEJA en file quand la fente a ete videe. C'est
+   * ce nombre qui prouve l'ordre : le document doit en faire partie. */
+  let writesWhenCleared = -1;
+  const holder: { store?: FakeCaptureStore } = {};
   const { rec, store } = make({
     liveNotes: {
       open: () => {},
       read: () => notes,
-      clear: (s) => cleared.push(s),
+      clear: (s) => {
+        cleared.push(s);
+        writesWhenCleared = holder.store?.writes.length ?? 0;
+      },
     },
   });
+  holder.store = store;
   const started = rec.start({ title: "Quit with notes" });
   const startedIso = rec.state().startedIso;
   rec.onChunk(speechy(3000));
@@ -272,11 +280,25 @@ test("B3a: quitter recolle les notes tapees, et ne vide la fente qu'apres avoir 
   // du document passe avant la suppression des notes du compte. Si l'inverse
   // arrivait, un processus qui meurt entre les deux aurait jete les notes de
   // quelqu'un - la seule partie d'une capture qu'on ne peut pas regenerer.
+  // L'ORDRE EST TOUTE LA SURETE de ce chemin, et il se verifie plutot que se
+  // suppose : la version d'avant vidait la fente AVANT d'ecrire la ligne, tout en
+  // affirmant en commentaire qu'elle faisait l'inverse. Les deux ecritures vont
+  // dans la meme file FIFO, et le processus est en train de mourir - il peut tres
+  // bien vider un travail et pas le second.
+  //
+  // Dans le bon ordre, le pire etat est « le document est monte avec les notes
+  // dedans, et les lignes live_notes survivent » : du desordre, rattrapable. Dans
+  // l'autre, c'est « les notes ont ete supprimees du compte et le document ne les
+  // a jamais portees », et ce sont les seules donnees d'une capture que rien ne
+  // peut regenerer.
+  const docWrite = store.writes.findIndex((w) => w.doc.includes("penser au devis"));
+  assert.ok(docWrite >= 0, "le document part en file AVEC les notes dedans");
+  assert.deepEqual(cleared, [startedIso], "et la fente est videe, sous la bonne cle");
+  assert.ok(writesWhenCleared >= 0, "l'effacement a bien ete observe");
   assert.ok(
-    store.writes.some((w) => w.doc.includes("penser au devis")),
-    "le document part en file AVEC les notes dedans",
+    writesWhenCleared > docWrite,
+    `le document (rang ${docWrite}) doit DEJA etre en file quand la fente est videe (${writesWhenCleared} ecriture(s) a cet instant)`,
   );
-  assert.deepEqual(cleared, [startedIso], "et la fente est videe ensuite, sous la bonne cle");
 });
 
 test("B3a: rescueOnQuit ne fait rien quand aucune reunion n'est en cours", () => {

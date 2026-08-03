@@ -478,27 +478,36 @@ export class LongRecorder {
       // retrouvera par le nom de la ligne.
       this.flushNativeAudioSync();
       const doc = this.doc;
+      let hadNotes = false;
       if (doc) {
         doc.prependToBody(interruptedNote("quit", pending));
-        // D7: les notes tapees partent MAINTENANT, sur le chemin de la sortie, et
-        // avant que la ligne soit ecrite. Pas de resume et pas de modele ici - le
-        // processus meurt et n'attend rien - donc le bloc porte les notes de
-        // l'humain seules, ce qui est le contenu honnete d'un enregistrement
-        // interrompu. Voir CaptureDoc.prependToBody sur l'ordre des deux.
+        // D7: les notes tapees partent MAINTENANT, sur le chemin de la sortie. Pas
+        // de resume et pas de modele ici - le processus meurt et n'attend rien -
+        // donc le bloc porte les notes de l'humain seules, ce qui est le contenu
+        // honnete d'un enregistrement interrompu. Voir CaptureDoc.prependToBody
+        // sur l'ordre de l'avertissement et du splice.
         const mine = this.deps.liveNotes?.read(this.startedIso) ?? [];
         const block = renderMyNotes(mine);
         if (block) {
           doc.spliceNotesBlock(block);
-          // Effacer la fente ici est sur POUR UNE SEULE RAISON : la file est
-          // FIFO et le document part avant. Si le processus meurt entre les
-          // deux, le document est monte avec les notes dedans et les lignes
-          // `live_notes` survivent, ce qui est rattrapable. L'inverse ne le
-          // serait pas.
-          this.deps.liveNotes?.clear(this.startedIso);
+          hadNotes = true;
         }
       }
       this.endedIso = new Date(this.now()).toISOString();
+      // LA LIGNE PART D'ABORD, LA FENTE EST VIDEE ENSUITE, et cet ordre est un
+      // correctif - la version d'avant faisait l'inverse tout en affirmant en
+      // commentaire qu'elle faisait ceci.
+      //
+      // Les deux ecritures vont dans la MEME file, qui est FIFO. Sur ce chemin, le
+      // processus est en train de mourir : il peut tres bien vider un travail et
+      // pas le second. Dans cet ordre, le pire etat atteignable est « le document
+      // est monte avec les notes dedans, et les lignes `live_notes` survivent » -
+      // du desordre, rattrapable. Dans l'autre, c'est « les notes ont ete
+      // supprimees du compte et le document ne les a jamais portees », et les notes
+      // tapees pendant une reunion sont la SEULE partie d'une capture que rien ne
+      // peut regenerer.
       this.publish();
+      if (hadNotes) this.deps.liveNotes?.clear(this.startedIso);
       this.rememberFinished();
       this.deps.log?.(`[long] rescued on quit -> ${this.recordingId}`);
       return true;
