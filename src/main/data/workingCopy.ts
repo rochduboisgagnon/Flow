@@ -70,6 +70,7 @@ type Job =
   | { kind: "dict-upsert"; id: string }
   | { kind: "dict-delete"; id: string }
   | { kind: "stats-day"; day: string }
+  | { kind: "stats-day-delete"; day: string }
   | { kind: "dictation"; entry: HistoryEntry }
   | { kind: "dictations-clear" }
   | { kind: "stats-clear" };
@@ -80,7 +81,7 @@ type Job =
 function jobKey(j: Job): string | null {
   if (j.kind === "settings") return "settings";
   if (j.kind === "dict-upsert" || j.kind === "dict-delete") return `dict:${j.id}`;
-  if (j.kind === "stats-day") return `stats:${j.day}`;
+  if (j.kind === "stats-day" || j.kind === "stats-day-delete") return `stats:${j.day}`;
   return null; // dictations et purges : jamais fusionnees
 }
 
@@ -225,6 +226,13 @@ export class WorkingCopy {
     this.enqueue({ kind: "dictations-clear" });
   }
 
+  /** Retire une journee du compte. Voir Repo.deleteStatsDay pour les deux
+   * raisons qui l'exigent. */
+  deleteStatsDay(day: string): void {
+    this.stats = this.stats.filter((d) => d.date !== day);
+    this.enqueue({ kind: "stats-day-delete", day });
+  }
+
   clearStats(): void {
     this.stats = [];
     this.enqueue({ kind: "stats-clear" });
@@ -299,6 +307,8 @@ export class WorkingCopy {
           if (!d) return true;
           return (await repo.saveStatsDay(d)).ok;
         }
+        case "stats-day-delete":
+          return (await repo.deleteStatsDay(j.day)).ok;
         case "dictation":
           return (await repo.addDictation(j.entry)).ok;
         case "dictations-clear":

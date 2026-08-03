@@ -1,5 +1,7 @@
-import fs from "node:fs";
-import path from "node:path";
+// B2 : ni `fs` ni `path`. `sanitizeStatsFile` part avec eux - elle protegeait
+// contre un stats.json ecrit a la main ou corrompu, et il n'y a plus de
+// fichier. Ce qui vient du compte est deja passe par les conversions du depot
+// (main/data/repo.ts).
 import {
   STATS_VERSION,
   MAX_APPS_PER_DAY,
@@ -10,10 +12,10 @@ import {
   emptyAppTable,
   emptyStatsFile,
   mergeDays,
-  sanitizeStatsFile,
   type PendingDay,
   type StatsFile,
   type StatsPayload,
+  type StatsDay,
 } from "../shared/stats";
 
 // U7b: the statistics STORE - ~/.flow/stats.json and the in-memory accumulator
@@ -56,11 +58,18 @@ import {
  * rare, short enough that a crash costs a minute of counters, never more. */
 export const FLUSH_INTERVAL_MS = 60_000;
 
+export interface StatsBacking {
+  readStats(): StatsDay[];
+  writeStatsDay(d: StatsDay): void;
+  deleteStatsDay(day: string): void;
+  clearStats(): void;
+}
+
 export interface StatsStoreDeps {
-  /** Absolute path of stats.json. A closure, never a captured string:
-   * dataDir() caches the POST-migration folder on its first call, and this
-   * store is constructed at module load, before the migration has run. */
-  file(): string;
+  /** B2 : stats.json a disparu. Le magasin du compte le remplace ; null tant
+   * que rien n'est charge - les compteurs s'accumulent alors en memoire et
+   * partent au premier vidage qui trouve un magasin. */
+  backing(): StatsBacking | null;
   /** settings.stats - aggregated counters are being written at all. */
   counting(): boolean;
   /** settings.statsPerApp - per-application attribution is allowed. Read at
@@ -146,28 +155,20 @@ export class StatsStore {
 
   /** Lazily read the file. Never called by record(): the first dictation of a
    * session must not pay a synchronous read (module note). */
+  /** Ce que le compte detient, ou un fichier vide quand rien n'est charge.
+   *
+   * Le resultat n'est PAS mis en cache tant qu'il n'y a pas de magasin : figer
+   * « aucun compteur » condamnerait la session entiere, alors que le compte
+   * finit de charger une seconde plus tard. Meme classe de defaut que le
+   * trousseau interroge trop tot en A2 et que le dictionnaire en B2. */
   private ensureLoaded(): StatsFile {
     if (this.loaded) return this.loaded;
-    let raw: unknown;
-    try {
-      raw = JSON.parse(fs.readFileSync(this.deps.file(), "utf8"));
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException)?.code;
-      if (code !== "ENOENT") {
-        // A fresh install has no file: that is normal and silent. Anything else
-        // is worth one line, because the counters are about to start from zero.
-        this.loadError = `stats.json could not be read (${err instanceof Error ? err.message : String(err)}); the counters start from empty`;
-        this.deps.log?.(`[stats] ${this.loadError}`);
-      }
-      this.loaded = emptyStatsFile();
-      return this.loaded;
-    }
-    const { file, error } = sanitizeStatsFile(raw);
-    this.loadError = error;
-    if (error) this.deps.log?.(`[stats] ${error}`);
-    this.loaded = file;
+    const b = this.deps.backing();
+    if (!b) return emptyStatsFile();
+    this.loaded = { version: STATS_VERSION, days: b.readStats() };
     return this.loaded;
   }
+
 
   /**
    * Merge the accumulator into the file, purge the rolling window, write
@@ -200,31 +201,55 @@ export class StatsStore {
    * half-written counter file behind. Returns false instead of throwing - a
    * full disk or an antivirus holding the file open (Bitdefender does exactly
    * this on this machine) may not take a dictation session down with it. */
+  /**
+   * Envoie les journees qui ont bouge, une par une.
+   *
+   * PAS LE FICHIER ENTIER, et la raison est la meme que pour le dictionnaire :
+   * ecrire tout l'historique ferait qu'une machine ecraserait les journees que
+   * l'autre vient d'enregistrer. Une journee a la fois laisse la base fusionner
+   * - et `stats_days` a justement pour clef (compte, jour).
+   *
+   * Rend vrai des que le magasin existe : l'envoi lui-meme part en
+   * arriere-plan par la copie de travail, qui a sa propre file et ses propres
+   * reprises. Ce module n'a plus a savoir si le reseau repond.
+   */
+  /**
+   * Envoie ce qui a CHANGE, journee par journee.
+   *
+   * PAS SEULEMENT LES JOURNEES DE CETTE SESSION, et c'est le defaut que les
+   * tests ont trouve. La premiere version n'envoyait que les journees en
+   * attente - celles ou quelqu'un vient de dicter. Deux promesses passaient
+   * alors a la trappe, sans que rien n'echoue :
+   *
+   *  - eteindre l'attribution par application doit effacer les noms DEJA
+   *    enregistres, y compris ceux de la semaine derniere. C'est une promesse
+   *    de confidentialite, pas une preference d'affichage.
+   *  - les journees trop vieilles doivent disparaitre du compte, et elles ne
+   *    sont evidemment jamais « en attente ».
+   *
+   * D'ou la comparaison avec ce qui etait charge, et la SUPPRESSION des
+   * journees qui ont disparu du resultat fusionne.
+   *
+   * Journee par journee, jamais l'historique entier : `stats_days` a pour clef
+   * (compte, jour), et ecrire tout ferait qu'une machine ecraserait les
+   * journees que l'autre vient d'enregistrer.
+   */
   private write(file: StatsFile): boolean {
-    const p = this.deps.file();
-    const tmp = p + ".tmp";
-    try {
-      fs.mkdirSync(path.dirname(p), { recursive: true });
-      fs.writeFileSync(tmp, JSON.stringify(file, null, 2));
-      fs.renameSync(tmp, p);
-      this.reportedWriteFailure = false;
-      return true;
-    } catch (err) {
-      try {
-        fs.rmSync(tmp, { force: true }); // never leave a half-written .tmp behind
-      } catch {
-        /* the cleanup failing changes nothing about the failure we are reporting */
-      }
-      if (!this.reportedWriteFailure) {
-        this.reportedWriteFailure = true;
-        this.deps.log?.(
-          `[stats] stats.json could not be written (${err instanceof Error ? err.message : String(err)}); ` +
-            "counters are kept in memory and retried. Further occurrences are not logged.",
-        );
-      }
-      return false;
+    const b = this.deps.backing();
+    if (!b) return false; // pas de compte : on garde tout en memoire et on reessaie
+    const before = new Map((this.loaded?.days ?? []).map((d) => [d.date, JSON.stringify(d)]));
+    const after = new Set<string>();
+    for (const d of file.days) {
+      after.add(d.date);
+      if (before.get(d.date) !== JSON.stringify(d)) b.writeStatsDay(d);
     }
+    for (const date of before.keys()) {
+      if (!after.has(date)) b.deleteStatsDay(date);
+    }
+    return true;
   }
+
+
 
   /** UI_STATS_READ. Derived from the file PLUS the not-yet-flushed buckets, so
    * a user who dictates and immediately opens the page sees the words they just
@@ -267,14 +292,12 @@ export class StatsStore {
     this.loaded = emptyStatsFile();
     this.loadError = undefined;
     this.dirty = false;
-    const p = this.deps.file();
-    try {
-      fs.rmSync(p, { force: true });
-      fs.rmSync(p + ".tmp", { force: true }); // a .tmp orphaned by a crash holds the same data
-    } catch (err) {
-      this.deps.log?.(`[stats] stats.json could not be deleted (${err instanceof Error ? err.message : String(err)})`);
-    }
+    // B2 : le compte, pas le fichier. Et pas non plus le `.tmp` orphelin d'un
+    // plantage - il n'y a plus de fichier temporaire parce qu'il n'y a plus
+    // d'ecriture atomique a proteger.
+    this.deps.backing()?.clearStats();
   }
+
 
   /**
    * The two settings changed. Called from applySettings(), and it is what makes

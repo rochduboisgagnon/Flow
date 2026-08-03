@@ -1458,7 +1458,9 @@ const importQueue = new ImportQueue({
 // both the streak and the words-per-minute describe a mixture of two machines.
 // Same opt-in-per-call-site reasoning as the hot-path trace.
 const stats = new StatsStore({
-  file: () => path.join(dataDir(), "stats.json"),
+  // B2 : null tant que le compte n'a pas charge. Les compteurs s'accumulent
+  // alors en memoire et partent au premier vidage qui trouve un magasin.
+  backing: () => (workingCopy.isReady() ? workingCopy : null),
   counting: () => settings.stats,
   perApp: () => settings.statsPerApp,
   log: flowLog,

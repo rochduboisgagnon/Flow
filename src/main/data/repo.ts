@@ -225,6 +225,17 @@ export class Repo {
     return error ? fail(null, error) : { ok: true, data: null, error: "" };
   }
 
+  /** Une journee precise. Necessaire pour deux promesses qui ne sont PAS des
+   * ecritures : la purge des journees trop vieilles, et l'effacement des noms
+   * d'application quand l'attribution est eteinte - qui peut vider une journee
+   * au point qu'elle ne doive plus exister. */
+  async deleteStatsDay(day: string): Promise<RepoResult<null>> {
+    const user_id = await this.uid();
+    if (!user_id) return fail(null, { message: "personne n'est connecte" });
+    const { error } = await this.client.from("stats_days").delete().eq("user_id", user_id).eq("day", day);
+    return error ? fail(null, error) : { ok: true, data: null, error: "" };
+  }
+
   async clearStats(): Promise<RepoResult<null>> {
     const user_id = await this.uid();
     if (!user_id) return fail(null, { message: "personne n'est connecte" });
