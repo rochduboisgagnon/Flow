@@ -60,6 +60,9 @@ export interface WorkingCopyDeps {
   retryDelayMs?: number;
   /** Couture de test : remplace setTimeout. */
   schedule?(fn: () => void, ms: number): void;
+  /** Couture de test : l'horloge de la retention. Les tests ont besoin d'une
+   * machine dont « aujourd'hui » est dans cinq semaines. */
+  now?(): number;
 }
 
 type Job =
@@ -114,6 +117,20 @@ export class WorkingCopy {
       return { ok: false, error: r.error };
     }
     this.adopt(r.data);
+    // LA RETENTION, au seul moment garanti de chaque session.
+    //
+    // Elle vient d'un constat de securite (F3/F9) et pas d'un souci de place :
+    // Flow ecrit ce que quelqu'un dicte, et la promesse qui rend ca acceptable
+    // est que ca ne s'accumule pas indefiniment. Elle passait avant par une
+    // purge a chaque ecriture du fichier ; le fichier a disparu, la purge non.
+    //
+    // EN ARRIERE-PLAN, delibere : la connexion ne doit pas attendre une
+    // suppression, et une purge qui echoue - hors ligne, par exemple - sera
+    // refaite au prochain lancement. C'est la seule ligne de ce module qui
+    // travaille sans que personne ne l'ait demandee.
+    void this.deps.repo.purgeOldDictations(this.deps.now?.() ?? Date.now()).then((p) => {
+      if (!p.ok) this.deps.log?.(`[data] purge de retention remise a plus tard : ${p.error}`);
+    });
     return { ok: true, error: "" };
   }
 

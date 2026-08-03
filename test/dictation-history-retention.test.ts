@@ -1,173 +1,183 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import { WorkingCopy } from "../src/main/data/workingCopy";
 import { DictationHistoryStore } from "../src/main/dictationHistory";
-import { HISTORY_VERSION, RETENTION_DAYS, type HistoryFile } from "../src/shared/dictationHistory";
+import type { Repo, RepoResult, Snapshot } from "../src/main/data/repo";
+import { RETENTION_DAYS, retentionCutoff, type HistoryEntry } from "../src/shared/dictationHistory";
 
 // ---------------------------------------------------------------------------
-// Security scan F3 (MEDIUM, 3/3, 2026-08-02).
+// F3 / F9, apres B2 : la retention a change de place, pas de raison d'etre.
 //
-// The 31-day retention was reachable ONLY from flush(), and flush() returns on
-// its first line when nothing new was dictated. So a machine that stopped being
-// used kept every transcription forever, in clear text, while the Home page
-// showed the list correctly purged - read() applies the cutoff in memory and
-// never writes. The user was shown a promise the disk was not keeping.
+// D'OU ELLE VIENT. Le scan de securite du 2026-08-02 (constats F3 et F9). Flow
+// ecrit ce que quelqu'un dicte : des mots de passe epeles, des adresses, des
+// choses dites a un medecin. La promesse qui rend ca acceptable est qu'elles ne
+// s'accumulent pas indefiniment - un mois glissant, et c'est tout.
 //
-// Every test here fails against the old code: they all drive a store that
-// records NOTHING, which is precisely the state in which the purge used to be
-// unreachable.
+// CE QUI A CHANGE. Elle etait une propriete du FICHIER : chaque ecriture de
+// history.json purgeait en passant, et `start()` / `stop()` purgeaient meme sur
+// une machine ou personne ne dicte jamais - c'etait exactement le cas que F3
+// nommait. Le fichier a disparu avec B2 ; la purge ne devait pas disparaitre
+// avec lui, et ces tests sont la pour que la disparition se voie si elle
+// arrive.
+//
+// OU ELLE EST MAINTENANT. Au chargement du compte : le seul instant garanti de
+// chaque session, y compris sur une machine ou personne ne dicte. Cote base,
+// donc elle vaut aussi pour les lignes ecrites par l'AUTRE ordinateur - ce que
+// la version fichier ne pouvait pas faire.
 // ---------------------------------------------------------------------------
 
-const DAY = 24 * 60 * 60 * 1000;
+const OK = <T,>(data: T): RepoResult<T> => ({ ok: true, data, error: "" });
+const KO = <T,>(data: T, error = "hors ligne"): RepoResult<T> => ({ ok: false, data, error });
+const EMPTY: Snapshot = { settings: {}, dictionary: [], stats: [], dictations: [] };
 
-function seed(file: string, ages: number[], now: number): void {
-  const doc: HistoryFile = {
-    version: HISTORY_VERSION,
-    entries: ages.map((days) => ({ at: now - days * DAY, text: `dictated ${days} days ago` })),
+function fakeRepo(over: Record<string, unknown> = {}) {
+  const purges: number[] = [];
+  const repo = {
+    loadAll: () => Promise.resolve(OK(EMPTY)),
+    purgeOldDictations: (now: number) => {
+      purges.push(now);
+      return Promise.resolve(OK(null));
+    },
+    saveSettings: () => Promise.resolve(OK(null)),
+    upsertDictEntry: () => Promise.resolve(OK(null)),
+    deleteDictEntry: () => Promise.resolve(OK(null)),
+    saveStatsDay: () => Promise.resolve(OK(null)),
+    addDictation: () => Promise.resolve(OK(null)),
+    clearDictations: () => Promise.resolve(OK(null)),
+    clearStats: () => Promise.resolve(OK(null)),
+    reportWriteFailure: () => {},
+    ...over,
+  } as unknown as Repo;
+  return { repo, purges };
+}
+
+const settle = () => new Promise((r) => setImmediate(r));
+
+test("F3: charger le compte purge, meme si personne n'a jamais dicte sur cette machine", async () => {
+  // Le cas exact du constat : un poste ou Flow tourne et ou personne ne dicte.
+  // La version fichier purgeait au demarrage pour cette raison ; le chargement
+  // du compte est l'equivalent, et il est garanti a chaque session.
+  const f = fakeRepo();
+  const wc = new WorkingCopy({ repo: f.repo, now: () => 1_000_000 });
+  await wc.load();
+  await settle();
+  assert.deepEqual(f.purges, [1_000_000], "un chargement doit purger, une fois");
+});
+
+test("F3: la coupure est bien un mois glissant", () => {
+  // La regle elle-meme n'a pas bouge, et c'est volontaire : B2 deplace la
+  // retention, il ne la renegocie pas.
+  const now = Date.parse("2026-08-03T12:00:00.000Z");
+  assert.equal(RETENTION_DAYS, 31);
+  assert.equal(now - retentionCutoff(now), 31 * 24 * 60 * 60 * 1000);
+});
+
+test("F3: une purge qui ECHOUE ne casse pas la connexion et sera refaite", async () => {
+  // Hors ligne au lancement, par exemple. La connexion doit reussir ; la purge
+  // repartira au prochain chargement.
+  const logs: string[] = [];
+  const f = fakeRepo({ purgeOldDictations: () => Promise.resolve(KO(null)) });
+  const wc = new WorkingCopy({ repo: f.repo, log: (m) => logs.push(m) });
+  const r = await wc.load();
+  await settle();
+  assert.equal(r.ok, true, "la connexion reussit meme si la purge echoue");
+  assert.equal(wc.isReady(), true);
+  assert.match(logs.join(" "), /purge/, "et l'echec est dit, pas avale");
+});
+
+test("F3: la connexion N'ATTEND PAS la purge", async () => {
+  // Une suppression cote base peut prendre du temps sur un gros compte, et
+  // personne ne doit regarder un ecran de chargement pour ca.
+  const held: Array<() => void> = [];
+  const f = fakeRepo({
+    purgeOldDictations: () => new Promise((res) => held.push(() => res(OK(null)))),
+  });
+  const wc = new WorkingCopy({ repo: f.repo });
+  const r = await wc.load();
+  assert.equal(r.ok, true, "load() rend la main pendant que la purge tourne encore");
+  assert.equal(wc.isReady(), true);
+  held.forEach((h) => h());
+});
+
+test("F3: un chargement RATE ne purge pas", async () => {
+  // Supprimer sur la foi d'une lecture qui a echoue serait la pire des
+  // combinaisons : on ne sait pas ce qu'il y a, et on efface quand meme.
+  const f = fakeRepo({ loadAll: () => Promise.resolve(KO(EMPTY)) });
+  const wc = new WorkingCopy({ repo: f.repo });
+  await wc.load();
+  await settle();
+  assert.deepEqual(f.purges, [], "aucune purge apres une lecture ratee");
+});
+
+// ---------------------------------------------------------------------------
+// Le magasin d'historique lui-meme, devenu une coquille mince
+// ---------------------------------------------------------------------------
+
+function fakeBacking() {
+  const items: HistoryEntry[] = [];
+  return {
+    backing: {
+      readDictations: () => items,
+      addDictation: (e: HistoryEntry) => void items.unshift(e),
+      clearDictations: () => void (items.length = 0),
+    },
+    items,
   };
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(doc), "utf8");
 }
 
-function onDisk(file: string): string[] {
-  const raw = JSON.parse(fs.readFileSync(file, "utf8")) as HistoryFile;
-  return raw.entries.map((e) => e.text);
-}
+test("B2: dicter AVANT la connexion ne perd pas le texte", () => {
+  // Flow demarre avec Windows et arme le clavier avant que le compte soit
+  // charge. Quelqu'un qui dicte dans cette fenetre ne doit pas voir sa phrase
+  // disparaitre de la page.
+  let b: ReturnType<typeof fakeBacking>["backing"] | null = null;
+  const h = new DictationHistoryStore({ backing: () => b });
+  h.record("dite avant la connexion");
+  assert.equal(h.read().entries[0].text, "dite avant la connexion");
 
-test("F3: start() purges expired entries from the FILE, with nothing dictated this session", () => {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "flow-f3-"));
-  const file = path.join(work, "history.json");
-  const now = Date.UTC(2026, 7, 2);
-  seed(file, [1, 10, RETENTION_DAYS + 1, RETENTION_DAYS + 400], now);
-  try {
-    const store = new DictationHistoryStore({ file: () => file, now: () => now, flushIntervalMs: 3_600_000 });
-    store.start();
-    store.stop();
-    assert.deepEqual(
-      onDisk(file),
-      ["dictated 1 days ago", "dictated 10 days ago"],
-      "the expired entries must be gone from the DISK, not merely filtered out of the page",
-    );
-  } finally {
-    fs.rmSync(work, { recursive: true, force: true });
-  }
+  const f = fakeBacking();
+  b = f.backing;
+  h.adopt();
+  assert.equal(f.items.length, 1, "et elle remonte vers le compte a la connexion");
+  assert.equal(h.read().entries.length, 1, "sans etre comptee deux fois");
 });
 
-test("F3: the six-month-later case from the scan - an install nobody dictates into again", () => {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "flow-f3b-"));
-  const file = path.join(work, "history.json");
-  const dictatedAt = Date.UTC(2026, 1, 2);
-  seed(file, [0, 1, 2], dictatedAt);
-  try {
-    // Six months pass. Flow launches - the user never dictates - and quits.
-    const sixMonthsLater = dictatedAt + 180 * DAY;
-    const store = new DictationHistoryStore({
-      file: () => file,
-      now: () => sixMonthsLater,
-      flushIntervalMs: 3_600_000,
-    });
-    store.start();
-    store.stop();
-    assert.deepEqual(onDisk(file), [], "nothing spoken six months ago may still be on this disk");
-  } finally {
-    fs.rmSync(work, { recursive: true, force: true });
-  }
+test("B2: l'ordre d'arrivee dans le compte suit l'ordre des paroles", () => {
+  let b: ReturnType<typeof fakeBacking>["backing"] | null = null;
+  const h = new DictationHistoryStore({ backing: () => b });
+  h.record("premiere");
+  h.record("deuxieme");
+  const f = fakeBacking();
+  b = f.backing;
+  h.adopt();
+  // addDictation empile en tete : la derniere arrivee est la plus recente.
+  assert.deepEqual(
+    f.items.map((e) => e.text),
+    ["deuxieme", "premiere"],
+  );
 });
 
-test("F3: nothing expired means no write at all - the purge must not churn the file", () => {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "flow-f3c-"));
-  const file = path.join(work, "history.json");
-  const now = Date.UTC(2026, 7, 2);
-  seed(file, [0, 3, 20], now);
-  try {
-    const before = fs.statSync(file).mtimeMs;
-    const store = new DictationHistoryStore({ file: () => file, now: () => now, flushIntervalMs: 3_600_000 });
-    store.start();
-    store.stop();
-    assert.equal(fs.statSync(file).mtimeMs, before, "a file with nothing to drop must be left untouched");
-    assert.equal(onDisk(file).length, 3);
-  } finally {
-    fs.rmSync(work, { recursive: true, force: true });
-  }
+test("B2: le texte trop long est coupe ET signale, pas presente comme le tout", () => {
+  // La seule vraie logique qui restait dans ce module, et elle n'avait rien a
+  // voir avec un fichier.
+  const f = fakeBacking();
+  const h = new DictationHistoryStore({ backing: () => f.backing });
+  h.record("x".repeat(10_000));
+  assert.equal(f.items[0].truncated, true);
+  assert.ok(f.items[0].text.length < 10_000);
 });
 
-test("F3: an unparseable history is still never overwritten by the purge", () => {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "flow-f3d-"));
-  const file = path.join(work, "history.json");
-  fs.writeFileSync(file, "{ this is not json", "utf8");
-  try {
-    const store = new DictationHistoryStore({
-      file: () => file,
-      now: () => Date.UTC(2026, 7, 2),
-      flushIntervalMs: 3_600_000,
-    });
-    store.start();
-    store.stop();
-    assert.equal(
-      fs.readFileSync(file, "utf8"),
-      "{ this is not json",
-      "a file we could not understand is not ours to rewrite from what we think it said",
-    );
-  } finally {
-    fs.rmSync(work, { recursive: true, force: true });
-  }
+test("B2: du texte vide n'est jamais enregistre", () => {
+  const f = fakeBacking();
+  const h = new DictationHistoryStore({ backing: () => f.backing });
+  h.record("   ");
+  h.record("");
+  assert.deepEqual(f.items, []);
 });
 
-test("F3: a missing history file is not created by the purge", () => {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "flow-f3e-"));
-  const file = path.join(work, "history.json");
-  try {
-    const store = new DictationHistoryStore({
-      file: () => file,
-      now: () => Date.UTC(2026, 7, 2),
-      flushIntervalMs: 3_600_000,
-    });
-    store.start();
-    store.stop();
-    assert.equal(fs.existsSync(file), false, "no history and an empty history are different facts on a disk");
-  } finally {
-    fs.rmSync(work, { recursive: true, force: true });
-  }
-});
-
-
-// ---------------------------------------------------------------------------
-// F9 (second scan). Les tests ci-dessus appellent start() PUIS stop(), et les
-// deux purgent. Aucun ne pouvait donc dire lequel des deux avait fait le
-// travail : supprimer la purge au demarrage laissait la suite entierement
-// verte, alors que c'est precisement le site qui compte pour la machine qu'on
-// ouvre et qu'on n'utilise plus.
-// ---------------------------------------------------------------------------
-
-test("F9: start() ALONE purges - the startup site is the one that matters", () => {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "flow-f9a-"));
-  const file = path.join(work, "history.json");
-  const now = Date.UTC(2026, 7, 2);
-  seed(file, [1, RETENTION_DAYS + 5], now);
-  try {
-    const store = new DictationHistoryStore({ file: () => file, now: () => now, flushIntervalMs: 3_600_000 });
-    store.start(); // et RIEN d'autre : pas de stop()
-    assert.deepEqual(onDisk(file), ["dictated 1 days ago"], "la purge au demarrage doit suffire a elle seule");
-    store.stop();
-  } finally {
-    fs.rmSync(work, { recursive: true, force: true });
-  }
-});
-
-test("F9: stop() ALONE purges too - the two sites are independent", () => {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "flow-f9b-"));
-  const file = path.join(work, "history.json");
-  const now = Date.UTC(2026, 7, 2);
-  seed(file, [2, RETENTION_DAYS + 9], now);
-  try {
-    const store = new DictationHistoryStore({ file: () => file, now: () => now, flushIntervalMs: 3_600_000 });
-    // On saute start() : seul stop() tourne. Si les deux sites n'etaient pas
-    // reellement independants, ce test tomberait.
-    store.stop();
-    assert.deepEqual(onDisk(file), ["dictated 2 days ago"]);
-  } finally {
-    fs.rmSync(work, { recursive: true, force: true });
-  }
+test("B2: effacer l'historique vide les deux cotes", () => {
+  const f = fakeBacking();
+  const h = new DictationHistoryStore({ backing: () => f.backing });
+  h.record("a");
+  assert.equal(h.clear().entries.length, 0);
+  assert.deepEqual(f.items, [], "le compte aussi, pas seulement la page");
 });

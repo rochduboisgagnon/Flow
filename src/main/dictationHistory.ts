@@ -1,14 +1,9 @@
-import fs from "node:fs";
-import path from "node:path";
-import {
-  HISTORY_VERSION,
-  emptyHistory,
-  mergeEntries,
-  parseHistoryFile,
-  sanitizeHistoryText,
-  type HistoryEntry,
-  type HistoryFile,
-} from "../shared/dictationHistory";
+// B2 : ni `fs` ni `path`. Ce module n'ecrit plus rien sur le disque, et les
+// quatre fonctions de fichier (HISTORY_VERSION, emptyHistory, mergeEntries,
+// parseHistoryFile) sont parties avec history.json. Elles restent dans
+// shared/dictationHistory.ts, ou la migration en aura besoin si un jour on
+// remonte un ancien fichier.
+import { sanitizeHistoryText, type HistoryEntry } from "../shared/dictationHistory";
 
 // The dictation history store. Deliberately the same shape as main/stats.ts,
 // because it has the same hazard: the process that writes this file is the one
@@ -18,30 +13,48 @@ import {
 // promises. In short: it now writes down what you dictate, the README says so,
 // and this file is what has to keep the four bounds that make that acceptable.
 
-const FLUSH_INTERVAL_MS = 60_000;
+
+// ---------------------------------------------------------------------------
+// B2 : history.json a disparu. Les dictees vivent dans le compte.
+//
+// CE QUI TOMBE AVEC LE FICHIER, et c'est l'essentiel de ce module : le
+// minuteur de vidage toutes les minutes, l'ecriture atomique, la garde
+// anti-ecrasement, et la purge de retention appliquee A CHAQUE ECRITURE. Tous
+// existaient pour proteger un fichier. La copie de travail fait desormais le
+// travail de file d'attente, et la retention devient une affaire de base.
+//
+// CE QUI RESTE, ET QUI EST LA VRAIE VALEUR DE CE MODULE : `sanitizeHistoryText`.
+// Elle coupe a MAX_TEXT_CHARS et le DIT (`truncated`), pour que la page puisse
+// annoncer un fragment au lieu de le presenter comme le tout. Cette regle n'a
+// rien a voir avec un fichier et n'avait aucune raison de partir avec lui.
+//
+// LE CHEMIN CHAUD NE CHANGE PAS. `record()` reste une regex sur une chaine
+// courte et un ajout en memoire : pas de lecture, pas d'ecriture, pas de JSON,
+// et maintenant pas de reseau non plus - l'envoi part de la copie de travail,
+// derriere, apres que le texte est deja au curseur.
+// ---------------------------------------------------------------------------
 
 export interface HistoryStoreDeps {
-  /** Absolute path of history.json. A closure, never a captured string:
-   * dataDir() caches the post-migration folder on its FIRST call, and this
-   * store is constructed at module load, before the migration has run. */
-  file(): string;
-  /** Injectable clock - the retention tests need a machine whose "now" is five
-   * weeks from here without waiting five weeks. */
+  /** Le magasin du compte. La copie de travail (main/data/workingCopy.ts)
+   * l'implemente. Null tant que personne n'est connecte : `record()` garde
+   * alors la dictee en memoire pour la page, et rien ne part. */
+  backing(): HistoryBacking | null;
+  /** Injectable clock - inchange. */
   now?(): number;
   log?(msg: string): void;
-  /** Test seam only; production uses FLUSH_INTERVAL_MS. */
-  flushIntervalMs?: number;
+}
+
+export interface HistoryBacking {
+  readDictations(): HistoryEntry[];
+  addDictation(e: HistoryEntry): void;
+  clearDictations(): void;
 }
 
 export class DictationHistoryStore {
   private deps: HistoryStoreDeps;
-  private pending: HistoryEntry[] = [];
-  private loaded: HistoryFile | null = null;
-  private loadError: string | undefined;
-  private dirty = false;
-  private timer: NodeJS.Timeout | undefined;
-  /** A failing disk must not log the same line every minute forever. */
-  private reportedWriteFailure = false;
+  /** Les dictees de CETTE session, gardees quand personne n'est connecte. Sans
+   * ca, dicter avant de se connecter effacerait le texte de la page. */
+  private orphans: HistoryEntry[] = [];
 
   constructor(deps: HistoryStoreDeps) {
     this.deps = deps;
@@ -52,168 +65,47 @@ export class DictationHistoryStore {
   }
 
   /**
-   * THE HOT PATH. Memory only: one sanitize (a regex over a short string) and
-   * one array push. No read, no write, no JSON.
+   * THE HOT PATH. Une regex sur une chaine courte et un ajout en memoire : pas
+   * de lecture, pas d'ecriture, pas de JSON, et pas de reseau. L'envoi vers le
+   * compte part de la copie de travail, derriere, apres que le texte est deja
+   * au curseur.
    *
-   * Called with the text that was actually inserted, after every filter, so the
-   * history shows what landed rather than what the model first said.
+   * Appelee avec le texte REELLEMENT insere, apres tous les filtres, pour que
+   * l'historique montre ce qui a atterri et non ce que le modele a dit d'abord.
    */
   record(rawText: string): void {
     const { text, truncated } = sanitizeHistoryText(rawText);
     if (!text) return;
-    this.pending.push(truncated ? { at: this.now(), text, truncated } : { at: this.now(), text });
-    this.dirty = true;
+    const e: HistoryEntry = truncated
+      ? { at: this.now(), text, truncated }
+      : { at: this.now(), text };
+    const b = this.deps.backing();
+    if (b) b.addDictation(e);
+    else this.orphans.unshift(e);
   }
 
-  private ensureLoaded(): HistoryFile {
-    if (this.loaded) return this.loaded;
-    const p = this.deps.file();
-    let raw: unknown;
-    try {
-      raw = JSON.parse(fs.readFileSync(p, "utf8"));
-    } catch (err) {
-      const e = err as NodeJS.ErrnoException;
-      if (e.code !== "ENOENT") {
-        // A file we could not read is NOT the same as no file. Recording the
-        // error is what stops the next flush writing an empty history over
-        // something a later build might have understood.
-        this.loadError = `history could not be read: ${e.message}`;
-        this.deps.log?.(`[history] ${this.loadError}`);
-      }
-      this.loaded = emptyHistory();
-      return this.loaded;
-    }
-    const parsed = parseHistoryFile(raw);
-    this.loadError = parsed.error;
-    if (parsed.error) this.deps.log?.(`[history] ${parsed.error}`);
-    this.loaded = parsed.file;
-    return this.loaded;
-  }
-
-  /** Periodic, and on quit. Purges as it writes: the retention is a property of
-   * the FILE, not a filter the page applies afterwards. */
-  flush(): void {
-    if (!this.dirty) return;
-    const file = this.ensureLoaded();
-    if (this.loadError) {
-      // The overwrite guard. Keep collecting in memory - the session's own
-      // dictations are not lost from the page - but never write a copy of a
-      // file we failed to understand.
-      return;
-    }
-    const entries = mergeEntries(file.entries, this.pending, this.now());
-    const next: HistoryFile = { version: HISTORY_VERSION, entries };
-    if (!this.write(next)) return; // keep pending + dirty: the next flush retries
-    this.loaded = next;
-    this.pending = [];
-    this.dirty = false;
-  }
-
-  /** Atomic write (tmp + rename), the same discipline as settings and stats: a
-   * crash mid-save must not leave a half-written history behind. */
-  private write(file: HistoryFile): boolean {
-    const p = this.deps.file();
-    const tmp = p + ".tmp";
-    try {
-      fs.mkdirSync(path.dirname(p), { recursive: true });
-      fs.writeFileSync(tmp, JSON.stringify(file, null, 2), "utf8");
-      fs.renameSync(tmp, p);
-      this.reportedWriteFailure = false;
-      return true;
-    } catch (err) {
-      if (!this.reportedWriteFailure) {
-        this.reportedWriteFailure = true;
-        this.deps.log?.(`[history] could not be written: ${(err as Error).message}`);
-      }
-      try {
-        fs.rmSync(tmp, { force: true });
-      } catch {
-        /* the tmp file is ours; failing to remove it changes nothing */
-      }
-      return false;
-    }
-  }
-
-  /** What the page renders. Merges the not-yet-flushed entries so the list is
-   * never up to a minute stale, and never writes anything. */
+  /** Ce que la page montre. Les dictees dites avant la connexion sont devant :
+   * elles sont les plus recentes. */
   read(): { entries: HistoryEntry[]; error?: string } {
-    const file = this.ensureLoaded();
-    return {
-      entries: mergeEntries(file.entries, this.pending, this.now()),
-      error: this.loadError,
-    };
+    const b = this.deps.backing();
+    if (!b) return { entries: [...this.orphans] };
+    return { entries: [...this.orphans, ...b.readDictations()] };
   }
 
-  /**
-   * Erase everything, now. DELETES the file rather than writing an empty one:
-   * "there is no history" and "there is a history that happens to be empty" are
-   * different facts on a disk, and only the first is what the button promises.
-   */
   clear(): { entries: HistoryEntry[]; error?: string } {
-    this.pending = [];
-    this.loaded = emptyHistory();
-    this.loadError = undefined;
-    this.dirty = false;
-    const p = this.deps.file();
-    try {
-      fs.rmSync(p, { force: true });
-      fs.rmSync(p + ".tmp", { force: true });
-    } catch (err) {
-      const msg = `history could not be erased: ${(err as Error).message}`;
-      this.deps.log?.(`[history] ${msg}`);
-      // Said out loud rather than swallowed: a user who clicked "erase" and got
-      // a silent failure would believe something false about their own machine.
-      return { entries: [], error: msg };
-    }
+    this.orphans = [];
+    this.deps.backing()?.clearDictations();
     return { entries: [] };
   }
 
-  /**
-   * Security scan F3 (MEDIUM, 3/3, 2026-08-02). Apply the retention to the FILE,
-   * on open, whether or not anything new was dictated.
-   *
-   * The comment on flush() already claimed "the retention is a property of the
-   * FILE, not a filter the page applies afterwards". It was not true. The purge
-   * lived only inside mergeEntries, which only flush() reached, and flush()
-   * returns on its first line when nothing is dirty. So an installation that
-   * stopped being used kept every transcription forever - word for word, in
-   * clear text, in every backup taken afterwards - while the Home page showed
-   * the list correctly purged, because read() applies the cutoff in memory and
-   * never writes. The user was looking at a promise the disk was not keeping.
-   *
-   * StatsStore already did this at startup. This is the missing twin.
-   *
-   * Honest limit: this runs when Flow runs. Nothing in this file can purge a
-   * profile on a machine where Flow is never launched again - only uninstalling
-   * with data removal does that, and it is off by default.
-   */
-  private purgeOnOpen(): void {
-    const file = this.ensureLoaded();
-    // Same overwrite guard as flush(): a file we could not parse is never
-    // rewritten from what we THINK it said.
-    if (this.loadError) return;
-    const kept = mergeEntries(file.entries, [], this.now());
-    if (kept.length === file.entries.length) return; // nothing aged out: no write
-    const next: HistoryFile = { version: HISTORY_VERSION, entries: kept };
-    if (!this.write(next)) return; // a failed write retries at the next flush
-    this.loaded = next;
-    this.deps.log?.(`[history] retention: dropped ${file.entries.length - kept.length} expired entries`);
-  }
-
-  start(): void {
-    this.purgeOnOpen();
-    this.timer = setInterval(() => this.flush(), this.deps.flushIntervalMs ?? FLUSH_INTERVAL_MS);
-    this.timer.unref?.();
-  }
-
-  /** before-quit: the last flush, and the timer stops. */
-  stop(): void {
-    if (this.timer) clearInterval(this.timer);
-    this.timer = undefined;
-    this.flush();
-    // F3: a session where nothing was dictated leaves flush() a no-op, so the
-    // purge has to be asked for separately here too. Quitting is the other
-    // moment the file is in our hands.
-    this.purgeOnOpen();
+  /** La connexion vient d'avoir lieu : ce qui a ete dicte avant part vers le
+   * compte plutot que de disparaitre a la fermeture. */
+  adopt(): void {
+    const b = this.deps.backing();
+    if (!b) return;
+    // Du plus ancien au plus recent, pour que l'ordre d'arrivee dans la base
+    // suive l'ordre reel des paroles.
+    for (const e of [...this.orphans].reverse()) b.addDictation(e);
+    this.orphans = [];
   }
 }

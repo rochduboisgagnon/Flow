@@ -14,7 +14,7 @@ import { FocusProbe } from "./focus/probe";
 import { insertViaPaste, insertTyped, leaveOnClipboard, flushPendingRestore } from "./insert";
 import { decideRoute } from "../shared/route";
 import { comboLabel } from "../shared/combo";
-import { loadSettings, saveSettings, sanitizeSettings, dataDir, type FlowSettings } from "./settings";
+import { loadSettings, saveSettings, sanitizeSettings, dataDir, useSettingsBacking, type FlowSettings } from "./settings";
 import { runMigration } from "./migrate";
 import { analyzeSpeech, hasSpeech, trimToSpeech } from "../shared/vad";
 import { gateTranscript } from "../shared/textGate";
@@ -26,6 +26,8 @@ import { notesModelPath, ensureNotesModel } from "./asr/modelStore";
 import { SessionStore } from "./data/sessionStore";
 import { createFlowClient } from "./data/client";
 import { Auth } from "./data/auth";
+import { Repo } from "./data/repo";
+import { WorkingCopy } from "./data/workingCopy";
 import { LocalApi } from "./api";
 import { LongRecorder, historyRoot, stagingRoot, listHistory, deleteHistoryEntry, resolveHistoryEntry, readHistoryDoc } from "./longform";
 import { LiveNotesStore } from "./liveNotes";
@@ -37,7 +39,13 @@ import { Redactor } from "./redact";
 import { StatsStore } from "./stats";
 import { DictationHistoryStore } from "./dictationHistory";
 import { countWords } from "../shared/wordCount";
-import { primeDictionary, dictationPrompt, applyDictionaryReplacements } from "./dictionary";
+import {
+  primeDictionary,
+  dictationPrompt,
+  applyDictionaryReplacements,
+  useDictionaryBacking,
+  refreshDictionaryCache,
+} from "./dictionary";
 import type { LongStartResult, LongStopResult } from "../shared/longform";
 import { legacyHistoryInfo, type LegacyHistoryInfo } from "./legacyHistory";
 import { decideLaunchAtLogin } from "../shared/launchAtLogin";
@@ -292,7 +300,8 @@ if (!app.requestSingleInstanceLock()) {
     // loads lazily at its first flush or read - so a boot pays nothing for it,
     // and an install where the counters are off never even creates the file.
     stats.start();
-    history.start();
+    // B2 : history.start() a disparu avec son minuteur de vidage - il n'y a plus
+    // de fichier a vider, la copie de travail tient la file.
     logLegacyHistoryState(); // U2c: say where the older recordings are, before purging anything
     // U4 (blocking review): the app can die without ever running before-quit -
     // a power cut, a bugcheck, a taskkill. Whatever is still in the staging
@@ -1010,6 +1019,40 @@ const sessionStore = new SessionStore({
 const supabase = createFlowClient({ storage: sessionStore });
 const auth = new Auth({ client: supabase, store: sessionStore, log: flowLog });
 
+// B1/B2 : la copie de travail. Tout ce que Flow gardait sur le disque de
+// l'utilisateur - reglages, dictionnaire, statistiques, dictees - vit ici en
+// memoire pendant la session, et dans le compte le reste du temps.
+//
+// LES TROIS MAGASINS SONT BRANCHES ICI ET PAS AILLEURS, au chargement du
+// module, AVANT que quoi que ce soit ne lise un reglage. Les brancher plus tard
+// laisserait une fenetre pendant laquelle loadSettings() rendrait les defauts a
+// des appelants qui les garderaient.
+const workingCopy = new WorkingCopy({
+  repo: new Repo({ client: supabase, log: flowLog }),
+  log: flowLog,
+});
+useSettingsBacking(workingCopy);
+useDictionaryBacking(workingCopy);
+
+/** Charge le compte, puis reveille ce qui en depend.
+ *
+ * L'ORDRE DES TROIS DERNIERES LIGNES EST LE SUJET. `refreshDictionaryCache()`
+ * est ce qui evite la deuxieme des sept regressions du plan - un terme present
+ * dans la page et sans aucun effet sur ce qui est dicte, parce que la table de
+ * regles compilee date d'avant la connexion. `history.adopt()` remonte ce qui a
+ * ete dicte AVANT la connexion plutot que de le laisser mourir a la fermeture. */
+async function loadAccountData(): Promise<void> {
+  const r = await workingCopy.load();
+  if (!r.ok) {
+    flowLog(`[data] le compte n'a pas pu etre charge : ${r.error}`);
+    return;
+  }
+  refreshDictionaryCache();
+  primeDictionary(flowLog);
+  history.adopt();
+  applySettings({}); // reapplique ce qui vient d'arriver : raccourci, langue, theme
+}
+
 /** Le dernier etat de compte connu, rafraichi par la poussee a 1 Hz.
  *
  * Une COPIE plutot qu'un appel dans getUiState(), parce que getUiState est
@@ -1024,7 +1067,15 @@ void auth.account().then((a) => {
 // Et ensuite par evenement, jamais par sondage : connexion, deconnexion, et le
 // rafraichissement automatique du jeton toutes les heures.
 auth.onChange((a) => {
+  const wasSignedIn = accountSnapshot.signedIn;
   accountSnapshot = a;
+  if (a.signedIn && !wasSignedIn) {
+    void loadAccountData();
+  } else if (!a.signedIn && wasSignedIn) {
+    // La copie de l'ancien compte ne doit pas survivre : la personne suivante a
+    // se connecter sur cette machine verrait son dictionnaire.
+    workingCopy.reset();
+  }
 });
 
 const overlay = new OverlayWindow(flowLog);
@@ -1417,7 +1468,9 @@ const stats = new StatsStore({
 // statistics above - `file` is a CLOSURE because dataDir() caches the
 // post-migration folder on its first call and this runs at module load.
 const history = new DictationHistoryStore({
-  file: () => path.join(dataDir(), "history.json"),
+  // Null tant que le compte n'a pas fini de charger : `record()` garde alors la
+  // dictee en memoire pour la page, et `adopt()` la remonte a la connexion.
+  backing: () => (workingCopy.isReady() ? workingCopy : null),
   log: flowLog,
 });
 
@@ -1976,7 +2029,8 @@ app.on("before-quit", () => {
   // is lost forever otherwise, and up to a minute of counters is exactly what
   // the 60 s timer trades away for keeping the disk off the dictation path.
   stats.stop();
-  history.stop();
+  // B2 : rien a arreter, et surtout rien a attendre - before-quit est
+  // synchrone (voir workingCopy.pending()).
   // B4b: LAST, on purpose. Every line the shutdown above just wrote (the
   // recorder's rescue, the API's cleanup) is still sitting in the queue: the
   // writes are asynchronous now, and this handler is synchronous with the

@@ -34,6 +34,8 @@ function fakeRepo(over: Partial<Record<string, unknown>> = {}) {
   };
   const repo = {
     loadAll: () => answer("loadAll", EMPTY),
+    // F3 : la purge de retention, ajoutee au faux depot en meme temps qu au vrai.
+    purgeOldDictations: () => answer("purgeOldDictations", null),
     saveSettings: () => answer("saveSettings", null),
     upsertDictEntry: () => answer("upsertDictEntry", null),
     deleteDictEntry: () => answer("deleteDictEntry", null),

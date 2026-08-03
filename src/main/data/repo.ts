@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "./client";
 import type { DictEntry, DictKind } from "../../shared/ipcContracts";
 import type { StatsDay } from "../../shared/stats";
-import type { HistoryEntry } from "../../shared/dictationHistory";
+import { retentionCutoff, type HistoryEntry } from "../../shared/dictationHistory";
 
 // ---------------------------------------------------------------------------
 // A3 : le depot. Toute lecture et toute ecriture des donnees de l'utilisateur
@@ -187,6 +187,34 @@ export class Repo {
       text: e.text,
       truncated: e.truncated === true,
     });
+    return error ? fail(null, error) : { ok: true, data: null, error: "" };
+  }
+
+  /**
+   * LA RETENTION. Un mois glissant, applique cote base.
+   *
+   * ELLE VIENT D'UN CONSTAT DE SECURITE (F3/F9 du scan du 2026-08-02) et pas
+   * d'un souci de place : Flow ecrit ce que quelqu'un dicte, ce qui inclut des
+   * mots de passe epeles, des adresses, des choses dites a un medecin. La
+   * promesse qui rend ca acceptable est qu'elles ne s'accumulent pas
+   * indefiniment.
+   *
+   * Elle passait avant par une purge a chaque ecriture du fichier. Le fichier
+   * n'existe plus, et la purge devait etre re-ecrite quelque part ou elle
+   * s'execute VRAIMENT - pas simplement disparaitre avec lui. Ici, au
+   * chargement du compte : c'est le seul moment garanti de chaque session, y
+   * compris sur une machine ou personne ne dicte jamais - le cas exact que le
+   * constat F3 nommait.
+   */
+  async purgeOldDictations(nowMs: number): Promise<RepoResult<null>> {
+    const user_id = await this.uid();
+    if (!user_id) return fail(null, { message: "personne n'est connecte" });
+    const cutoff = new Date(retentionCutoff(nowMs)).toISOString();
+    const { error } = await this.client
+      .from("dictations")
+      .delete()
+      .eq("user_id", user_id)
+      .lt("said_at", cutoff);
     return error ? fail(null, error) : { ok: true, data: null, error: "" };
   }
 
