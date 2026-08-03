@@ -7,7 +7,7 @@ import {
   UI_SET_SETTINGS,
   UI_RECORD_SHORTCUT,
   UI_LIST_MICS,
-  UI_OLLAMA_MODELS,
+  UI_DOWNLOAD_NOTES_MODEL,
   UI_OPEN_PATH,
   UI_GET_LOGIN_ITEM,
   UI_SET_LOGIN_ITEM,
@@ -84,8 +84,9 @@ test("every ui:* invoke channel this bridge owns is registered through guarded()
     UI_SET_SETTINGS,
     UI_RECORD_SHORTCUT,
     UI_LIST_MICS,
-    UI_OLLAMA_MODELS,
-    // P6: the Local AI tab. Detection (list, rescan) never runs anything; test does.
+    UI_DOWNLOAD_NOTES_MODEL,
+    // D1: the Local AI tab's one button. It fetches a PINNED file (immutable
+    // revision, hash checked before the rename) - the renderer names nothing.
     UI_OPEN_PATH,
     UI_GET_LOGIN_ITEM,
     UI_SET_LOGIN_ITEM,

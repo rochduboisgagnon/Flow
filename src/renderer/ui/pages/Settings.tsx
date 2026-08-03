@@ -230,11 +230,8 @@ function TabEngine({ s, patch }: { s: UiStatePayload; patch: Patch }) {
 // as PREWARM_HELP above - the COST comes before the benefit, because a privacy
 // trade the user cannot read is a privacy trade they did not make. Three things
 
-function TabLocalAi({ s, patch }: { s: UiStatePayload; patch: Patch }) {
-  const [models, setModels] = useState<string[] | null | "loading">("loading");
-
-  // Ouvrir l'onglet est le seul moment ou l'on regarde. Jamais au demarrage.
-  useEffect(() => { void window.flowui.ollamaModels().then((m) => setModels(m)); }, []);
+function TabLocalAi({ s }: { s: UiStatePayload; patch: Patch }) {
+  const nm = s.notesModel;
 
   return (
     <div className="rows">
@@ -244,21 +241,36 @@ function TabLocalAi({ s, patch }: { s: UiStatePayload; patch: Patch }) {
           est sur cette machine : un choix a une seule option n'est pas un
           choix, c'est une rangee qui occupe l'ecran.
 
-          Ce qui reste est la seule chose encore vraie a dire ici : QUEL modele
-          local ecrit les resumes. */}
+          D1 : et le selecteur de modele Ollama a suivi. Il demandait a
+          l'utilisateur de choisir parmi ce qu'il avait installe LUI-MEME, ce
+          qui, sur la machine de quelqu'un qui vient de telecharger Flow, est
+          une liste vide et un choix impossible. Flow apporte maintenant son
+          propre modele ; le seul geste qui reste est de le faire venir, et
+          c'est un bouton, pas un reglage.
+
+          POURQUOI UN BOUTON ET PAS UN TELECHARGEMENT AUTOMATIQUE : 1,9 Go.
+          Personne ne devrait decouvrir apres coup qu'une application a pris ca
+          sur sa connexion. */}
       <Row
-        label="Meeting summary model"
-        help="Speech is always transcribed on this machine, by Flow's own engine. This model writes the meeting NOTES from that transcript, and it runs here too. Optional: without it, a recording still produces its full timestamped transcript."
+        label="Meeting notes model"
+        help="Speech is always transcribed on this machine, by Flow's own engine. This second model writes the meeting NOTES from that transcript, and it runs here too - nothing is sent anywhere. It is optional: without it, a recording still produces its full timestamped transcript, just no notes."
       >
-        {models === "loading" ? <span className="sub" style={{ margin: 0 }}>Checking...</span>
-          : models === null ? <span className="sub" style={{ margin: 0 }}>No local model detected on this machine. Optional.</span>
-          : (
-            <select value={s.settings.summaryModel} onChange={(e) => void patch({ summaryModel: e.target.value })} aria-label="Meeting summary model">
-              <option value="">Automatic (first available)</option>
-              {(Array.isArray(models) ? models : []).map((m) => <option key={m} value={m}>{m}</option>)}
-            </select>
-          )}
+        {nm.status === "ready" ? (
+          <span className="sub" style={{ margin: 0 }}>Installed. Notes are written on this machine.</span>
+        ) : nm.status === "downloading" ? (
+          <span className="sub" style={{ margin: 0 }}>Downloading... {nm.pct ?? 0}%</span>
+        ) : (
+          <button type="button" onClick={() => void window.flowui.downloadNotesModel()}>
+            Download (1.9 GB)
+          </button>
+        )}
       </Row>
+      {nm.status === "error" && (
+        // Dit, pas avale : le cas le plus probable est une coupure reseau au
+        // milieu de 1,9 Go, et l'utilisateur doit pouvoir reappuyer en sachant
+        // pourquoi le premier essai n'a pas abouti.
+        <p className="sub">Download failed: {nm.message}</p>
+      )}
     </div>
   );
 }

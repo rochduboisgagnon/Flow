@@ -297,3 +297,57 @@ function download(url: string, dest: string, onProgress?: (pct: number) => void,
       .on("error", reject);
   });
 }
+
+/** Le chemin du modele de redaction, telecharge ou non. */
+export function notesModelPath(): string {
+  return path.join(modelsDir(), NOTES_MODEL.file);
+}
+
+/**
+ * D1 : telecharge le modele qui redige les notes, et le verifie.
+ *
+ * La piece manquante de P9 : le poids etait epingle (revision immuable,
+ * empreinte, taille) mais rien ne le recuperait, donc `LocalSidecarProvider`
+ * n'avait jamais de serveur a qui parler.
+ *
+ * REGLE NON NEGOCIABLE, reprise du §16.5 du plan : ce fichier n'est JAMAIS
+ * telecharge parce qu'une reunion vient de finir. Uniquement sur pression d'un
+ * bouton. Deux gigaoctets qui demarrent tout seuls a la fin d'une reunion sont
+ * le pire moment possible - la machine est chaude, l'utilisateur attend son
+ * document, et whisper vient de liberer la carte.
+ *
+ * Meme discipline que les modeles de whisper, pour la meme raison : c'est le
+ * plus gros bloc de donnees non fiables que l'application confie a un analyseur
+ * C++ natif. Revision IMMUABLE (jamais une branche), empreinte verifiee AVANT le
+ * rename, allowlist d'hotes sur les redirections.
+ */
+export async function ensureNotesModel(onProgress?: (pct: number) => void): Promise<string> {
+  const dest = notesModelPath();
+  if (fs.existsSync(dest)) {
+    try {
+      if (fs.statSync(dest).size === NOTES_MODEL.bytes) return dest;
+    } catch {
+      return dest;
+    }
+    // Taille inattendue : on NE supprime pas. Le fichier reste jusqu'a ce qu'un
+    // remplacant verifie prenne sa place (lecon de la revue adverse de F8 : un
+    // modele qui marche supprime avant un telechargement qui peut echouer est
+    // un utilisateur sans modele du tout).
+  }
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  const tmp = dest + ".part";
+  const url = `https://huggingface.co/${NOTES_MODEL.repo}/resolve/${NOTES_MODEL.revision}/${NOTES_MODEL.file}`;
+  const got = await download(url, tmp, onProgress);
+  if (got !== NOTES_MODEL.sha256) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      /* le .part est a nous */
+    }
+    throw new Error(
+      `INTEGRITY FAILURE for ${NOTES_MODEL.file}\n  expected ${NOTES_MODEL.sha256}\n  actual   ${got}`,
+    );
+  }
+  fs.renameSync(tmp, dest);
+  return dest;
+}

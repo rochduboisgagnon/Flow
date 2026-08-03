@@ -4,7 +4,7 @@ import {
   UI_SET_SETTINGS,
   UI_RECORD_SHORTCUT,
   UI_LIST_MICS,
-  UI_OLLAMA_MODELS,
+  UI_DOWNLOAD_NOTES_MODEL,
   UI_OPEN_PATH,
   UI_GET_LOGIN_ITEM,
   UI_SET_LOGIN_ITEM,
@@ -76,7 +76,10 @@ export interface UiBridgeDeps {
   setSettings(patch: Record<string, unknown>): void;
   recordShortcut(): Promise<{ combo: string[] | null; comboLabel?: string }>;
   listMics(): Promise<Array<{ id: string; label: string }>>;
-  ollamaModels(): Promise<string[] | null>;
+  /** D1 : va chercher le modele de redaction, sur pression d'un bouton. Rend
+   * quand le telechargement est fini ou a echoue ; l'avancement, lui, voyage
+   * dans `notesModel` de la poussee d'etat. */
+  downloadNotesModel(): Promise<void>;
   historyRootDir(): string;
   /** U2b: the pre-1.0.0 recordings folder, or null when there is none. Null is
    * the normal case and makes "legacy-history" a refused destination. U2c: main
@@ -343,9 +346,10 @@ export class UiBridge {
 
     this.guarded<[], Array<{ id: string; label: string }>>(UI_LIST_MICS, [], () => this.deps.listMics());
 
-    this.guarded<[], string[] | null>(UI_OLLAMA_MODELS, null, () => this.deps.ollamaModels());
-    // P6: the Local AI tab. The fallback is an EMPTY list, never a fabricated
-    // "everything is fine" - a page that cannot ask must not claim to know.
+    // D1: the Local AI tab's one button. No arguments to validate - the file it
+    // fetches is pinned in modelStore (immutable revision, hash checked before
+    // the rename), so the renderer chooses NOTHING here, it only asks.
+    this.guarded<[], void>(UI_DOWNLOAD_NOTES_MODEL, undefined, () => this.deps.downloadNotesModel());
 
     this.guarded<[unknown], void>(UI_OPEN_PATH, undefined, async (which) => {
       // Fixed destinations only: the renderer never passes a path, so a

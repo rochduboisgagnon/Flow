@@ -179,7 +179,23 @@ export const UI_GET_STATE = "ui:get-state";
 export const UI_SET_SETTINGS = "ui:set-settings";
 export const UI_RECORD_SHORTCUT = "ui:record-shortcut";
 export const UI_LIST_MICS = "ui:list-mics";
-export const UI_OLLAMA_MODELS = "ui:ollama-models";
+/** D1 : va chercher le modele qui redige les notes, 1,9 Go.
+ *
+ * UNIQUEMENT sur pression d'un bouton, jamais parce qu'une reunion vient de
+ * finir - regle du §16.5 du plan autonome, et elle est bonne : deux gigaoctets
+ * qui demarrent tout seuls a la fin d'un enregistrement tombent au pire moment
+ * possible, quand la machine est chaude et que l'utilisateur attend son
+ * document.
+ *
+ * Le canal ne rend RIEN. L'avancement voyage dans `notesModel` de la poussee a
+ * 1 Hz, comme `modelState` juste a cote et pour la meme raison : c'est trois
+ * scalaires, et une page qui affiche un pourcentage ne doit pas avoir a
+ * inventer sa propre boucle de sondage.
+ *
+ * (Le canal `ui:ollama-models` etait ici. Il a disparu avec le selecteur de
+ * modele Ollama : D1 dit « aucun reglage visible », et le choix se fait
+ * maintenant tout seul dans index.ts.) */
+export const UI_DOWNLOAD_NOTES_MODEL = "ui:download-notes-model";
 // (U5c: "downloaded-file" reveals the LAST file U5c's downloads wrote, tracked
 // in main - never a path the renderer supplies).
 export const UI_OPEN_PATH = "ui:open-path";
@@ -333,6 +349,15 @@ export interface UiStatePayload {
   recording: boolean;
   backend: string; // active whisper-server binary basename, "" while selecting
   modelState: ModelStatePayload;
+  /** D1: the model that WRITES the notes, which is a different file from the one
+   * that transcribes. Same three-scalar shape as modelState above, and it rides
+   * the same 1 Hz push so a download shows its progress without the page
+   * inventing a polling loop.
+   *
+   * "idle" here means NOT INSTALLED, and that is a normal, supported state: a
+   * recording still produces its full timestamped transcript without it. Only
+   * the notes are missing. */
+  notesModel: ModelStatePayload;
   /** F1: what the SECOND (batch) engine is doing. Four scalars at most, derived
    * fresh in main from the live settings and the live process, so it rides the
    * 1 Hz push like modelState above rather than being pulled: Settings > Engine

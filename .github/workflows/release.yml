@@ -130,6 +130,22 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node scripts/fetch-whisper.cjs
 
+      # D1, 2026-08-03. Le moteur qui REDIGE les notes, et la piece qui manquait
+      # pour de bon : sans cette etape, l'installeur ne porte pas
+      # llama-server.exe, `llamaServer.ready()` est faux pour toujours chez
+      # l'utilisateur, et le cablage ajoute dans index.ts ne s'execute jamais.
+      #
+      # C'est litteralement la panne de la 1.22.0 sous une autre forme. Cette
+      # release-la a annonce que l'invariant « un ami qui installe Flow a le
+      # produit complet » etait ferme, alors que la classe existait sans que rien
+      # ne l'instancie. Livrer le cablage sans cette ligne aurait refait la meme
+      # promesse, une couche plus bas. Le controle du zip, plus bas, est ce qui
+      # empeche de la refaire une troisieme fois.
+      - name: Fetch the notes engine binary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/fetch-llama.cjs
+
       - run: npm run build
       # Build WITHOUT publishing: the artifact gets inspected first. Publishing
       # a broken installer and then noticing is the wrong order of operations.
@@ -145,8 +161,22 @@ jobs:
           grep -q "WinKeyServer.exe" ziplist.txt || { echo "MISSING WinKeyServer.exe (no push-to-talk)"; exit 1; }
           grep -q "whisper-server-win32-x64-vulkan.exe" ziplist.txt || { echo "MISSING vulkan whisper-server"; exit 1; }
           grep -q "whisper-server-win32-x64-cpu.exe" ziplist.txt || { echo "MISSING cpu whisper-server"; exit 1; }
+          # D1: le moteur de redaction. Absent, l'application se lance, dicte,
+          # enregistre, et ne rend jamais de notes - une panne silencieuse qui
+          # ressemble a une fonctionnalite manquante plutot qu'a un installeur
+          # incomplet. Elle a deja ete livree une fois, en 1.22.0.
+          grep -q "llama-server.exe" ziplist.txt || { echo "MISSING llama-server.exe (no meeting notes)"; exit 1; }
+          grep -q "ggml-vulkan.dll" ziplist.txt || { echo "MISSING ggml backend for llama-server"; exit 1; }
+          # Et l'inverse : les vingt-deux outils que fetch-llama.cjs elague. S'ils
+          # reapparaissent, c'est que l'elagage a saute, et ggml-rpc-server.exe -
+          # un backend de calcul reseau - serait signe et installe avec Flow.
+          # Ecrit en `! grep ... ||` et PAS en `grep ... && { exit 1; }` : cette
+          # seconde forme rend 1 quand grep ne trouve rien, c'est-a-dire dans le
+          # cas SAIN, et sous `set -e` elle ferait echouer la release a chaque
+          # fois que tout va bien.
+          ! grep -q "ggml-rpc-server.exe" ziplist.txt || { echo "llama pruning did not run: ggml-rpc-server.exe is in the artifact"; exit 1; }
           test -f dist-build/latest.yml || { echo "MISSING latest.yml (updater feed manifest)"; exit 1; }
-          echo "artifact carries the hook, both speech backends, and the feed manifest"
+          echo "artifact carries the hook, both speech backends, the notes engine, and the feed manifest"
 
       # Attested BEFORE publishing, deliberately: the bytes that get signed are
       # the ones just inspected above, and nothing between here and the upload

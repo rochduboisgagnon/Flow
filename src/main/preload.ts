@@ -32,7 +32,7 @@ import {
   UI_SET_SETTINGS,
   UI_RECORD_SHORTCUT,
   UI_LIST_MICS,
-  UI_OLLAMA_MODELS,
+  UI_DOWNLOAD_NOTES_MODEL,
   UI_OPEN_PATH,
   UI_GET_LOGIN_ITEM,
   UI_SET_LOGIN_ITEM,
@@ -200,7 +200,7 @@ const ui = {
     ipcRenderer.invoke(UI_RECORD_SHORTCUT),
   listMics: (): Promise<Array<{ id: string; label: string }>> =>
     ipcRenderer.invoke(UI_LIST_MICS),
-  ollamaModels: (): Promise<string[] | null> => ipcRenderer.invoke(UI_OLLAMA_MODELS),
+  downloadNotesModel: (): Promise<void> => ipcRenderer.invoke(UI_DOWNLOAD_NOTES_MODEL),
   openPath: (which: "log" | "data" | "history" | "legacy-history" | "repo" | "downloaded-file"): Promise<void> =>
     ipcRenderer.invoke(UI_OPEN_PATH, which),
   getLoginItem: (): Promise<boolean> => ipcRenderer.invoke(UI_GET_LOGIN_ITEM),

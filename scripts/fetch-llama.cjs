@@ -107,6 +107,55 @@ function get(url, headers) {
     }
   }
   if (!fs.existsSync(EXE)) throw new Error("llama-server.exe absent apres extraction");
+
+  // -------------------------------------------------------------------------
+  // ELAGAGE, mesure du 2026-08-03.
+  //
+  // L'archive de llama.cpp deballe 54 fichiers, dont VINGT-DEUX executables
+  // dont Flow n'a aucun usage : llama-cli, llama-bench, llama-tts,
+  // llama-quantize, llama-imatrix, ggml-rpc-server... Ils partiraient dans
+  // l'installeur, seraient signes avec lui, et resteraient sur le disque de
+  // chaque utilisateur. `ggml-rpc-server.exe` merite d'etre nomme : il ouvre un
+  // backend de calcul SUR LE RESEAU. Personne ne le lancerait volontairement, et
+  // c'est exactement ce qu'on dit de tout binaire qui traine.
+  //
+  // CE QUE CET ELAGAGE N'EST PAS : une economie de place. Mesure : 28 fichiers
+  // retires pour 6 Mo. Les executables de llama.cpp sont des lanceurs minces,
+  // tout le poids vit dans les DLL de calcul qu'on garde. Ecrire ici « ca allege
+  // l'installeur » serait faux, et c'est le genre de justification qu'on ne
+  // reverifie jamais. L'argument est la SURFACE : vingt-deux executables de
+  // moins a signer et a laisser sur la machine de quelqu'un.
+  //
+  // VERIFIE EN LE FAISANT, pas deduit d'une lecture de dependances : le jeu
+  // elague charge Qwen2.5-3B en 2,3 s et repond une vraie completion, avec le
+  // meme journal de demarrage que le jeu complet - meme backend, meme
+  // comportement. La seule difference est ce qui n'est plus la.
+  // -------------------------------------------------------------------------
+  let removed = 0;
+  let removedBytes = 0;
+  const drop = (name) => {
+    const p = path.join(OUT_DIR, name);
+    removedBytes += fs.statSync(p).size;
+    fs.unlinkSync(p);
+    removed++;
+  };
+
+  // 1. Les executables de llama.cpp, sauf le seul qu'on lance. Les binaires de
+  //    whisper vivent dans le meme dossier et ne portent pas ces prefixes.
+  for (const name of fs.readdirSync(OUT_DIR)) {
+    if (name === "llama-server.exe") continue;
+    if (/^(llama|ggml)([-.].*)?\.exe$/i.test(name)) drop(name);
+  }
+  // 2. PUIS les `X-impl.dll` devenus orphelins - l'ordre compte, leur `X.exe`
+  //    existait encore pendant le premier passage.
+  for (const name of fs.readdirSync(OUT_DIR)) {
+    if (!/-impl\.dll$/i.test(name)) continue;
+    if (fs.existsSync(path.join(OUT_DIR, name.replace(/-impl\.dll$/i, ".exe")))) continue;
+    drop(name);
+  }
+  console.log(`[fetch-llama] elague: ${removed} fichiers, ${(removedBytes / 1048576).toFixed(0)} Mo`);
+
+  if (!fs.existsSync(EXE)) throw new Error("l'elagage a retire llama-server.exe");
   console.log("[fetch-llama] ready:", EXE);
 })().catch((e) => {
   console.error("[fetch-llama] FAILED:", e.message);

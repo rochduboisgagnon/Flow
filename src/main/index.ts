@@ -20,6 +20,9 @@ import { analyzeSpeech, hasSpeech, trimToSpeech } from "../shared/vad";
 import { gateTranscript } from "../shared/textGate";
 import { pcmFromWav, encodeWav } from "../shared/wav";
 import { OllamaProvider, listOllamaModels, type LlmProvider } from "./llm/provider";
+import { LocalSidecarProvider } from "./llm/localSidecar";
+import { LlamaServer } from "./llm/llamaServer";
+import { notesModelPath, ensureNotesModel } from "./asr/modelStore";
 import { LocalApi } from "./api";
 import { LongRecorder, historyRoot, stagingRoot, listHistory, deleteHistoryEntry, resolveHistoryEntry, readHistoryDoc } from "./longform";
 import { LiveNotesStore } from "./liveNotes";
@@ -453,7 +456,7 @@ if (!app.requestSingleInstanceLock()) {
         setSettings: (patch) => void applySettings(patch as Partial<FlowSettings>),
         recordShortcut: recordShortcutAndApply,
         listMics: () => listMicsValidated(),
-        ollamaModels: () => listOllamaModels(),
+        downloadNotesModel: () => downloadNotesModel(),
         historyRootDir: () => historyRoot(),
         // U2b: resolved in MAIN, never passed in by the renderer - the bridge
         // opens fixed destinations only (see UI_OPEN_PATH).
@@ -609,6 +612,9 @@ function getUiState(): UiStatePayload {
     recording: longRec.isBusy,
     backend: sidecar ? path.basename(sidecar.activeBackend() || "") : "",
     modelState: lastModelState,
+    // D1: l'autre modele - celui qui redige - a son propre etat, parce que c'est
+    // un autre fichier, un autre telechargement et une autre panne.
+    notesModel: notesModelSnapshot(),
     // F1: derived on every snapshot from the live settings AND the live process,
     // never remembered here - the Settings row that reads it must not be able to
     // outlive the fact it describes.
@@ -842,10 +848,137 @@ const ollamaProvider = new OllamaProvider({
   preferredModel: () => settings.summaryModel,
   listModels: () => listOllamaModels(),
 });
-/** D : un seul lieu d'execution, donc plus de registre, plus de choix, plus de
- * facade a six accesseurs. Claude ne redige plus les notes ; le modele est
- * local et il n'est pas un reglage. */
-const llmProvider: LlmProvider = ollamaProvider;
+// D1 : le modele embarque. P9 avait ecrit le fournisseur et epingle les
+// empreintes ; il manquait le telechargement du binaire, son lanceur et ce
+// cablage-ci. La release 1.22.0 a tout de meme annonce que l'invariant « un ami
+// qui installe Flow a le produit complet » etait ferme. Il ne l'etait pas : la
+// classe existait, rien ne l'appelait.
+//
+// MESURE du 2026-08-03, sur cette machine : llama-server demarre en 2,5 s et
+// Qwen2.5-3B produit de vraies notes de reunion en 10,7 s, sans Ollama.
+const llamaServer = new LlamaServer({
+  binPath: () => path.join(resourcePath("bin"), "llama-server.exe"),
+  modelPath: () => notesModelPath(),
+  log: flowLog,
+});
+const embeddedProvider = new LocalSidecarProvider({
+  baseUrl: () => llamaServer.baseUrl(),
+  apiKey: () => llamaServer.apiKey(),
+  log: flowLog,
+});
+
+/** D : un seul LIEU d'execution - cette machine - et aucun reglage pour en
+ * changer. Deux implementations tout de meme, choisies toutes seules :
+ * l'embarque par defaut, Ollama s'il est la et que l'embarque ne l'est pas.
+ *
+ * Le choix est fait A CHAQUE APPEL et jamais capture : telecharger le modele
+ * embarque doit prendre effet au resume suivant, pas au prochain redemarrage.
+ *
+ * Le serveur n'est demarre que lorsqu'on lui demande vraiment quelque chose.
+ * Charger 1,9 Go au lancement de Flow pour une reunion qui n'aura peut-etre pas
+ * lieu serait payer la VRAM et le disque pour rien. */
+const llmProvider: LlmProvider = {
+  get id() { return ollamaProvider.id; },
+  get locality() { return "on-this-machine" as const; },
+  get vendor() { return ""; },
+  available: async () => {
+    // « Installe », pas « deja demarre ». La distinction n'est pas theorique :
+    // c'est le defaut que la verification en lancant l'application a trouve, et
+    // aucune des quatre portes ne pouvait l'attraper.
+    //
+    // Ce que faisait la premiere version : demander a embeddedProvider s'il
+    // etait disponible, c'est-a-dire si baseUrl() etait non vide, c'est-a-dire
+    // si le serveur TOURNAIT DEJA. Or il ne demarre qu'a la premiere demande de
+    // resume. Donc, a la fin de chaque enregistrement, longform demandait « est-
+    // ce que quelqu'un peut resumer ? », s'entendait repondre non, et ecrivait
+    // « no model available: transcript only, no summary » - avec le binaire et
+    // les 1,9 Go de poids sagement installes a cote.
+    //
+    // La question que longform pose vraiment est « est-ce que ca vaut la peine
+    // de lire tout le transcript ? ». La bonne reponse est donc l'existence des
+    // deux fichiers, pas l'etat d'un processus.
+    if (llamaServer.ready()) return { found: true, responded: true };
+    return ollamaProvider.available();
+  },
+  long: async (prompt, opts) => {
+    if (llamaServer.ready()) {
+      try {
+        await llamaServer.ensureStarted();
+        return await embeddedProvider.long(prompt, opts);
+      } catch (err) {
+        // Le modele embarque n'a pas demarre : on ne perd pas le resume pour
+        // autant si Ollama est la. Le document sort avec son transcript seul
+        // dans le pire cas, ce que tous les appelants savent traiter.
+        flowLog("[llm] embedded model unavailable, falling back: " + String(err));
+      }
+    }
+    // `opts` n'est pas transmis, et ce n'est pas un oubli : OllamaProvider.long
+    // ne prend qu'un argument. L'interface declare `opts?` parce que le
+    // fournisseur embarque, lui, sait annuler ; le repli sur Ollama garde le
+    // comportement qu'il a toujours eu. Le lui passer ne compile pas, ce qui est
+    // la bonne facon d'apprendre ce genre de chose.
+    return ollamaProvider.long(prompt);
+  },
+  short: async (prompt, opts) => {
+    if (llamaServer.ready()) {
+      try {
+        await llamaServer.ensureStarted();
+        return await embeddedProvider.short(prompt, opts);
+      } catch {
+        /* meme repli */
+      }
+    }
+    return ollamaProvider.short(prompt, opts);
+  },
+};
+
+// D1 : l'etat du modele de redaction, tel que la page Reglages le montre.
+//
+// « idle » veut dire PAS INSTALLE, et c'est un etat normal du produit : sans
+// lui, un enregistrement rend tout de meme son transcript horodate complet.
+// Seules les notes manquent.
+let notesModelState: ModelStatePayload = { status: "idle" };
+let notesModelDownloading = false;
+
+function notesModelSnapshot(): ModelStatePayload {
+  // Pendant un telechargement, l'avancement fait foi. Sinon c'est le disque qui
+  // repond, et jamais une variable : le fichier peut avoir ete telecharge par
+  // un lancement precedent, ou efface a la main entre deux ouvertures de la
+  // page.
+  if (notesModelDownloading) return notesModelState;
+  // Le disque a le dernier mot sur une erreur passee : un echec suivi d'une
+  // reussite ne doit pas laisser « download failed » a l'ecran pour toujours.
+  if (llamaServer.ready()) return { status: "ready" };
+  return notesModelState.status === "error" ? notesModelState : { status: "idle" };
+}
+
+/** Va chercher les 1,9 Go, sur pression d'un bouton et jamais autrement.
+ *
+ * Un seul telechargement a la fois, et un second appel est ignore plutot que
+ * mis en file : le bouton est deja desactive dans la page, donc un second appel
+ * ne peut venir que d'un double clic ou d'une deuxieme fenetre. */
+async function downloadNotesModel(): Promise<void> {
+  if (notesModelDownloading) return;
+  notesModelDownloading = true;
+  let lastPct = -1;
+  notesModelState = { status: "downloading", pct: 0 };
+  try {
+    await ensureNotesModel((pct) => {
+      if (pct === lastPct) return;
+      lastPct = pct;
+      notesModelState = { status: "downloading", pct };
+    });
+    notesModelState = { status: "ready" };
+  } catch (err) {
+    // Dit, pas avale. Le cas le plus probable n'est pas une attaque mais une
+    // coupure reseau au milieu de 1,9 Go, et l'utilisateur doit pouvoir
+    // reappuyer sur le bouton en sachant pourquoi.
+    flowLog("[notes-model] download failed: " + String(err));
+    notesModelState = { status: "error", message: String(err instanceof Error ? err.message : err) };
+  } finally {
+    notesModelDownloading = false;
+  }
+}
 
 const overlay = new OverlayWindow(flowLog);
 // C2: the hidden native-capture window (Windows-only). Created at startup so
@@ -1778,6 +1911,10 @@ app.on("before-quit", () => {
   nativeCapture.destroy();
   asrWarm = false;
   sidecar?.stop();
+  // D1: et le modele de redaction avec lui. Sans ceci, un llama-server survit a
+  // la fermeture de Flow et garde 1,9 Go de VRAM - `child.kill()` n'atteint pas
+  // les petits-enfants sur Windows, d'ou le taskkill en arbre du lanceur.
+  llamaServer.stop();
   // F1: AFTER the two rescues above, which are the last things that can ask it to
   // transcribe anything. Both are synchronous and neither reaches the engine (they
   // file what is already on disk), so nothing is cut short - this only kills the
