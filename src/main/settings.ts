@@ -82,17 +82,6 @@ export interface FlowSettings {
    * Turning it back off ERASES what was collected (mergeDays strips the field
    * from every day it writes), it does not merely pause the collection. */
   statsPerApp: boolean;
-  /** U8: while a meeting is being recorded, let a LOCAL model read the last few
-   * minutes of the transcript and propose notes or replies in the Record page.
-   *
-   * OFF at install, and it is the most deliberate default in this file: this is
-   * the one feature of Flow that reads the speech of people who never installed
-   * it and never agreed to anything. Nothing leaves the machine either way (the
-   * model answers on loopback), and nothing new is written unless the user keeps
-   * a suggestion by hand - but "nothing leaves" is not the same as "no model is
-   * reading", and only an explicit switch can say the second. See
-   * shared/liveAssist.ts for the policy and the wording. */
-  liveAssist: boolean;
   /** U2c: the 90-day retention purge is SUSPENDED on this machine. Set once,
    * together with the field above, when we learn the (now fixed) history folder
    * is not the one Flow was actually filing into: its dated folders are then a
@@ -135,7 +124,6 @@ export const SETTINGS_DEFAULTS: FlowSettings = {
   statsPerApp: false,
   // U8: off, and an upgrade never turns it on - a settings.json written before
   // this wave carries no such field, so the tolerant merge leaves it here.
-  liveAssist: false,
 };
 
 // A5: the folder is ~/.flow since 1.0.0, but a machine coming from an AGR
@@ -259,7 +247,6 @@ export function sanitizeSettings(raw: unknown): FlowSettings {
   // U8: a literal boolean only, for the same reason as statsPerApp above and
   // more so - the safe direction for a switch that lets a model read a meeting
   // is the one where a malformed file can never turn it on.
-  if (typeof r.liveAssist === "boolean") out.liveAssist = r.liveAssist;
   return out;
 }
 
@@ -280,34 +267,3 @@ export function saveSettings(s: FlowSettings): void {
   fs.renameSync(tmp, settingsPath());
 }
 
-/**
- * P5: the one real product decision of this wave.
- *
- * SWITCHING TO A PROVIDER THAT LEAVES THE MACHINE TURNS LIVE ASSISTANCE OFF.
- * Not greyed out, not warned about: off.
- *
- * The argument in one sentence: the consent was given for a local model, and it
- * does not transfer. A switch whose meaning changes in silence is no longer a
- * consent. Live assistance reads what THIRD PARTIES say in a meeting - people
- * who installed nothing and accepted nothing - which is a different act from
- * summarising a file you imported yourself.
- *
- * SYMMETRIC RULE: coming back to the local provider does NOT switch it back on.
- * Nothing ever switches that on except a person. This mirrors what settings.ts
- * already does when it refuses to let a malformed file enable it.
- *
- * Deliberately NOT a second provider setting. The question is not "which
- * provider for live assistance"; it is "may the one that leaves the machine
- * read the meeting live", which is a yes or no and travels on the switch that
- * already exists. Cost: one line here, one sentence in the UI, two tests. New
- * settings added: one.
- *
- * Pure on purpose: the whole rule is visible in four lines and testable without
- * an app.
- */
-export function applyProviderTransition(prev: FlowSettings, next: FlowSettings): FlowSettings {
-  const wasLocal = prev.aiProvider === "ollama";
-  const nowRemote = next.aiProvider !== "ollama";
-  if (wasLocal && nowRemote && next.liveAssist) return { ...next, liveAssist: false };
-  return next;
-}

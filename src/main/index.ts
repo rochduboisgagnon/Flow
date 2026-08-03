@@ -14,7 +14,7 @@ import { FocusProbe } from "./focus/probe";
 import { insertViaPaste, insertTyped, leaveOnClipboard, flushPendingRestore } from "./insert";
 import { decideRoute } from "../shared/route";
 import { comboLabel } from "../shared/combo";
-import { loadSettings, saveSettings, sanitizeSettings, applyProviderTransition, dataDir, type FlowSettings } from "./settings";
+import { loadSettings, saveSettings, sanitizeSettings, dataDir, type FlowSettings } from "./settings";
 import { runMigration } from "./migrate";
 import { analyzeSpeech, hasSpeech, trimToSpeech } from "../shared/vad";
 import { gateTranscript } from "../shared/textGate";
@@ -22,7 +22,6 @@ import { pcmFromWav, encodeWav } from "../shared/wav";
 import { OllamaProvider, listOllamaModels, type LlmProvider } from "./llm/provider";
 import { ClaudeCliProvider } from "./llm/claudeCli";
 import { ProviderRegistry } from "./llm/registry";
-import { LiveAssistant } from "./liveAssist";
 import { LocalApi } from "./api";
 import { LongRecorder, historyRoot, stagingRoot, listHistory, deleteHistoryEntry, resolveHistoryEntry, readHistoryDoc } from "./longform";
 import { LiveNotesStore } from "./liveNotes";
@@ -549,14 +548,6 @@ if (!app.requestSingleInstanceLock()) {
         historyRead: () => ({ ok: true, ...history.read() }),
         historyClear: () => ({ ok: true, ...history.clear() }),
         // V5 E5: deliberately NOT given to LocalApi, for the same reason as the
-        // U8: deliberately NOT given to LocalApi either, and for a sharper
-        // reason than the counters above - assistPoll is what can start a local
-        // model reading the transcript of the meeting happening in this room,
-        // and the local API answers a phone over the network.
-        assistPoll: () => liveAssist.poll(),
-        assistAsk: () => liveAssist.ask(),
-        assistKeep: (id) => liveAssist.keep(id),
-        assistDismiss: (id) => liveAssist.dismiss(id),
       },
       mainWindow,
     );
@@ -649,7 +640,6 @@ function getUiState(): UiStatePayload {
       statsPerApp: settings.statsPerApp,
       // U8: the SWITCH only - the suggestions themselves are PULLED
       // (ui:assist-poll), never pushed once a second (ipcContracts.ts).
-      liveAssist: settings.liveAssist,
     },
     // U0: what to actually paint right now, separate from the preference above.
     resolvedTheme: nativeTheme.shouldUseDarkColors ? "dark" : "light",
@@ -1243,42 +1233,6 @@ const importQueue = new ImportQueue({
   log: flowLog,
 });
 
-// ---- U8: live assistance during a recording ----
-// OFF unless the user switched it on (settings.liveAssist, default false), and
-// built here rather than lazily for one reason only: it owns no timer, no socket
-// and no state until a page polls it, so constructing it costs nothing.
-//
-// The two engine-claim closures below are the whole safety property of this
-// feature, and they are read LAZILY, at the instant a round is considered:
-//   - `dictating` covers BOTH the push-to-talk path and the local HTTP endpoint
-//     (utterancesInFlight is incremented for both, see processUtterance);
-//   - `otherEngineWork` covers an audio import and a model download.
-// They are deliberately the same facts `userEngineClaim` (the import queue, just
-// above) reads - one notion of "the user needs the engine", not two that drift.
-// longRec.isBusy is NOT among them: this feature only ever runs DURING a
-// recording, so it would refuse itself forever.
-const liveAssist = new LiveAssistant({
-  enabled: () => settings.liveAssist,
-  // The SAME local model choice the meeting summary uses - not a second setting.
-  preferredModel: () => settings.summaryModel,
-  listModels: () => listOllamaModels(),
-  // P7: what the panel needs to tell "there is no local model" apart from "the
-  // thing you PICKED is not here". Cheap by construction - see registry.ts, and
-  // note it is called on the 30-second re-probe, so it must never spawn.
-  providerStatus: async () => {
-    const p = llmRegistry.resolve(settings.aiProvider)!;
-    const av = await p.available();
-    return { found: av.found, local: p.locality === "on-this-machine", vendor: p.vendor };
-  },
-  // The SAME snapshot the Record page and GET /long/state read.
-  longState: () => longRec.state(),
-  dictating: () => listening || utterancesInFlight > 0,
-  otherEngineWork: () => importQueue.isBusy || modelTransfers > 0,
-  generate: (_model, prompt, opts) => llmProvider.short(prompt, opts),
-  // The recorder writes it: the document has exactly ONE writer.
-  keepInDocument: (text, contextUpToMs) => longRec.keepSuggestion(text, contextUpToMs),
-  log: flowLog,
-});
 
 // U7 (Roch's privacy policy, plan §10 - read shared/stats.ts's module note):
 // the AGGREGATED dictation counters. Every dep is a closure for the same reason
@@ -1418,14 +1372,6 @@ async function processUtterance(
   // The whole decode counts as activity (A10): entry AND exit are stamped so
   // the updater's quiet window can never open in the middle of a transcription.
   markActivity();
-  // U8: and a live suggestion in flight is DROPPED here, before the decode, not
-  // merely refused on the next poll. This is the seam that covers both callers -
-  // the push-to-talk path and the HTTP /transcribe endpoint - and it costs one
-  // null check when nothing is in flight, which is why it is safe to put on a
-  // function that runs on the process carrying the keyboard hook. The ordering
-  // gate in shared/liveAssist.ts is the primary protection; this is what handles
-  // the case where the utterance began AFTER a round did.
-  liveAssist.yieldToEngine();
   // D2: and the import queue stands aside for exactly this window - the model
   // decode plus the insertion, which is where a dictation actually needs the
   // engine. Incremented BEFORE the first await, released in the finally, so
@@ -1705,11 +1651,7 @@ function applyTheme(pref: FlowSettings["theme"]): void {
  * to the next utterance, model swapped (with download), mic/sounds picked up
  * by the next capture. Persisted atomically. */
 function applySettings(patch: Partial<FlowSettings>): FlowSettings {
-  // P5: the transition rule runs BEFORE anything else reads `next`. Switching to
-  // a provider that leaves the machine turns live assistance off, because the
-  // consent was given for a local model and it does not transfer. See
-  // applyProviderTransition for the whole argument.
-  const next = applyProviderTransition(settings, sanitizeSettings({ ...settings, ...patch }));
+  const next = sanitizeSettings({ ...settings, ...patch });
   const comboChanged = JSON.stringify(next.combo) !== JSON.stringify(settings.combo);
   const modelChanged = next.model !== settings.model;
   const langChanged = next.language !== settings.language;
@@ -1822,10 +1764,6 @@ app.on("before-quit", () => {
   // owes the user their clipboard back. Hand it back first, while we still can.
   flushPendingRestore();
   uiBridge?.stop();
-  // U8: let go of a suggestion request in flight. Nothing of it is persisted, so
-  // there is nothing to save - this only closes the loopback socket instead of
-  // leaving it to the process teardown.
-  liveAssist.stop();
   // Only our polling timers: electron-updater's own autoInstallOnAppQuit hook
   // stays armed, so a downloaded update still lands on this manual quit.
   updater?.stop();

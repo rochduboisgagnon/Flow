@@ -9,7 +9,6 @@ import type { LlmProvider } from "./llm/provider";
 // U8: the ONE line format a kept live suggestion takes in the document. It lives
 // in the feature's own pure module (with the gate and the prompt) rather than in
 // shared/longform.ts, and is imported here exactly the way markLine is.
-import { suggestionLine } from "../shared/liveAssist";
 import {
   SAMPLE_RATE,
   SEGMENT_TARGET_MS,
@@ -1523,42 +1522,6 @@ export class LongRecorder {
       fs.appendFileSync(this.transcriptPath, markLine(off));
     } catch {
       /* the in-memory mark still reaches the summary */
-    }
-    return { ok: true };
-  }
-
-  /** U8: a live suggestion the user explicitly KEPT.
-   *
-   * Deliberately the same shape as mark() above - append one blockquote line to
-   * the live document, best effort - and deliberately going through THIS class
-   * rather than being appended from main/liveAssist.ts: the document has exactly
-   * one writer, and a second one appending from elsewhere could land between
-   * finalize()'s read and its atomic rename, which would silently swallow the
-   * line the user just chose to keep.
-   *
-   * `!this.active` refuses for a stronger reason than mark()'s: after stop(),
-   * finalize() rewrites the whole document, so an append here would be either
-   * lost (during) or stranded past the end of a finished document (after).
-   *
-   * The line format itself lives in shared/liveAssist.ts (suggestionLine) and
-   * says "NOT spoken by anyone" before it says anything else - a suggestion that
-   * could be read back as speech would be the worst possible defect of that
-   * feature. Nothing here adds it to `this.marks`: a marked moment is a claim
-   * about the AUDIO, and a suggestion is not one. */
-  keepSuggestion(text: string, contextUpToMs: number): { ok: boolean; error?: string } {
-    if (!this.active) return { ok: false, error: "no recording is running" };
-    const clean = String(text ?? "").trim();
-    if (!clean) return { ok: false, error: "empty suggestion" };
-    try {
-      fs.appendFileSync(
-        this.transcriptPath,
-        suggestionLine(Date.now() - this.startedAt, contextUpToMs, clean),
-      );
-    } catch (err) {
-      // Unlike a mark, there is no in-memory consolation prize here: if the
-      // append failed, the suggestion is NOT in the document and the caller has
-      // to be told, or the panel would show it as kept when it is not.
-      return { ok: false, error: "could not write into the document: " + String(err) };
     }
     return { ok: true };
   }

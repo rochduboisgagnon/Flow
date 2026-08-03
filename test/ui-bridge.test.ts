@@ -22,10 +22,6 @@ import {
   UI_HISTORY_READ,
   UI_HISTORY_CLEAR,
   UI_REDACT_PASSAGES,
-  UI_ASSIST_ASK,
-  UI_ASSIST_DISMISS,
-  UI_ASSIST_KEEP,
-  UI_ASSIST_POLL,
   UI_LIVE_NOTES_ADD,
   UI_LIVE_NOTES_DELETE,
   UI_LIVE_NOTES_EDIT,
@@ -156,10 +152,6 @@ test("every ui:* invoke channel this bridge owns is registered through guarded()
     // functions were removed from Flow. Their absence is now asserted by this
     // very list: a registry that must match the bridge exactly is also what
     // catches a removed feature being wired back in by accident.
-    UI_ASSIST_ASK,
-    UI_ASSIST_DISMISS,
-    UI_ASSIST_KEEP,
-    UI_ASSIST_POLL,
             UI_LIVE_NOTES_ADD,
     UI_LIVE_NOTES_DELETE,
     UI_LIVE_NOTES_EDIT,

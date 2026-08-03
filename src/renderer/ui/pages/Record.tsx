@@ -4,7 +4,6 @@ import type { LongStateSnapshot } from "../../../shared/longform";
 import { hms } from "../../../shared/longform";
 import { MAX_NOTE_CHARS, type LiveNote } from "../../../shared/liveNotes";
 import { Ribbon } from "../Ribbon";
-import { LiveAssistPanel } from "../LiveAssist";
 
 // Record (wave U4). Drive a long-form recording from the app instead of from
 // the phone: pick the source, watch the transcript grow, mark a moment, stop.
@@ -342,14 +341,6 @@ export function Record({ s }: { s: UiStatePayload }) {
         </div>
       </div>
 
-      {/* U8: live suggestions. A separate card BELOW the grid, never inside the
-          transcript one - what a model proposed and what was actually said must
-          not share a frame. The whole feature lives in that component (state,
-          poll, controls, wording); this page only places it, and it costs the
-          engine nothing while the panel is unmounted (see ui/LiveAssist.tsx). */}
-      <div style={{ marginTop: 14 }}>
-        <LiveAssistPanel />
-      </div>
     </>
   );
 }

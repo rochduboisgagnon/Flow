@@ -48,10 +48,6 @@ import {
   UI_HISTORY_READ,
   UI_HISTORY_CLEAR,
   UI_STATS_CLEAR,
-  UI_ASSIST_POLL,
-  UI_ASSIST_ASK,
-  UI_ASSIST_KEEP,
-  UI_ASSIST_DISMISS,
   UI_DICT_LIST,
   UI_DICT_SAVE,
   UI_DICT_DELETE,
@@ -102,7 +98,6 @@ import {
   type SelfCheckReport,
   type StatsPayload,
   type HistoryPayload,
-  type AssistSnapshot,
 } from "../shared/ipcContracts";
 
 export type CaptureCommand = "start" | "stop" | "cancel";
@@ -309,16 +304,6 @@ const ui = {
   historyClear: (): Promise<HistoryPayload> => ipcRenderer.invoke(UI_HISTORY_CLEAR),
   statsRead: (): Promise<StatsPayload> => ipcRenderer.invoke(UI_STATS_READ),
   statsClear: (): Promise<StatsPayload> => ipcRenderer.invoke(UI_STATS_CLEAR),
-  // ---- live assistance during a recording (U8) ----
-  // assistPoll is the panel's heartbeat AND the only thing that can start a
-  // round: main owns no timer, so a page that stops polling stops the feature
-  // (see ipcContracts.ts and main/liveAssist.ts). The other three are all human
-  // presses. Every one answers with the WHOLE snapshot, so the panel replaces
-  // its state with what comes back instead of mutating its own copy.
-  assistPoll: (): Promise<AssistSnapshot> => ipcRenderer.invoke(UI_ASSIST_POLL),
-  assistAsk: (): Promise<AssistSnapshot> => ipcRenderer.invoke(UI_ASSIST_ASK),
-  assistKeep: (id: string): Promise<AssistSnapshot> => ipcRenderer.invoke(UI_ASSIST_KEEP, id),
-  assistDismiss: (id: string): Promise<AssistSnapshot> => ipcRenderer.invoke(UI_ASSIST_DISMISS, id),
 };
 
 export type FlowUiApi = typeof ui;

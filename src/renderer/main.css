@@ -647,44 +647,6 @@ html.light .heat i.l2 { background: #cf9d55; }
   .stats-low { grid-template-columns: 1fr; }
 }
 
-/* ---- Live suggestions during a recording (U8) ----
-   Deliberately the plainest block in this file, and the absence is the design:
-   NO animation, NO transition, NO hover growth, NO pulsing state dot. This panel
-   sits next to a live meeting, and any movement it makes is movement that pulls
-   the user's eye off the person who is talking (plan-design §15.1). Everything
-   here is a static box built from the same tokens as .card and .qitem; a future
-   "let's make it feel alive" pass is exactly what must not happen. */
-.assist { display: flex; flex-direction: column; gap: 12px; }
-.assist-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 22px; }
-.assist-head .sub { max-width: 66ch; }
-/* Provenance, in the accent so it is read: which model, running where. */
-.assist-src { margin: 0; font-size: 13px; color: var(--amber-text); max-width: 68ch; }
-/* The state sentence. Secondary ink, never red - "waiting for the transcription"
-   is normal operation, not an error. */
-.assist-wait { margin: 0; font-size: 13.5px; color: var(--ink2); max-width: 68ch; }
-.assist-list { display: flex; flex-direction: column; gap: 9px; max-height: 320px; overflow-y: auto; }
-.assist-item {
-  background: var(--panel2);
-  border: 1px solid var(--line2);
-  border-radius: 9px;
-  padding: 11px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-/* Attribution BEFORE the text, in every item. The uppercase micro-label is the
-   same device .lbl uses for "this is a frame, not content". */
-.assist-by { font-size: 10.8px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.09em; color: var(--ink3); }
-/* Selectable, like every other readable surface (see the note on .app's
-   user-select): a suggestion the user wants to paste elsewhere must be copyable. */
-.assist-item .txt { user-select: text; overflow-wrap: anywhere; }
-.assist-item .meta { font-size: 12.4px; color: var(--ink2); user-select: text; }
-/* Kept = already in the document. The same amber pair every other "you acted on
-   this" state uses, no new colour. */
-.assist-item.kept { border-color: var(--amber-deep); background: var(--amber-soft); }
-.assist-acts { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.assist-foot { margin: 0; font-size: 12.4px; color: var(--ink3); max-width: 74ch; }
-
 /* ---- D8: a verified citation, the only clickable thing inside a notes block.
    Styled as text that happens to be actionable, not as a button: it sits mid
    sentence, and a chunky control there would break the reading. ---- */

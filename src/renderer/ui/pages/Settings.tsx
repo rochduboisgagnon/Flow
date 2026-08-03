@@ -229,20 +229,6 @@ function TabEngine({ s, patch }: { s: UiStatePayload; patch: Patch }) {
 // U8: the wording of the most intrusive switch in Flow, written to the same rule
 // as PREWARM_HELP above - the COST comes before the benefit, because a privacy
 // trade the user cannot read is a privacy trade they did not make. Three things
-// it must say and does: whose speech is being read, that nothing leaves the
-// machine, and that Flow does not embed a model of its own yet.
-const LIVE_ASSIST_HELP =
-  // 2026-07-30: this was 190 words across four paragraphs, on a toggle. The
-  // reasoning was worth writing down once - it is the one feature that reads
-  // what OTHER people say - but a settings row is not where anyone reads it.
-  // The argument now lives in shared/liveAssist.ts; here, the trade in a line.
-  "Off by default. A local model reads the last minutes of a meeting and suggests notes or replies. It reads what other people say, and they never agreed to anything. Nothing leaves this machine, and the recording always wins. Needs Ollama - Flow has no model of its own yet.";
-
-/** P5/P6: the same switch, read out loud when the provider leaves the machine.
- * Switching provider turned it OFF; turning it back on is a decision about what
- * OTHER people said, so the sentence names the recipient before the benefit. */
-const LIVE_ASSIST_AWAY_HELP = (vendor: string) =>
-  `Off, because you changed who writes your notes. Turning this on sends the last minutes of every meeting to ${vendor || "a third party"}, as it is spoken. It reads what other people say, and they never agreed to anything. The recording always wins.`;
 
 // P6: what each provider is called on the page. The page reads `locality` from
 // the provider itself, never a string decided here - so a provider added later
@@ -371,18 +357,6 @@ function TabLocalAi({ s, patch }: { s: UiStatePayload; patch: Patch }) {
         </Row>
       ) : null}
 
-      {/* U8: the most intrusive switch in the app, so the COST is stated before
-          the benefit and the missing piece is named rather than glossed.
-          P5: the wording now names the provider, because switching to one that
-          leaves the machine TURNS THIS OFF, and re-enabling it is a decision
-          about somebody else's speech. */}
-      <Row label="Live suggestions while recording" help={isLocal ? LIVE_ASSIST_HELP : LIVE_ASSIST_AWAY_HELP(current?.vendor ?? "")}>
-        <Toggle
-          label="Live suggestions while recording"
-          on={s.settings.liveAssist}
-          onChange={(v) => void patch({ liveAssist: v })}
-        />
-      </Row>
     </div>
   );
 }

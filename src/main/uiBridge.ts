@@ -20,10 +20,6 @@ import {
   UI_HISTORY_READ,
   UI_HISTORY_CLEAR,
   UI_STATS_CLEAR,
-  UI_ASSIST_POLL,
-  UI_ASSIST_ASK,
-  UI_ASSIST_KEEP,
-  UI_ASSIST_DISMISS,
   UI_DICT_LIST,
   UI_DICT_SAVE,
   UI_DICT_DELETE,
@@ -65,9 +61,7 @@ import {
   type SelfCheckReport,
   type StatsPayload,
   type HistoryPayload,
-  type AssistSnapshot,
 } from "../shared/ipcContracts";
-import { ASSIST_UNAVAILABLE } from "../shared/liveAssist";
 import type { MainWindow } from "./mainWindow";
 import { listDictionary, saveDictEntry, deleteDictEntry } from "./dictionary";
 import { decideLongStart } from "../shared/longStart";
@@ -211,19 +205,6 @@ export interface UiBridgeDeps {
   historyRead(): HistoryPayload;
   historyClear(): HistoryPayload;
 
-  // ---- live assistance during a recording (U8) ----
-  // Main-process only, NO HTTP equivalent, and for the same class of reason as
-  // the statistics above but sharper: assistPoll is what lets a local model read
-  // what is being said in this room, and the local API answers a remote PWA over
-  // the network. A phone has no business switching that on.
-  //
-  // All four answer with the WHOLE snapshot (AssistSnapshot), like the snippet
-  // and dictionary channels: the panel replaces its state with what comes back
-  // and can never hold a stale list after a write it did not make.
-  assistPoll(): AssistSnapshot;
-  assistAsk(): AssistSnapshot;
-  assistKeep(id: string): AssistSnapshot;
-  assistDismiss(id: string): AssistSnapshot;
 }
 
 const REPO_URL = "https://github.com/rochduboisgagnon/Flow";
@@ -582,25 +563,6 @@ export class UiBridge {
     // feature, would read as "your dictations were erased".
     this.guarded<[], HistoryPayload>(UI_HISTORY_READ, HISTORY_UNAVAILABLE, () => this.deps.historyRead());
     this.guarded<[], HistoryPayload>(UI_HISTORY_CLEAR, HISTORY_UNAVAILABLE, () => this.deps.historyClear());
-
-    // ---- live assistance during a recording (U8) ----
-    // The gate earns its place here more than on any other channel of this file:
-    // the same preload is loaded by the overlay AND by the hidden window that
-    // holds the microphone, and ui:assist-poll is the ONE call that can start a
-    // local model reading the transcript of a meeting. ASSIST_UNAVAILABLE
-    // answers a refused sender with "off, no model, no suggestions" - the only
-    // honest shape, and the safe direction for a switch like this one.
-    //
-    // ui:assist-keep is the only WRITE of the four, and it appends to the
-    // recording's document - through the recorder, never from the bridge.
-    this.guarded<[], AssistSnapshot>(UI_ASSIST_POLL, ASSIST_UNAVAILABLE, () => this.deps.assistPoll());
-    this.guarded<[], AssistSnapshot>(UI_ASSIST_ASK, ASSIST_UNAVAILABLE, () => this.deps.assistAsk());
-    this.guarded<[unknown], AssistSnapshot>(UI_ASSIST_KEEP, ASSIST_UNAVAILABLE, (id) =>
-      this.deps.assistKeep(typeof id === "string" ? id : ""),
-    );
-    this.guarded<[unknown], AssistSnapshot>(UI_ASSIST_DISMISS, ASSIST_UNAVAILABLE, (id) =>
-      this.deps.assistDismiss(typeof id === "string" ? id : ""),
-    );
   }
 
   /** U0: pushes a snapshot immediately instead of waiting for the 1 Hz timer.

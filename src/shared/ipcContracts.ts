@@ -384,12 +384,6 @@ export interface UiStatePayload {
      * Two booleans ride the 1 Hz push because they are settings a tab renders;
      * the counters themselves are pulled (see UI_STATS_READ above). */
     statsPerApp: boolean;
-    /** U8: a local model may read the last few minutes of a recording in
-     * progress and propose notes (default FALSE). One boolean, on the push, for
-     * the same reason as the two above: a Settings tab renders it. The
-     * suggestions themselves are PULLED (see UI_ASSIST_POLL) and never ride the
-     * heartbeat. */
-    liveAssist: boolean;
     /** P5: who writes the notes. NOT who transcribes speech - that is whisper,
      * on this machine, always. See main/settings.ts. */
     aiProvider: "ollama" | "claude-cli" | "codex-cli";
@@ -476,28 +470,6 @@ export const UI_LIVE_NOTES_DELETE = "ui:live-notes-delete";
 
 export type { LiveNote, LiveNotesResult } from "./liveNotes";
 
-// ---- live assistance during a recording (U8) ----
-//
-// PULL, at the panel's own cadence, and the pull is the ENGINE of the feature:
-// main/liveAssist.ts owns no timer at all, so a round can only ever be
-// considered while the Record page's panel is mounted and polling. Leaving the
-// page - or closing the window - stops a local model from reading the meeting,
-// by construction rather than by a cleanup someone has to remember to write.
-//
-// Nothing about this rides UiStatePayload, which is re-serialized every second
-// while the window is visible: suggestions are model-written text of unbounded
-// size, exactly the kind of payload that turns a heartbeat into a data bus (the
-// same rule as snippets, the dictionary and the statistics).
-//
-// Main-process only, with NO HTTP equivalent, and that is a decision: the local
-// API answers a remote PWA over the network, and there is no reason for a phone
-// to be able to switch on a model that reads what is being said in this room.
-export const UI_ASSIST_POLL = "ui:assist-poll";
-export const UI_ASSIST_ASK = "ui:assist-ask"; // "suggest now", from a human press
-export const UI_ASSIST_KEEP = "ui:assist-keep"; // put ONE suggestion in the document
-export const UI_ASSIST_DISMISS = "ui:assist-dismiss"; // drop it from the panel
-
-export type { AssistSnapshot, AssistSuggestion, AssistWait } from "./liveAssist";
 
 // ---- archive browser (U5a) ----
 // The Notes page's read surface, on the SAME functions as the HTTP

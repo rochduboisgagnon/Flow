@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { sanitizeSettings, applyProviderTransition, SETTINGS_DEFAULTS } from "../src/main/settings";
+import { sanitizeSettings, SETTINGS_DEFAULTS } from "../src/main/settings";
 
 test("null / garbage input falls back to full defaults", () => {
   assert.deepEqual(sanitizeSettings(null), SETTINGS_DEFAULTS);
@@ -194,42 +194,4 @@ test("P5: the three real values are kept", () => {
   for (const v of ["ollama", "claude-cli", "codex-cli"] as const) {
     assert.equal(sanitizeSettings({ aiProvider: v }).aiProvider, v);
   }
-});
-
-test("P5: switching to a provider that leaves the machine turns live assistance OFF", () => {
-  const prev = { ...SETTINGS_DEFAULTS, aiProvider: "ollama" as const, liveAssist: true };
-  const next = { ...prev, aiProvider: "claude-cli" as const };
-  const out = applyProviderTransition(prev, next);
-  // Not greyed out, not warned about: off. The consent was given for a local
-  // model and it does not transfer. Live assistance reads what THIRD PARTIES
-  // say - people who installed nothing and accepted nothing.
-  assert.equal(out.liveAssist, false);
-  assert.equal(out.aiProvider, "claude-cli", "the provider change itself still happens");
-});
-
-test("P5: coming BACK to local does not switch live assistance on again", () => {
-  const prev = { ...SETTINGS_DEFAULTS, aiProvider: "claude-cli" as const, liveAssist: false };
-  const next = { ...prev, aiProvider: "ollama" as const };
-  // Nothing ever switches that on except a person.
-  assert.equal(applyProviderTransition(prev, next).liveAssist, false);
-});
-
-test("P5: the rule only fires on the TRANSITION, not on every save", () => {
-  // Someone already on Claude who deliberately switched live assistance back on
-  // must keep it when they change an unrelated setting.
-  const prev = { ...SETTINGS_DEFAULTS, aiProvider: "claude-cli" as const, liveAssist: true };
-  const next = { ...prev, sounds: true };
-  assert.equal(applyProviderTransition(prev, next).liveAssist, true);
-});
-
-test("P5: staying local leaves live assistance exactly as it was", () => {
-  const prev = { ...SETTINGS_DEFAULTS, aiProvider: "ollama" as const, liveAssist: true };
-  const next = { ...prev, summaryModel: "gemma3:12b" };
-  assert.equal(applyProviderTransition(prev, next).liveAssist, true);
-});
-
-test("P5: remote to a DIFFERENT remote does not re-fire - it was already away", () => {
-  const prev = { ...SETTINGS_DEFAULTS, aiProvider: "claude-cli" as const, liveAssist: true };
-  const next = { ...prev, aiProvider: "codex-cli" as const };
-  assert.equal(applyProviderTransition(prev, next).liveAssist, true, "the consent for 'away' was already given");
 });
