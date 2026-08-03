@@ -1,7 +1,6 @@
-import fs from "node:fs";
-import path from "node:path";
+// B2 : ni `fs`, ni `path`, ni `dataDir`. Ce module n'ecrit plus rien sur le
+// disque de personne, et c'etait tout le point de la vague.
 import { randomUUID } from "node:crypto";
-import { dataDir } from "./settings";
 import {
   applyDictionary,
   buildDictationPrompt,
@@ -284,67 +283,64 @@ export function applyDictDelete(items: readonly DictEntry[], rawId: unknown): Di
   return items.filter((it) => it.id !== id);
 }
 
-export function dictionaryPath(): string {
-  return path.join(dataDir(), "dictionary.json");
+// ---------------------------------------------------------------------------
+// B2 : dictionary.json a disparu. Le dictionnaire vit dans le compte.
+//
+// CE MODULE EST CELUI QU'IL FALLAIT DEPLACER AVEC LE PLUS D'EGARDS : c'est un
+// vocabulaire tape a la main, un terme a la fois, sur des mois. Et c'est aussi
+// celui qui porte la deuxieme des sept regressions que le plan demande de
+// chercher - « un terme de dictionnaire sans effet, parce que le cache compile
+// n'a pas ete rafraichi apres un chargement ».
+//
+// Cette panne a DEJA eu lieu dans ce produit, il y a deux jours, pour une autre
+// raison. Elle est silencieuse par nature : le terme apparait dans la page, il
+// est bien enregistre, et il ne change simplement rien a ce qui est dicte. Rien
+// n'echoue, rien ne s'affiche en rouge.
+//
+// La garde est donc structurelle : `refreshDictionaryCache()` est le SEUL
+// chemin par lequel des entrees venues du compte entrent dans le cache, et il
+// est appele des que la copie de travail a fini de charger. Un test verifie
+// qu'un chargement qui ne le rappelle pas laisse un cache perime.
+//
+// CE QUI DISPARAIT AVEC LE FICHIER, et qu'il ne faut pas regretter :
+// l'ecriture atomique tmp + rename, la garde anti-ecrasement (« ne jamais
+// reecrire un fichier qu'on n'a pas compris »), et l'etat `missing` qui
+// distinguait ENOENT d'un fichier vide. Ils protegeaient tous les trois contre
+// des pannes de fichier, et il n'y a plus de fichier. La garde equivalente est
+// desormais dans la copie de travail : un chargement rate ne se declare jamais
+// « vide ».
+// ---------------------------------------------------------------------------
+
+/** Ce que ce module attend de son magasin. La copie de travail
+ * (main/data/workingCopy.ts) l'implemente. */
+export interface DictionaryBacking {
+  readDictionary(): DictEntry[];
+  upsertDictEntry(e: DictEntry): void;
+  deleteDictEntry(id: string): void;
+  /** Faux tant que le compte n'a pas fini de charger. Voir readEntries. */
+  isReady(): boolean;
 }
 
-/** Thin disk wrapper around parseDictionaryFile: adds the ENOENT case (a fresh
- * install has no dictionary.json - normal, and the ONE signal that the shipped
- * defaults have never been written) and turns any other read failure into the
- * same protective shape a bad version gets. */
-export function loadDictionaryFile(): ParsedDictionary {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(fs.readFileSync(dictionaryPath(), "utf8"));
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException)?.code;
-    if (code === "ENOENT") return { file: { version: CURRENT_VERSION, items: [] }, missing: true };
-    return {
-      file: { version: CURRENT_VERSION, items: [] },
-      error: `dictionary.json could not be read (${err instanceof Error ? err.message : String(err)}); left untouched, starting with an empty dictionary [${dictionaryPath()}]`,
-    };
-  }
-  const parsed = parseDictionaryFile(raw);
-  // The path is added HERE, not in the pure parser: every refusal tells the user
-  // his file was left alone, which is only actionable if he knows which file.
-  if (parsed.error !== undefined) return { ...parsed, error: `${parsed.error} [${dictionaryPath()}]` };
-  return parsed;
+let backing: DictionaryBacking | null = null;
+
+export function useDictionaryBacking(b: DictionaryBacking | null): void {
+  backing = b;
+  cache = null;
+  cachedPrompt = null;
 }
 
 /**
- * Atomic write (tmp + rename), mirror of settings.ts/snippets.ts. Refuses to
- * clobber a file this build did not fully understand: the guard reads `onDisk`,
- * the ParsedDictionary the CALLER already produced for this same operation (see
- * main/snippets.ts's saveSnippetsFile for why reading the file a second time
- * bought no stronger promise and cost a second synchronous parse on the loop
- * that carries the keyboard hook).
+ * Les entrees du compte, ou null quand il n'y a rien de fiable a rendre.
+ *
+ * NULL N'EST PAS UNE LISTE VIDE, et c'est toute la subtilite de ce module. Un
+ * dictionnaire vide veut dire « cette personne n'a aucun terme » ; null veut
+ * dire « on ne sait pas encore ». Les traiter pareil ferait dicter quelqu'un
+ * sans ses termes pendant les secondes qui suivent le lancement, ce qui est
+ * exactement la panne qu'on cherche a eviter.
  */
-function saveDictionaryFile(
-  onDisk: ParsedDictionary,
-  file: DictionaryFile,
-): { ok: true } | { ok: false; error: string } {
-  if (onDisk.error) return { ok: false, error: `refusing to overwrite dictionary.json: ${onDisk.error}` };
-  const p = dictionaryPath();
-  const tmp = p + ".tmp";
-  try {
-    fs.mkdirSync(dataDir(), { recursive: true });
-    fs.writeFileSync(tmp, JSON.stringify(file, null, 2));
-    fs.renameSync(tmp, p);
-  } catch (err) {
-    // A full disk, a read-only profile or an antivirus holding the file open
-    // (Bitdefender does exactly this on this machine) has to come back as a
-    // DictResult the page can show, never as an exception crossing IPC.
-    try {
-      fs.rmSync(tmp, { force: true }); // best effort: never leave a half-written .tmp behind
-    } catch {
-      /* the cleanup failing changes nothing about the error we are reporting */
-    }
-    return {
-      ok: false,
-      error: `dictionary.json could not be written (${err instanceof Error ? err.message : String(err)}); the dictionary on disk is unchanged [${p}]`,
-    };
-  }
-  return { ok: true };
+function readEntries(): DictEntry[] | null {
+  if (!backing || !backing.isReady()) return null;
+  return backing.readDictionary();
 }
 
 // ---------------------------------------------------------------------------
@@ -369,7 +365,26 @@ function setCache(entries: readonly DictEntry[]): DictCache {
 }
 
 function ensureCache(): DictCache {
-  return cache ?? setCache(loadDictionaryFile().file.items);
+  if (cache) return cache;
+  const entries = readEntries();
+  // Rien de fiable : on rend un cache VOLATIL sans le retenir. Le mettre en
+  // cache figerait « pas de termes » pour tout le reste de la session, alors
+  // que le compte finit de charger une seconde plus tard.
+  if (entries === null) return { entries: [], rules: compileDictionary([]) };
+  return setCache(entries);
+}
+
+/**
+ * Le SEUL chemin par lequel des entrees venues du compte entrent dans le cache.
+ *
+ * Appele quand la copie de travail a fini de charger. Sans cet appel, le cache
+ * compile garde la table de regles d'avant la connexion, la page montre les
+ * termes, et aucun n'a d'effet sur ce qui est dicte : la deuxieme des sept
+ * regressions du plan, dans sa forme exacte.
+ */
+export function refreshDictionaryCache(): void {
+  const entries = readEntries();
+  if (entries !== null) setCache(entries);
 }
 
 /** Storey 1: the whisper initial prompt for THIS dictionary. Returns `base`
@@ -467,17 +482,26 @@ export function defaultEntries(): DictEntry[] {
  * write a file" is not a reason to also stop recognizing "Claude".
  */
 export function primeDictionary(log?: (msg: string) => void): void {
-  const onDisk = loadDictionaryFile();
-  if (!onDisk.missing) {
-    setCache(onDisk.file.items);
-    if (onDisk.error) log?.(`[dict] ${onDisk.error}`);
+  const entries = readEntries();
+  if (entries === null) return; // pas encore connecte : rien a semer, rien a dire
+  if (entries.length > 0) {
+    setCache(entries);
     return;
   }
+  // Un compte NEUF n'a aucun terme. On y ecrit les defauts une fois, par le
+  // magasin, exactement comme un utilisateur les aurait ajoutes.
+  //
+  // LE DECLENCHEUR A CHANGE ET IL FAUT LE DIRE : avant, c'etait ENOENT - « il
+  // n'y a pas de fichier » - jamais « la liste est vide », precisement pour ne
+  // pas rendre ses termes a quelqu'un qui les a tous supprimes. Cette
+  // distinction n'existe plus : une table vide et un compte neuf se
+  // ressemblent. Quelqu'un qui supprime son dernier terme les reverra donc au
+  // prochain lancement. C'est le prix de la migration, il est petit, et il vaut
+  // mieux l'ecrire ici que de le decouvrir.
   const items = defaultEntries();
-  const saved = saveDictionaryFile(onDisk, { version: CURRENT_VERSION, items });
+  for (const e of items) backing?.upsertDictEntry(e);
   setCache(items);
-  if (saved.ok) log?.(`[dict] first run: wrote ${items.length} default terms to ${dictionaryPath()}`);
-  else log?.(`[dict] first run: ${saved.error}`);
+  log?.(`[dict] compte neuf : ${items.length} termes par defaut ajoutes`);
 }
 
 // ---------------------------------------------------------------------------
@@ -505,37 +529,46 @@ export function primeDictionary(log?: (msg: string) => void): void {
  * follows matches both the disk and what the page is being shown.
  */
 export function listDictionary(): DictResult {
-  const { file, error } = loadDictionaryFile();
-  if (error === undefined) setCache(file.items);
-  return { ok: error === undefined, items: file.items, error };
+  const entries = readEntries();
+  if (entries === null) {
+    // La page a ouvert le dictionnaire avant que le compte ait fini de charger.
+    // On le DIT plutot que de montrer une liste vide : une liste vide se lit
+    // « vous n'avez aucun terme », ce qui est faux et alarmant.
+    return { ok: false, items: [], error: "le dictionnaire du compte n'est pas encore charge" };
+  }
+  setCache(entries);
+  return { ok: true, items: entries };
 }
 
 /** UI_DICT_SAVE: create when the input carries no id, else update in place. */
 export function saveDictEntry(rawInput: unknown): DictResult {
-  // ONE load per operation: it is also what saveDictionaryFile's overwrite
-  // guard checks (see main/snippets.ts for why that keeps the same guarantee).
-  const onDisk = loadDictionaryFile();
-  const { file, error } = onDisk;
-  if (error) return { ok: false, items: file.items, error };
-  const applied = applyDictSave(file.items, rawInput);
-  if ("error" in applied) return { ok: false, items: file.items, error: applied.error };
-  const saved = saveDictionaryFile(onDisk, { version: CURRENT_VERSION, items: applied.items });
-  if (!saved.ok) return { ok: false, items: file.items, error: saved.error };
-  // Rebuilt from the items already in hand: the prompt and the rules the next
-  // utterance uses are updated with ZERO extra disk work.
+  const entries = readEntries();
+  if (entries === null) return { ok: false, items: [], error: "le dictionnaire du compte n'est pas encore charge" };
+  const applied = applyDictSave(entries, rawInput);
+  if ("error" in applied) return { ok: false, items: entries, error: applied.error };
+
+  // La ligne qui a change, et qui merite d'etre lue deux fois : on n'ecrit pas
+  // LA LISTE, on ecrit L'ENTREE. Envoyer la liste entiere ferait qu'une machine
+  // effacerait les termes qu'une autre vient d'ajouter - deux ordinateurs, un
+  // dictionnaire, et le dernier qui enregistre gagne. Une entree a la fois
+  // laisse la base fusionner.
+  const touched = applied.items.find((e) => !entries.some((o) => o.id === e.id && o === e));
+  if (touched) backing?.upsertDictEntry(touched);
+
+  // Reconstruit depuis les entrees deja en main : le prompt et la table de
+  // regles du prochain enonce sont a jour SANS aucun aller-retour reseau.
   setCache(applied.items);
   return { ok: true, items: applied.items };
 }
 
 /** UI_DICT_DELETE. */
 export function deleteDictEntry(rawId: unknown): DictResult {
-  const onDisk = loadDictionaryFile();
-  const { file, error } = onDisk;
-  if (error) return { ok: false, items: file.items, error };
-  const next = applyDictDelete(file.items, rawId);
-  if (next.length === file.items.length) return { ok: true, items: file.items }; // nothing matched: idempotent no-op
-  const saved = saveDictionaryFile(onDisk, { version: CURRENT_VERSION, items: next });
-  if (!saved.ok) return { ok: false, items: file.items, error: saved.error };
+  const entries = readEntries();
+  if (entries === null) return { ok: false, items: [], error: "le dictionnaire du compte n'est pas encore charge" };
+  const next = applyDictDelete(entries, rawId);
+  if (next.length === entries.length) return { ok: true, items: entries }; // rien ne correspondait : sans effet
+  const gone = entries.find((e) => !next.some((n) => n.id === e.id));
+  if (gone) backing?.deleteDictEntry(gone.id);
   setCache(next);
   return { ok: true, items: next };
 }

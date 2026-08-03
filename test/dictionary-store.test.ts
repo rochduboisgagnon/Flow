@@ -14,15 +14,15 @@ import {
   defaultEntries,
   deleteDictEntry,
   dictationPrompt,
-  dictionaryPath,
   listDictionary,
   parseDictionaryFile,
   primeDictionary,
-  resetDictionaryCacheForTests,
+  refreshDictionaryCache,
+  useDictionaryBacking,
   saveDictEntry,
 } from "../src/main/dictionary";
 import { compileDictionary, applyDictionary } from "../src/shared/dictionary";
-import type { DictEntry, DictResult } from "../src/shared/ipcContracts";
+import type { DictEntry } from "../src/shared/ipcContracts";
 
 // U6a: the store. Same split - and the same safety catch - as
 // test/snippets.test.ts, which this file is a deliberate mirror of: the pure
@@ -300,276 +300,160 @@ test("defaults: every shipped entry is a well-formed one this build would itself
 });
 
 // ---------------------------------------------------------------------------
-// The disk half, over a mocked node:fs
+// B2 : la moitie « magasin », desormais sur la copie de travail et plus sur un
+// node:fs simule.
+//
+// CE QUI A DISPARU AVEC LE FICHIER, et qu'il faut savoir en lisant ce qui
+// suit : l'ecriture atomique tmp + rename, la garde anti-ecrasement, la
+// distinction entre ENOENT et un fichier vide, et tous les cas d'antivirus qui
+// tient le fichier ouvert. Ils protegeaient contre des pannes de FICHIER. Il
+// n'y a plus de fichier.
+//
+// CE QUI LES REMPLACE est plus haut dans la pile et se teste ailleurs : la
+// copie de travail ne se declare jamais « vide » sur un chargement rate
+// (test/working-copy.test.ts), et sa file d'attente survit a une coupure
+// reseau. Ce qui reste ICI est ce que le dictionnaire, lui, doit garantir.
 // ---------------------------------------------------------------------------
 
-interface FsCalls {
-  reads: number;
-  writes: string[];
-  renames: number;
-  removed: string[];
-}
-
-type FailAt = { step: "mkdir" | "write" | "rename"; error: Error };
-
-function mockFs(
-  t: { mock: { method: typeof import("node:test").mock.method } },
-  fileContent: string | (() => never),
-  failAt?: FailAt,
-): FsCalls {
-  const calls: FsCalls = { reads: 0, writes: [], renames: 0, removed: [] };
-  const failing = (step: FailAt["step"]): void => {
-    if (failAt?.step === step) throw failAt.error;
+/** Une copie de travail minimale : la memoire, et un compte de ce qui est
+ * parti vers le compte. */
+function fakeBacking(initial: DictEntry[] = [], ready = true) {
+  const items = [...initial];
+  const sent: string[] = [];
+  return {
+    backing: {
+      readDictionary: () => items,
+      upsertDictEntry: (e: DictEntry) => {
+        sent.push("upsert:" + e.term);
+        const i = items.findIndex((x) => x.id === e.id);
+        if (i >= 0) items[i] = e;
+        else items.push(e);
+      },
+      deleteDictEntry: (id: string) => {
+        sent.push("delete:" + id);
+        const i = items.findIndex((x) => x.id === id);
+        if (i >= 0) items.splice(i, 1);
+      },
+      isReady: () => ready,
+    },
+    items,
+    sent,
   };
-  t.mock.method(fs, "readFileSync", () => {
-    calls.reads++;
-    if (typeof fileContent !== "string") return fileContent();
-    return fileContent;
-  });
-  t.mock.method(fs, "mkdirSync", () => {
-    failing("mkdir");
-    return undefined;
-  });
-  t.mock.method(fs, "writeFileSync", (_p: unknown, data: unknown) => {
-    failing("write");
-    calls.writes.push(String(data));
-  });
-  t.mock.method(fs, "renameSync", () => {
-    failing("rename");
-    calls.renames++;
-  });
-  t.mock.method(fs, "rmSync", (p: unknown) => {
-    calls.removed.push(String(p));
-  });
-  return calls;
 }
 
-/** The safety catch: if the fs interception ever stops working, these tests
- * would read and OVERWRITE the real ~/.flow/dictionary.json of whoever runs the
- * suite. Called first by every mocked test, so a broken mock fails before a
- * single write is attempted. */
-function assertMockedFs(expected: string): void {
-  assert.equal(
-    fs.readFileSync(dictionaryPath(), "utf8"),
-    expected,
-    "node:fs is NOT mocked - aborting before this test can touch the real dictionary",
-  );
-}
-
-const STORED = JSON.stringify({ version: CURRENT_VERSION, items: [makeStored({ id: "keep-me" })] });
-
-test("saveDictEntry: one read per operation, atomic tmp + rename, whole dictionary back", (t) => {
-  resetDictionaryCacheForTests();
-  const calls = mockFs(t, STORED);
-  assertMockedFs(STORED);
-  const before = calls.reads;
-
-  const r = saveDictEntry({ term: "Tailscale", aliases: [], kind: "vocabulary", starred: false });
-  assert.equal(r.ok, true, r.error ?? "save failed");
-  assert.equal(calls.reads - before, 1, "the dictionary was read more than once for a single save");
-  assert.equal(calls.writes.length, 1);
-  assert.equal(calls.renames, 1, "still an atomic tmp + rename");
-  assert.equal(r.items.length, 2);
-  resetDictionaryCacheForTests();
-});
-
-test("deleteDictEntry: one read per operation too, and the whole dictionary back", (t) => {
-  resetDictionaryCacheForTests();
-  const calls = mockFs(t, STORED);
-  assertMockedFs(STORED);
-  const before = calls.reads;
-
-  const r = deleteDictEntry("keep-me");
-  assert.equal(r.ok, true, r.error ?? "delete failed");
-  assert.equal(calls.reads - before, 1);
+test("B2: sans compte charge, le dictionnaire le DIT au lieu de se dire vide", () => {
+  // Une liste vide se lit « vous n'avez aucun terme », ce qui est faux et
+  // alarmant pour quelqu'un qui en a quarante.
+  const f = fakeBacking([], false);
+  useDictionaryBacking(f.backing);
+  const r = listDictionary();
+  assert.equal(r.ok, false);
   assert.deepEqual(r.items, []);
-  resetDictionaryCacheForTests();
+  assert.match(String(r.error), /pas encore charge/);
+  useDictionaryBacking(null);
 });
 
-test("a failed write answers {ok:false} with the dictionary as it was, and NEVER throws", (t) => {
-  // ENOSPC, EACCES, or Bitdefender holding the file open - a known visitor on
-  // this machine. All three steps of the atomic write, because they fail for
-  // different real reasons and the module has to answer the same way for all.
-  for (const failAt of [
-    { step: "mkdir", error: Object.assign(new Error("EACCES: permission denied, mkdir"), { code: "EACCES" }) },
-    { step: "write", error: Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" }) },
-    { step: "rename", error: Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM" }) },
-  ] as const) {
-    resetDictionaryCacheForTests();
-    const calls = mockFs(t, STORED, failAt);
-    assertMockedFs(STORED);
-
-    let r: DictResult | undefined;
-    assert.doesNotThrow(() => {
-      r = saveDictEntry({ term: "Tailscale", aliases: [], kind: "vocabulary", starred: false });
-    }, `saveDictEntry threw on ${failAt.step}`);
-    assert.equal(r?.ok, false, failAt.step);
-    assert.match(r?.error ?? "", /could not be written/, failAt.step);
-    assert.match(r?.error ?? "", /unchanged/, "the user needs to know the dictionary survived");
-    assert.match(r?.error ?? "", /dictionary\.json/, "and where the file is");
-    assert.deepEqual(r?.items.map((e) => e.id), ["keep-me"], "the answer is what is still on DISK, not an optimistic guess");
-    assert.equal(calls.removed.length, 1, `no .tmp cleanup after a failed ${failAt.step}`);
-    t.mock.restoreAll();
-  }
-  resetDictionaryCacheForTests();
+test("B2: enregistrer sans compte charge est refuse, jamais avale", () => {
+  const f = fakeBacking([], false);
+  useDictionaryBacking(f.backing);
+  assert.equal(saveDictEntry({ term: "AGR", kind: "vocabulary" }).ok, false);
+  assert.equal(deleteDictEntry("x").ok, false);
+  assert.deepEqual(f.sent, [], "et RIEN ne part vers le compte");
+  useDictionaryBacking(null);
 });
 
-test("a file that did not load intact is NEVER written back", (t) => {
-  resetDictionaryCacheForTests();
-  const lossy = JSON.stringify({ version: CURRENT_VERSION, items: [makeStored({ id: "readable" }), { id: "broken" }] });
-  const calls = mockFs(t, lossy);
-  assertMockedFs(lossy);
-
-  const r = saveDictEntry({ term: "X", aliases: [], kind: "vocabulary", starred: false });
-  assert.equal(r.ok, false);
-  assert.match(r.error ?? "", /READ-ONLY/);
-  assert.equal(calls.writes.length, 0, "the amputated dictionary reached the disk");
-  assert.deepEqual(r.items.map((e) => e.id), ["readable"], "read-only is not unusable");
-
-  const del = deleteDictEntry("readable");
-  assert.equal(del.ok, false);
-  assert.equal(calls.writes.length, 0, "a delete is a write like any other");
-  resetDictionaryCacheForTests();
+test("B2: on enregistre L'ENTREE, jamais la liste entiere", () => {
+  // La ligne qui merite d'etre lue deux fois. Envoyer la liste ferait qu'une
+  // machine effacerait les termes qu'une autre vient d'ajouter : deux
+  // ordinateurs, un dictionnaire, et le dernier qui enregistre gagne.
+  const f = fakeBacking([]);
+  useDictionaryBacking(f.backing);
+  const r = saveDictEntry({ term: "MXepoxy", kind: "vocabulary" });
+  assert.equal(r.ok, true);
+  assert.deepEqual(f.sent, ["upsert:MXepoxy"], "un seul envoi, et c'est l'entree touchee");
+  useDictionaryBacking(null);
 });
 
-test("a version this build does not understand is never overwritten", (t) => {
-  resetDictionaryCacheForTests();
-  const future = JSON.stringify({ version: 2, items: [makeStored()] });
-  const calls = mockFs(t, future);
-  assertMockedFs(future);
+test("B2: supprimer envoie UNE suppression, et rien quand rien ne correspond", () => {
+  const seed = applyDictSave([], { term: "Tailscale", kind: "vocabulary" });
+  assert.ok(!("error" in seed));
+  const f = fakeBacking([...seed.items]);
+  useDictionaryBacking(f.backing);
 
-  const r = saveDictEntry({ term: "X", aliases: [], kind: "vocabulary", starred: false });
-  assert.equal(r.ok, false);
-  assert.match(r.error ?? "", /version/i);
-  assert.equal(calls.writes.length, 0);
-  resetDictionaryCacheForTests();
+  assert.equal(deleteDictEntry("aucun-tel-id").ok, true, "idempotent : sans effet, pas une erreur");
+  assert.deepEqual(f.sent, [], "et surtout aucun envoi");
+
+  assert.equal(deleteDictEntry(seed.items[0].id).ok, true);
+  assert.deepEqual(f.sent, ["delete:" + seed.items[0].id]);
+  useDictionaryBacking(null);
 });
 
-test("a corrupt dictionary.json destroys neither the settings nor the dictionary on disk", (t) => {
-  resetDictionaryCacheForTests();
-  const garbage = "{ this is not json";
-  const calls = mockFs(t, garbage);
-  assert.equal(fs.readFileSync(dictionaryPath(), "utf8"), garbage, "node:fs is NOT mocked");
+test("B2: LE terme sans effet - le cache compile suit le compte, ou il ne sert a rien", () => {
+  // DEUXIEME DES SEPT REGRESSIONS DU PLAN, dans sa forme exacte : « un terme de
+  // dictionnaire sans effet, parce que le cache compile n'a pas ete rafraichi
+  // apres un chargement ».
+  //
+  // Elle est silencieuse par nature - le terme apparait dans la page, il est
+  // bien enregistre, et il ne change rien a ce qui est dicte. Rien n'echoue.
+  const seed = applyDictSave([], { term: "MXepoxy", kind: "replacement", aliases: ["m x epoxy"] });
+  assert.ok(!("error" in seed));
 
-  const listed = listDictionary();
-  assert.equal(listed.ok, false);
-  assert.deepEqual(listed.items, []);
-  const saved = saveDictEntry({ term: "X", aliases: [], kind: "vocabulary", starred: false });
-  assert.equal(saved.ok, false);
-  assert.equal(calls.writes.length, 0, "the unreadable file was left exactly as it is, for the user to fix");
-  resetDictionaryCacheForTests();
+  // Le compte n'a pas encore charge : rien ne doit etre reecrit.
+  const f = fakeBacking([...seed.items], false);
+  useDictionaryBacking(f.backing);
+  assert.equal(applyDictionaryReplacements("j'utilise du m x epoxy"), "j'utilise du m x epoxy");
+
+  // Le compte finit de charger. SANS le rafraichissement, le cache garde la
+  // table d'avant et le terme reste sans effet.
+  const f2 = fakeBacking([...seed.items], true);
+  useDictionaryBacking(f2.backing);
+  refreshDictionaryCache();
+  assert.equal(applyDictionaryReplacements("j'utilise du m x epoxy"), "j'utilise du MXepoxy");
+  useDictionaryBacking(null);
 });
 
-// ---------------------------------------------------------------------------
-// Review constat 4: a FAILED read must not replace a good cache
-// ---------------------------------------------------------------------------
+test("B2: « pas encore charge » n'est JAMAIS mis en cache", () => {
+  // Le figer condamnerait la session entiere a un dictionnaire vide, alors que
+  // le compte finit de charger une seconde plus tard. C'est la meme classe de
+  // defaut que le trousseau interroge trop tot en A2.
+  // ETOILE, et ce n'est pas un detail : seules les entrees etoilees entrent
+  // dans le prompt whisper. Une entree « vocabulaire » non etoilee ne fait
+  // litteralement rien (voir shared/dictionary.ts, promptTerms). Le premier
+  // jet de ce test l'ignorait et attendait l'inverse.
+  const seed = applyDictSave([], { term: "Voiceflow", kind: "vocabulary", starred: true });
+  assert.ok(!("error" in seed));
+  const f = fakeBacking([...seed.items], false);
+  useDictionaryBacking(f.backing);
+  assert.equal(dictationPrompt("base"), "base", "rien a ajouter tant que rien n'est charge");
 
-test("listDictionary: an unreadable file does not empty the dictionary for the rest of the session", (t) => {
-  // loadDictionaryFile answers with an EMPTY dictionary on every failure, and
-  // listDictionary used to install that answer as the new truth. Opening the
-  // page against a broken file therefore disarmed storey 2 on the DICTATION
-  // path until the next launch: the user came to look at his dictionary and
-  // lost the use of it. The write paths already returned before touching the
-  // cache; this is the read catching up.
-  resetDictionaryCacheForTests();
-  const good = JSON.stringify({
-    version: CURRENT_VERSION,
-    items: [makeStored({ id: "keep-me", starred: true })],
-  });
-  mockFs(t, good);
-  assertMockedFs(good);
-  assert.equal(listDictionary().ok, true);
-  assert.equal(applyDictionaryReplacements("la loi vingt-cinq"), "la Loi 25", "premise: the cache is warm and correct");
-  t.mock.restoreAll();
-
-  const garbage = "{ not json at all";
-  mockFs(t, garbage);
-  assertMockedFs(garbage);
-  const listed = listDictionary();
-  assert.equal(listed.ok, false, "the page must still be told the file is broken");
-  assert.deepEqual(listed.items, [], "and shown what could be read, which is nothing");
-
-  // ...and the dictation path is untouched: a stale cache beats a wrong one.
-  assert.equal(applyDictionaryReplacements("la loi vingt-cinq"), "la Loi 25");
-  assert.match(dictationPrompt("Seed."), /Loi 25/, "storey 1 was disarmed by a read that failed");
-  resetDictionaryCacheForTests();
+  const f2 = fakeBacking([...seed.items], true);
+  useDictionaryBacking(f2.backing);
+  refreshDictionaryCache();
+  assert.match(dictationPrompt("base"), /Voiceflow/, "et le terme arrive des que le compte est la");
+  useDictionaryBacking(null);
 });
 
-test("listDictionary: a version this build refuses does not empty the cache either", (t) => {
-  // The other failure mode of the same read: nothing is unreadable, the file is
-  // simply not ours to interpret. Same rule.
-  resetDictionaryCacheForTests();
-  const good = JSON.stringify({ version: CURRENT_VERSION, items: [makeStored({ id: "keep-me" })] });
-  mockFs(t, good);
-  assertMockedFs(good);
-  listDictionary();
-  t.mock.restoreAll();
-
-  const future = JSON.stringify({ version: 2, items: [] });
-  mockFs(t, future);
-  assert.equal(listDictionary().ok, false);
-  assert.equal(applyDictionaryReplacements("la loi vingt-cinq"), "la Loi 25");
-  resetDictionaryCacheForTests();
-});
-
-test("listDictionary: a read that SUCCEEDED still refreshes the cache, empty file included", (t) => {
-  // The other half, or the fix above would be indistinguishable from never
-  // refreshing at all. An empty (or absent) file is a successful read of
-  // "nothing", and the cache has to follow it.
-  resetDictionaryCacheForTests();
-  const good = JSON.stringify({ version: CURRENT_VERSION, items: [makeStored({ id: "keep-me" })] });
-  mockFs(t, good);
-  assertMockedFs(good);
-  listDictionary();
-  assert.equal(applyDictionaryReplacements("la loi vingt-cinq"), "la Loi 25");
-  t.mock.restoreAll();
-
-  const emptied = JSON.stringify({ version: CURRENT_VERSION, items: [] });
-  mockFs(t, emptied);
-  assert.equal(listDictionary().ok, true);
-  assert.equal(
-    applyDictionaryReplacements("la loi vingt-cinq"),
-    "la loi vingt-cinq",
-    "a dictionary emptied from outside must be picked up by the next list",
-  );
-  resetDictionaryCacheForTests();
-});
-
-// ---------------------------------------------------------------------------
-// U6e: seeding happens once, and a deletion is never resurrected
-// ---------------------------------------------------------------------------
-
-test("primeDictionary: a machine with no dictionary.json gets the shipped defaults, written once", (t) => {
-  resetDictionaryCacheForTests();
-  const calls = mockFs(t, () => {
-    throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
-  });
-  assert.throws(() => fs.readFileSync(dictionaryPath(), "utf8"), /ENOENT/, "node:fs is NOT mocked");
-
+test("B2: un compte NEUF recoit les termes par defaut, une seule fois", () => {
+  const f = fakeBacking([]);
+  useDictionaryBacking(f.backing);
   const logs: string[] = [];
   primeDictionary((m) => logs.push(m));
-  assert.equal(calls.writes.length, 1, "the defaults are written, so the next launch sees a file and stops seeding");
-  const written = JSON.parse(calls.writes[0]) as { version: number; items: DictEntry[] };
-  assert.equal(written.version, CURRENT_VERSION);
-  assert.ok(written.items.some((e) => e.term === "Claude"));
-  assert.match(logs.join(" "), /first run/);
-  resetDictionaryCacheForTests();
+  assert.ok(f.sent.length > 0, "les defauts doivent partir vers le compte");
+  assert.match(logs.join(" "), /compte neuf/);
+
+  // Un compte qui a deja des termes n'en recoit aucun.
+  const f2 = fakeBacking([...f.items]);
+  useDictionaryBacking(f2.backing);
+  primeDictionary(() => {});
+  assert.deepEqual(f2.sent, [], "un compte deja garni ne doit rien recevoir");
+  useDictionaryBacking(null);
 });
 
-test("primeDictionary: an EMPTY dictionary is left empty - a deletion is never resurrected", (t) => {
-  // The trigger is "there is no file at all", never "the dictionary is empty".
-  // A user who deletes every default term leaves {items: []} behind, and the
-  // next launch has to respect that. This is the whole difference between a
-  // default and a nag.
-  resetDictionaryCacheForTests();
-  const emptied = JSON.stringify({ version: CURRENT_VERSION, items: [] });
-  const calls = mockFs(t, emptied);
-  assertMockedFs(emptied);
-
-  primeDictionary();
-  assert.equal(calls.writes.length, 0, "the defaults came back after the user deleted them");
-  assert.deepEqual(listDictionary().items, []);
-  resetDictionaryCacheForTests();
+test("B2: sans compte du tout, semer ne fait rien et ne dit rien", () => {
+  useDictionaryBacking(null);
+  const logs: string[] = [];
+  assert.doesNotThrow(() => primeDictionary((m) => logs.push(m)));
+  assert.deepEqual(logs, [], "avant la connexion, il n'y a rien a dire");
 });
 
 // ---------------------------------------------------------------------------
@@ -616,19 +500,3 @@ test("wiring: the dictionary is primed at boot, so no dictation ever pays a sync
   assert.ok(loadSettings >= 0 && loadSettings < prime, "dataDir() must already be the post-migration folder");
 });
 
-test("primeDictionary: a failed seed write still leaves the defaults usable for this run", (t) => {
-  // "Flow could not write a file" is not a reason to also stop recognizing
-  // "Claude". The write is simply retried at the next launch.
-  resetDictionaryCacheForTests();
-  mockFs(
-    t,
-    () => {
-      throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
-    },
-    { step: "write", error: Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" }) },
-  );
-  const logs: string[] = [];
-  primeDictionary((m) => logs.push(m));
-  assert.match(logs.join(" "), /could not be written/);
-  resetDictionaryCacheForTests();
-});
