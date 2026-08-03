@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { dataDir } from "./settings";
 import { CaptureDoc } from "../shared/captureDoc";
 import { looksAbandoned, type OpenRecording, type RecordingRow } from "../shared/recordings";
+import { audioObjectName } from "../shared/tus";
 import { encodeWav } from "../shared/wav";
 import { analyzeSpeech } from "../shared/vad";
 import { gateTranscript } from "../shared/textGate";
@@ -153,6 +154,12 @@ export interface LongDeps {
   now?(): number;
   /** Couture de test : l'identifiant de la ligne. */
   newId?(): string;
+  /** B3c : l'identifiant du compte, pour composer le chemin de l'objet audio.
+   * Absent = pas de televersement (les tests qui ne testent que le document). */
+  accountId?(): Promise<string>;
+  /** B3c : confie l'audio d'une reunion terminee a la file de televersement.
+   * Rend la main tout de suite - 115 Mo n'ont pas a retenir une finalisation. */
+  uploadAudio?(recordingId: string): void;
   /** Tests only: keep the app-owned staging folder away from the real ~/.flow. */
   stagingRootOverride?: string;
   /** Tests only: keep the retention history away from the real ~/.agr-flow. This is
@@ -1090,6 +1097,8 @@ export class LongRecorder {
   private audioStream: fs.WriteStream | null = null;
   private audioBytes = 0; // octets PCM ecrits dans le .wav local (pour l'entete)
   private audioUploaded = 0; // octets confirmes dans Storage (B3c)
+  private audioUploadUrl = "";
+  private audioUploadExpires = "";
   private audioFailed = false; // une erreur d'I/O audio : arreter d'ecrire, continuer a transcrire
   private marks: number[] = [];
   private lastError = "";
@@ -1374,6 +1383,8 @@ export class LongRecorder {
     this.flushedRev = 0;
     this.audioUploaded = 0;
     this.audioObjectPath = "";
+    this.audioUploadUrl = "";
+    this.audioUploadExpires = "";
     this.doc = new CaptureDoc(transcriptHeader(this.title, this.startedIso));
     // Le .wav local est ouvert MEME quand la case « garder l'audio » est
     // decochee, et c'est le meme raisonnement qu'avant : pendant la capture,
@@ -1495,6 +1506,11 @@ export class LongRecorder {
       audioPath: this.audioObjectPath,
       audioBytes: this.audioBytes,
       audioUploaded: this.audioUploaded,
+      // La ligne du recorder ne connait aucune URL de televersement : c'est la
+      // file qui la fabrique et la persiste. Ecrire "" ici l'effacerait a chaque
+      // tranche de document, donc le recorder rend ce qu'il a lu au depart.
+      audioUploadUrl: this.audioUploadUrl,
+      audioUploadExpires: this.audioUploadExpires,
       staged: this.staged,
       endedIso: this.endedIso,
     };
@@ -1984,20 +2000,50 @@ export class LongRecorder {
   /**
    * Ce que devient le .wav en transit, une fois la reunion terminee.
    *
-   * B3c y branchera le televersement par tranches. Pour l'instant la seule
-   * decision prise ici est celle que la case a cocher annonce : un audio que
-   * personne n'a demande de garder est supprime des que le document est sur.
+   * DEUX CHEMINS, et la case a cocher decide lequel :
+   *
+   *  - decochee : le fichier est supprime des que le document est sur. C'est ce
+   *    que la case ANNONCE, et c'est ici qu'elle devient vraie - pendant la
+   *    capture le .wav est ecrit quoi qu'elle dise, parce qu'il est le dernier
+   *    recours si la transcription tombe.
+   *  - cochee : la ligne apprend le chemin de l'objet et sa taille, et la file de
+   *    televersement prend le relais. RIEN N'EST ATTENDU ICI : 115 Mo derriere
+   *    une reunion qui vient de finir bloqueraient la finalisation, donc l'etat
+   *    du transfert vit dans la ligne et la page le lit.
+   *
+   * Le chemin de l'objet est compose ICI et non par la file, pour que la ligne
+   * porte « il y a un audio pour cette reunion » des la fin de la capture. C'est
+   * ce qui permet a un lancement suivant de savoir qu'il reste du travail meme si
+   * la premiere tranche n'est jamais partie.
    */
   private async settleAudio(): Promise<void> {
     const p = this.audioLocalPath;
     if (!p) return;
-    if (this.keepAudio) return; // B3c : c'est ici que le televersement s'insere
-    try {
-      await fsp.rm(p, { force: true });
-      this.deps.log?.("[long] audio dropped: the recording asked not to keep the .wav");
-      this.audioLocalPath = "";
-    } catch (err) {
-      this.deps.log?.(`[long] could not drop the .wav the recording asked not to keep: ${err}`);
+    if (!this.keepAudio) {
+      try {
+        await fsp.rm(p, { force: true });
+        this.deps.log?.("[long] audio dropped: the recording asked not to keep the .wav");
+        this.audioLocalPath = "";
+      } catch (err) {
+        this.deps.log?.(`[long] could not drop the .wav the recording asked not to keep: ${err}`);
+      }
+      return;
     }
+    const uid = (await this.deps.accountId?.()) ?? "";
+    if (!uid) {
+      // Sans compte connu, le chemin ne peut pas etre compose - et un chemin sans
+      // le bon prefixe serait refuse par le RLS apres une heure de reunion. Le
+      // fichier reste : le balayage du prochain lancement le reprendra.
+      this.deps.log?.("[long] l'audio attend : le compte n'est pas connu pour l'instant");
+      return;
+    }
+    try {
+      this.audioBytes = (await fsp.stat(p)).size;
+    } catch {
+      /* la taille mesuree pendant la capture reste la meilleure estimation */
+    }
+    this.audioObjectPath = audioObjectName(uid, this.recordingId);
+    this.audioUploaded = 0;
+    this.deps.uploadAudio?.(this.recordingId);
   }
 }

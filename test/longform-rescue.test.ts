@@ -97,6 +97,8 @@ function openRow(store: FakeCaptureStore, o: { id: string; title: string; starte
     audioPath: "",
     audioBytes: 0,
     audioUploaded: 0,
+    audioUploadUrl: "",
+    audioUploadExpires: "",
     staged: true,
     endedIso: "", // OUVERTE
   });

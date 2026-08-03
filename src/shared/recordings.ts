@@ -37,9 +37,32 @@ export interface RecordingRow {
    * fini ; inferieur = il reste des tranches a envoyer, et c'est ce nombre qui
    * dit ou reprendre. */
   audioUploaded: number;
+  /** B3c : l'URL unique du televersement TUS en cours, ou "".
+   *
+   * Gardee parce qu'elle ne se RECONSTRUIT pas : le serveur y encode un
+   * identifiant opaque. Sans elle, une fermeture au milieu d'un envoi de 115 Mo
+   * ferait tout recommencer au lancement suivant. Voir la migration
+   * 20260803230000. */
+  audioUploadUrl: string;
+  /** Quand cette URL cesse d'etre valable, tel que le SERVEUR l'annonce, ou "". */
+  audioUploadExpires: string;
   /** Vrai tant que la destination n'a pas ete choisie par l'utilisateur. */
   staged: boolean;
   endedIso: string;
+}
+
+/** Ce qui monte en ce moment, pour l'AFFICHER.
+ *
+ * `totalBytes` vient du fichier reel et non d'un calcul sur la duree : afficher
+ * « 42 sur 115 Mo » demande la vraie taille, et un .wav a une entete plus des
+ * trous de capture que l'arithmetique ne connait pas. */
+export interface AudioUploadProgress {
+  recordingId: string;
+  sentBytes: number;
+  totalBytes: number;
+  /** Combien de tranches le fichier demande. Sert a dire « tranche 7 sur 19 »
+   * plutot qu'un pourcentage qui bouge par sauts de 6 Mo sans explication. */
+  chunks: number;
 }
 
 /** Ce que la page Notes affiche : tout sauf le document.

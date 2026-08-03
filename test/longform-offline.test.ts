@@ -211,6 +211,8 @@ test("B3b: le sauvetage hors ligne ne detruit rien et sera refait au prochain la
     audioPath: "",
     audioBytes: 0,
     audioUploaded: 0,
+    audioUploadUrl: "",
+    audioUploadExpires: "",
     staged: true,
     endedIso: "",
   });
@@ -241,6 +243,8 @@ test("B3b: le sauvetage ne perd pas l'audio deja televerse d'une reunion coupee"
     audioPath: "uid/avec-audio.wav",
     audioBytes: 115_000_000,
     audioUploaded: 115_000_000,
+    audioUploadUrl: "",
+    audioUploadExpires: "",
     staged: true,
     endedIso: "",
   });

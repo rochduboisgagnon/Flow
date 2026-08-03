@@ -69,8 +69,21 @@ export class Repo {
     this.log = deps.log;
   }
 
-  /** L'identifiant du compte connecte, ou "" - lu de la session, jamais recu.
-   * Voir le bandeau. */
+  /** L'identifiant du compte connecte, ou "".
+   *
+   * PUBLIC depuis B3c, et c'est la seule exception au bandeau ci-dessus : le
+   * chemin d'un objet audio est `<uid>/<recording>.wav`, et ce prefixe EST la
+   * frontiere que les politiques de Storage verifient. Le televersement doit
+   * donc pouvoir composer le chemin, ce qui suppose de connaitre l'identifiant.
+   *
+   * Ce n'est pas un secret - il est deja dans AccountSnapshot, que la page
+   * affiche - et ca ne rouvre pas la porte que le bandeau ferme : aucune methode
+   * d'ECRITURE ne l'accepte en argument. Il est LU d'ici, jamais recu. */
+  async userId(): Promise<string> {
+    return this.uid();
+  }
+
+  /** Lu de la session, jamais recu. Voir le bandeau. */
   private async uid(): Promise<string> {
     const { data } = await this.client.auth.getSession();
     return data.session?.user.id ?? "";
@@ -340,6 +353,10 @@ export class Repo {
       audio_path: r.audioPath,
       audio_bytes: r.audioBytes,
       audio_uploaded: r.audioUploaded,
+      audio_upload_url: r.audioUploadUrl,
+      // "" = pas de televersement en cours. NULL cote base : un timestamptz vide
+      // n'existe pas.
+      audio_upload_expires: r.audioUploadExpires || null,
       staged: r.staged,
       // "" = pas encore terminee. NULL cote base, parce qu'un timestamptz vide
       // n'existe pas et que l'index partiel du sauvetage porte sur `is null`.
@@ -494,11 +511,16 @@ interface RecordingRow2 {
   audio_path: string | null;
   audio_bytes: number | null;
   audio_uploaded: number | null;
+  audio_upload_url: string | null;
+  audio_upload_expires: string | null;
   staged: boolean | null;
   ended_at: string | null;
 }
 
-interface SummaryRow extends Omit<RecordingRow2, "doc"> {
+/** La liste ne descend ni le document ni l'URL de televersement : ni l'un ni
+ * l'autre ne sert a dessiner une ligne de liste, et le premier pese des
+ * centaines de kilooctets par reunion. */
+interface SummaryRow extends Omit<RecordingRow2, "doc" | "audio_upload_url" | "audio_upload_expires"> {
   doc_bytes: number | null;
 }
 
@@ -520,6 +542,8 @@ function rowToRecording(r: RecordingRow2): RecordingRow {
     audioPath: r.audio_path ?? "",
     audioBytes: r.audio_bytes ?? 0,
     audioUploaded: r.audio_uploaded ?? 0,
+    audioUploadUrl: r.audio_upload_url ?? "",
+    audioUploadExpires: r.audio_upload_expires ?? "",
     staged: r.staged === true,
     endedIso: r.ended_at ?? "",
   };

@@ -261,6 +261,8 @@ function rec(id: string, doc: string, over: Partial<RecordingRow> = {}): Recordi
     audioPath: "",
     audioBytes: 0,
     audioUploaded: 0,
+    audioUploadUrl: "",
+    audioUploadExpires: "",
     staged: true,
     endedIso: "",
     ...over,

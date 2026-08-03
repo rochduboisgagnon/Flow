@@ -29,6 +29,9 @@ import { Auth } from "./data/auth";
 import { Repo } from "./data/repo";
 import { WorkingCopy } from "./data/workingCopy";
 import { WorkingCopyCaptureStore } from "./data/captureStore";
+import { TusUpload } from "./data/tusUpload";
+import { AudioUploadQueue } from "./audioUpload";
+import { supabaseUrl, supabaseAnonKey } from "../shared/supabaseConfig";
 import { LocalApi } from "./api";
 import { LongRecorder, historyRoot, stagingRoot, listHistory, deleteHistoryEntry, resolveHistoryEntry, readHistoryDoc } from "./longform";
 import { LiveNotesStore } from "./liveNotes";
@@ -1037,6 +1040,33 @@ useDictionaryBacking(workingCopy);
 // il depend, et non a cote du recorder : c'est une piece de la couche donnees.
 const captureStore = new WorkingCopyCaptureStore({ workingCopy, repo });
 
+/** Ou les .wav en transit attendent leur televersement. `dataDir()` est appele
+ * ici - main/index.ts en a le droit, longform.ts non. */
+const pendingAudioDir = path.join(dataDir(), "pending-audio");
+
+// B3c : la file de televersement de l'audio.
+//
+// LE JETON PASSE PAR UNE FONCTION, et il n'est garde nulle part. Le RLS de
+// storage.objects est reevalue a chaque requete non-HEAD, donc chaque tranche le
+// porte ; la sixieme des sept regressions du plan est une fuite de jeton dans le
+// journal, et c'est pourquoi il n'est jamais range dans un champ.
+const audioUploads = new AudioUploadQueue({
+  tus: new TusUpload({
+    projectUrl: () => supabaseUrl(),
+    anonKey: () => supabaseAnonKey(),
+    accessToken: async () => (await supabase.auth.getSession()).data.session?.access_token ?? "",
+    log: flowLog,
+  }),
+  userId: () => repo.userId(),
+  readRow: (id) => captureStore.read(id),
+  writeRow: (row) => captureStore.write(row),
+  pendingDir: () => pendingAudioDir,
+  // La reunion en cours ecrit encore dans son .wav : ni le televerser, ni le
+  // supprimer. Lu paresseusement plutot que capture, parce que ca change.
+  recordingNow: () => (longRec.isBusy ? longRec.state().recordingId : ""),
+  log: flowLog,
+});
+
 /** Charge le compte, puis reveille ce qui en depend.
  *
  * L'ORDRE DES TROIS DERNIERES LIGNES EST LE SUJET. `refreshDictionaryCache()`
@@ -1071,6 +1101,10 @@ async function loadAccountData(): Promise<void> {
     },
     (err) => flowLog(`[long] le sauvetage des reunions interrompues a echoue : ${err}`),
   );
+  // B3c : et les televersements d'audio laisses en route. Meme discipline - en
+  // arriere-plan, rejouable, et le balayage part du DISQUE parce qu'un .wav en
+  // transit est la seule chose qui puisse encore etre envoyee.
+  void audioUploads.resumePending().catch((err) => flowLog(`[audio] la reprise a echoue : ${err}`));
 }
 
 /** Le dernier etat de compte connu, rafraichi par la poussee a 1 Hz.
@@ -1404,7 +1438,11 @@ const longRec = new LongRecorder({
   // B3a : le .wav en transit. `dataDir()` est appele ici - main/index.ts a le
   // droit, longform.ts non - pour que le recorder n'ait plus aucune idee de
   // l'endroit ou vivent les donnees de cette machine.
-  pendingAudioDir: path.join(dataDir(), "pending-audio"),
+  pendingAudioDir,
+  // B3c : le chemin de l'objet audio est `<uid>/<recording>.wav`, et ce prefixe
+  // EST la frontiere que les politiques de Storage verifient.
+  accountId: () => repo.userId(),
+  uploadAudio: (id) => audioUploads.enqueue(id),
   // D7: the recorder opens the slot at start() and folds it into the document on
   // both of its end paths (normal finalize, quit rescue). Narrowed to those three
   // methods on purpose: the recorder has no business listing or editing notes,
