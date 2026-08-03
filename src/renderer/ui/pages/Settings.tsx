@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import type { UiStatePayload, LlmProviderStatus } from "../../../shared/ipcContracts";
+import type { UiStatePayload } from "../../../shared/ipcContracts";
 import { Toggle, Row } from "../components";
 
 // Settings (wave U1 restyle): the eight tabs' LOGIC is transplanted verbatim
@@ -230,133 +230,35 @@ function TabEngine({ s, patch }: { s: UiStatePayload; patch: Patch }) {
 // as PREWARM_HELP above - the COST comes before the benefit, because a privacy
 // trade the user cannot read is a privacy trade they did not make. Three things
 
-// P6: what each provider is called on the page. The page reads `locality` from
-// the provider itself, never a string decided here - so a provider added later
-// cannot forget to declare where the text goes.
-const PROVIDER_LABEL: Record<string, string> = {
-  "ollama": "Ollama, on this machine",
-  "claude-cli": "Claude Code",
-  "codex-cli": "Codex",
-};
-
 function TabLocalAi({ s, patch }: { s: UiStatePayload; patch: Patch }) {
   const [models, setModels] = useState<string[] | null | "loading">("loading");
-  const [providers, setProviders] = useState<LlmProviderStatus[] | "loading">("loading");
-  const [testing, setTesting] = useState<string | null>(null);
-  const [tested, setTested] = useState<Record<string, string>>({});
 
-  // Detection moment 1: opening this tab. Never at startup - see registry.ts.
+  // Ouvrir l'onglet est le seul moment ou l'on regarde. Jamais au demarrage.
   useEffect(() => { void window.flowui.ollamaModels().then((m) => setModels(m)); }, []);
-  useEffect(() => { void window.flowui.llmProviders().then((p) => setProviders(p)); }, []);
-
-  const chosen = s.settings.aiProvider;
-  const list = providers === "loading" ? [] : providers;
-  const current = list.find((p) => p.id === chosen);
-  // P10 (mineur adjacent) : pendant le chargement, `current` etait undefined
-  // et isLocal valait true - donc la pastille « votre transcript part chez X »
-  // manquait au moment ou la page s'ouvre, y compris avec un fournisseur
-  // distant choisi. On se fie au REGLAGE tant que la liste n'est pas la.
-  const isLocal = current ? current.locality === "on-this-machine" : chosen === "ollama";
-
-  async function rescan() {
-    setProviders("loading");
-    setTested({});
-    setProviders(await window.flowui.llmRescan());
-  }
-
-  async function runTest(id: string) {
-    setTesting(id);
-    const r = await window.flowui.llmTest(id);
-    setTested((t) => ({ ...t, [id]: r.ok ? "answered" : (r.detail ?? "no answer") }));
-    setTesting(null);
-    setProviders(await window.flowui.llmProviders());
-  }
 
   return (
     <div className="rows">
-      {/* P6: the provider comes FIRST, because it decides what every row below
-          means. The sentence naming the recipient is attached to the control
-          that changes it, not buried further down the page. */}
+      {/* D : le selecteur de fournisseur a disparu, et avec lui la pastille
+          « vos transcripts partent chez X », le tableau found/answered et les
+          boutons Test et Re-scan. Il n'y a plus qu'un lieu d'execution et il
+          est sur cette machine : un choix a une seule option n'est pas un
+          choix, c'est une rangee qui occupe l'ecran.
+
+          Ce qui reste est la seule chose encore vraie a dire ici : QUEL modele
+          local ecrit les resumes. */}
       <Row
-        label="Who writes your notes"
-        help="Speech is always transcribed on this machine, by Flow's own engine, whatever you pick here. This choice only decides who writes the meeting NOTES and the live suggestions, from that transcript."
+        label="Meeting summary model"
+        help="Speech is always transcribed on this machine, by Flow's own engine. This model writes the meeting NOTES from that transcript, and it runs here too. Optional: without it, a recording still produces its full timestamped transcript."
       >
-        <select
-          value={chosen}
-          aria-label="Who writes your notes"
-          onChange={(e) => void patch({ aiProvider: e.target.value })}
-        >
-          {list.map((p) => (
-            /* P10, revue adverse (CASSE 6) : `disabled={!p.found}` enfermait
-               l'utilisateur dehors. OllamaProvider rend found:false quand aucun
-               modele n'est installe, donc sur une machine neuve on pouvait
-               choisir Claude Code et ne plus JAMAIS revenir a « on this
-               machine » - or c'est exactement le profil de machine qui choisit
-               Claude. Une entree non installee reste selectionnable, et le dit. */
-            <option key={p.id} value={p.id}>
-              {PROVIDER_LABEL[p.id] ?? p.id}{p.found ? "" : " (not installed)"}
-            </option>
-          ))}
-          {providers === "loading" ? <option value={chosen}>Looking...</option> : null}
-        </select>
+        {models === "loading" ? <span className="sub" style={{ margin: 0 }}>Checking...</span>
+          : models === null ? <span className="sub" style={{ margin: 0 }}>No local model detected on this machine. Optional.</span>
+          : (
+            <select value={s.settings.summaryModel} onChange={(e) => void patch({ summaryModel: e.target.value })} aria-label="Meeting summary model">
+              <option value="">Automatic (first available)</option>
+              {(Array.isArray(models) ? models : []).map((m) => <option key={m} value={m}>{m}</option>)}
+            </select>
+          )}
       </Row>
-
-      {/* The pill: where the text goes, said BEFORE anything is sent, naming the
-          recipient rather than a vague "the cloud". */}
-      {!isLocal && current ? (
-        <p className="note-warn" style={{ margin: "0 0 14px" }}>
-          Your meeting transcripts will be sent to <b>{current.vendor}</b> to be summarised. They
-          leave this computer. Nothing else does: your dictation, and the transcription itself, stay
-          here.
-        </p>
-      ) : null}
-
-      {providers !== "loading" && list.length > 0 ? (
-        <Row
-          label="What is installed"
-          help="Found means the program is on this machine. Answered means a real call really came back: a program can be installed and not signed in, and only a test reveals that."
-        >
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {list.map((p) => (
-              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <span style={{ minWidth: 170 }}>{PROVIDER_LABEL[p.id] ?? p.id}</span>
-                <span className="sub" style={{ margin: 0, minWidth: 150 }}>
-                  {!p.found
-                    ? "not found"
-                    : tested[p.id]
-                      ? tested[p.id]
-                      : p.responded
-                        ? "found, has answered"
-                        : "found, never answered"}
-                </span>
-                <button className="btn ghost" disabled={!p.found || testing !== null} onClick={() => void runTest(p.id)}>
-                  {testing === p.id ? "Testing..." : "Test"}
-                </button>
-              </div>
-            ))}
-            <div>
-              <button className="btn ghost" onClick={() => void rescan()}>Re-scan</button>
-            </div>
-          </div>
-        </Row>
-      ) : null}
-
-      {/* The Ollama model row exists only when Ollama is the one writing: it is
-          the name of an Ollama model, and it means nothing for a CLI provider,
-          whose model is fixed to Sonnet by design. */}
-      {chosen === "ollama" ? (
-        <Row label="Meeting summary model" help="The local Ollama model that writes meeting summaries after a long recording. Optional: without it, recordings still produce the full timestamped transcript.">
-          {models === "loading" ? <span className="sub" style={{ margin: 0 }}>Checking Ollama...</span>
-            : models === null ? <span className="sub" style={{ margin: 0 }}>Ollama not detected on this machine. Optional.</span>
-            : (
-              <select value={s.settings.summaryModel} onChange={(e) => void patch({ summaryModel: e.target.value })} aria-label="Meeting summary model">
-                <option value="">Automatic (first available)</option>
-                {(Array.isArray(models) ? models : []).map((m) => <option key={m} value={m}>{m}</option>)}
-              </select>
-            )}
-        </Row>
-      ) : null}
-
     </div>
   );
 }

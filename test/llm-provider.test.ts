@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { OllamaProvider, type LlmProvider } from "../src/main/llm/provider";
+import { OllamaProvider } from "../src/main/llm/provider";
 
 // ---------------------------------------------------------------------------
 // P1 (vague P, 2026-08-02). The boundary behind which "who thinks for Flow"
@@ -62,20 +62,12 @@ test("P1: the local provider declares itself local, and carries no vendor", () =
   assert.equal(p.id, "ollama");
 });
 
-test("P1: the interface is satisfiable by something that is not Ollama", () => {
-  // The whole point of the wave. If this stops compiling, the boundary has
-  // grown an Ollama-shaped assumption.
-  const fake: LlmProvider = {
-    id: "claude-cli",
-    locality: "sent-away",
-    vendor: "Anthropic",
-    available: async () => ({ found: true, responded: false, detail: "not signed in" }),
-    long: async () => "notes",
-    short: async () => null,
-  };
-  assert.equal(fake.locality, "sent-away");
-  assert.notEqual(fake.vendor, "", "a provider that sends text away must name who receives it");
-});
+// D : le test « l'interface est satisfaisable par autre chose qu'Ollama » a ete
+// retire ici, et pas parce qu'il derangeait : il ne peut plus s'ECRIRE. Avec un
+// seul lieu d'execution, ProviderId est une union d'un seul membre, donc un faux
+// fournisseur distant ne compile pas. La propriete qu'il gardait - que l'UI lise
+//  au lieu de la deduire - est gardee par le test P10 ci-dessous, qui
+// lui reste vrai.
 
 test("P1: locality is what the UI reads - every provider must declare one", () => {
   // A provider whose locality had to be inferred from its id is how a page ends
@@ -98,41 +90,4 @@ test("P10 (FAILLE 1): the snapshot carries WHERE the text goes - the page must n
   const snap = { model: "gemma3:12b", locality: "sent-away" as const, vendor: "Anthropic" };
   assert.notEqual(snap.locality, "on-this-machine", "a model NAME says nothing about the destination");
   assert.ok(snap.vendor.length > 0, "and a remote provider must name its recipient");
-});
-
-test("P10 (CASSE 5): a provider that memoises where it found its binary can forget", async () => {
-  const { ClaudeCliProvider } = await import("../src/main/llm/claudeCli");
-  let resolves = 0;
-  const p = new ClaudeCliProvider({
-    resolve: () => {
-      resolves++;
-      return resolves === 1 ? null : "C:/fake/claude.exe";
-    },
-  });
-  assert.equal((await p.available()).found, false, "not installed when Flow opened");
-  assert.equal((await p.available()).found, false, "still memoised, as intended");
-  // The user installs it and presses Re-scan. Without forget(), the answer stays
-  // wrong until the app restarts - which is exactly what the button promises to
-  // avoid.
-  p.forget();
-  assert.equal((await p.available()).found, true, "Re-scan must be able to repair a negative");
-});
-
-test("P10 (CASSE 5): the registry's rescan tells every provider to forget", async () => {
-  const { ProviderRegistry } = await import("../src/main/llm/registry");
-  let forgotten = 0;
-  const provider = {
-    id: "claude-cli" as const,
-    locality: "sent-away" as const,
-    vendor: "Anthropic",
-    available: async () => ({ found: false, responded: false }),
-    long: async () => null,
-    short: async () => null,
-    forget: () => {
-      forgotten++;
-    },
-  };
-  const r = new ProviderRegistry({ providers: [provider] });
-  await r.rescan();
-  assert.equal(forgotten, 1, "clearing our own cache is not enough - the provider memoises too");
 });

@@ -175,23 +175,3 @@ test("F1: batchModel accepts a model filename or the empty string, and nothing e
 // ---------------------------------------------------------------------------
 // P5 (vague P). The one real product decision of the wave.
 // ---------------------------------------------------------------------------
-
-test("P5: a malformed settings file can NEVER produce a remote provider", () => {
-  // Same reasoning that already refuses to let a corrupt file switch liveAssist
-  // on: a file nobody vouched for must not be able to start sending meetings to
-  // a third party.
-  for (const junk of ["claude", "CLAUDE-CLI", "openai", "", 42, null, {}, ["claude-cli"]]) {
-    assert.equal(
-      sanitizeSettings({ aiProvider: junk } as never).aiProvider,
-      SETTINGS_DEFAULTS.aiProvider,
-      `${JSON.stringify(junk)} must fall back to the local provider`,
-    );
-  }
-  assert.equal(SETTINGS_DEFAULTS.aiProvider, "ollama", "the default is the machine");
-});
-
-test("P5: the three real values are kept", () => {
-  for (const v of ["ollama", "claude-cli", "codex-cli"] as const) {
-    assert.equal(sanitizeSettings({ aiProvider: v }).aiProvider, v);
-  }
-});

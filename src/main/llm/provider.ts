@@ -39,7 +39,10 @@ import { listOllamaModels, summarize, generateShort } from "./ollama";
  * provider added later cannot forget to declare itself. */
 export type Locality = "on-this-machine" | "sent-away";
 
-export type ProviderId = "ollama" | "claude-cli" | "codex-cli";
+/** D : un seul fournisseur, et le type reste une union d'un seul membre plutot
+ * qu'un `string`. Ajouter un second lieu d'execution redevient un changement
+ * qui se voit dans un diff, pas une chaine posee au passage. */
+export type ProviderId = "ollama";
 
 /**
  * Two DIFFERENT claims, and the page must never make the second having checked

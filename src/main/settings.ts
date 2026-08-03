@@ -32,19 +32,6 @@ export interface FlowSettings {
   micDeviceId: string; // "" = system default microphone
   sounds: boolean; // audible start/stop cues
   summaryModel: string; // Ollama model for meeting summaries; "" = first installed model
-  /**
-   * P5: who writes the notes and the live suggestions. NOT who transcribes
-   * speech - that is whisper, on this machine, always, and it is not a setting.
-   *
-   * The ONE setting this wave adds. Two settings and two whole features were
-   * removed from this app in a week for being surface nobody needed, so the bar
-   * for a second one is very high and this design does not clear it: "which
-   * provider for live assistance" would be a second provider setting, and the
-   * real question there is not "which one" but "may the one that leaves the
-   * machine read the meeting live". That is a yes or no, and it travels on the
-   * switch that already exists (liveAssist). See applySettings.
-   */
-  aiProvider: "ollama" | "claude-cli" | "codex-cli";
   forceCpu: boolean; // R1: escape hatch for capricious GPUs (skip the Vulkan backend)
   insertMode: "paste" | "type"; // how dictation lands in an editable field: clipboard paste (default) or typed keystrokes for paste-hostile apps
   theme: ThemePref; // U0: "system" | "dark" | "light", resolved in index.ts against nativeTheme
@@ -104,7 +91,6 @@ export const SETTINGS_DEFAULTS: FlowSettings = {
   summaryModel: "", // "" = the first installed Ollama model
   // P5: the default is the machine. It is never a remote provider, not even
   // when one is installed and the local one is not.
-  aiProvider: "ollama",
   forceCpu: false, // R1: Vulkan first by default; on = CPU only
   insertMode: "paste", // clipboard paste + restore; "type" keystrokes the text (paste-hostile apps, never touches the clipboard)
   theme: "system", // U1: follow Windows now that both themes exist; dark stays one click away
@@ -204,13 +190,6 @@ export function sanitizeSettings(raw: unknown): FlowSettings {
   // retired setting.
   if (typeof r.sounds === "boolean") out.sounds = r.sounds;
   if (typeof r.forceCpu === "boolean") out.forceCpu = r.forceCpu;
-  // P5: a malformed or unknown value falls back to the LOCAL provider, never to
-  // a remote one. This is the same reasoning that already refuses to let a
-  // corrupt file switch liveAssist on: a file nobody vouched for must not be
-  // able to start sending meetings to a third party.
-  if (r.aiProvider === "claude-cli" || r.aiProvider === "codex-cli" || r.aiProvider === "ollama") {
-    out.aiProvider = r.aiProvider;
-  }
   if (typeof r.summaryModel === "string" && /^[\w.:-]*$/.test(r.summaryModel)) {
     out.summaryModel = r.summaryModel;
   }
