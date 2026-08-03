@@ -1047,6 +1047,10 @@ export class LongRecorder {
   }
 
   private async finalize(): Promise<void> {
+    /** La ligne a-t-elle ete FERMEE ? Voir le `finally` : c'est ce drapeau qui
+     * empeche une exception du resume de faire passer une reunion normale pour un
+     * plantage. */
+    let closed = false;
     try {
       // C2: close + size-patch the .wav BEFORE the recording is uploadable, so
       // B3c never reads a half-written audio file.
@@ -1151,6 +1155,7 @@ export class LongRecorder {
       // donc AVANT, et `settleAudio` ne fait plus que decider.
       const audioToUpload = await this.settleAudio();
       this.publish();
+      closed = true;
       if (audioToUpload) this.deps.uploadAudio?.(this.recordingId);
       // SEULEMENT MAINTENANT, une fois le document ecrit dans la file avec les
       // notes dedans. Une fente videe avant une ecriture ratee aurait jete les
@@ -1169,6 +1174,26 @@ export class LongRecorder {
     } finally {
       this.finalizing = false;
       this.cancelFlush();
+      // LA REUNION EST FERMEE MEME SI LA FINALISATION A ECHOUE.
+      //
+      // Sans ceci, une exception dans le chemin du resume - le modele local qui
+      // tombe, Ollama qui ne repond pas - laissait la ligne OUVERTE. Le sauvetage
+      // du prochain lancement la fermait alors en y ecrivant « Flow s'est arrete
+      // de facon inattendue (plantage, coupure de courant ou arret force) », ce
+      // qui est FAUX : la reunion s'est terminee normalement, c'est son resume qui
+      // a rate. Une petite contre-verite dans un document que quelqu'un relira
+      // dans six mois pour savoir ce qui s'est passe.
+      //
+      // Le document est donc ferme ici avec ce qu'il a - le transcript, sans
+      // resume et sans notes generees, ce qui est exactement ce qu'il contient.
+      // `quitting` exclut le chemin de la fermeture, qui a deja ferme la ligne
+      // lui-meme.
+      if (!closed && !this.quitting && this.doc) {
+        this.endedIso = this.endedIso || new Date(this.now()).toISOString();
+        this.publish();
+        this.rememberFinished();
+        this.deps.log?.("[long] la reunion est fermee malgre l'echec de la finalisation : le transcript est complet");
+      }
     }
   }
 

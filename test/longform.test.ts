@@ -692,3 +692,34 @@ test("B3c: la ligne porte le chemin de l'audio AVANT que la file soit prevenue",
   );
   fs.rmSync(work, { recursive: true, force: true });
 });
+
+test("B3a: une reunion est FERMEE meme quand la finalisation echoue", async () => {
+  // Sans ce filet, une exception dans le chemin du resume - le modele local qui
+  // tombe, Ollama qui ne repond pas - laissait la ligne OUVERTE. Le sauvetage du
+  // prochain lancement la fermait alors en y ecrivant « Flow s'est arrete de facon
+  // inattendue (plantage, coupure de courant ou arret force) », ce qui est FAUX :
+  // la reunion s'est terminee normalement, c'est son resume qui a rate.
+  //
+  // Une petite contre-verite dans un document que quelqu'un relira dans six mois
+  // pour savoir ce qui s'est passe.
+  const { rec, store } = recorder({
+    transcribeSegment: () => Promise.resolve({ text: "Bonjour.", ms: 1 }),
+    llm: {
+      id: "faux",
+      available: () => Promise.resolve({ found: true, responded: true }),
+      long: () => Promise.reject(new Error("Ollama ne repond pas")),
+      short: () => Promise.resolve(null),
+    } as unknown as LongDeps["llm"],
+  });
+  const started = rec.start({ title: "Resume rate" });
+  rec.onChunk(concat(speechy(3000), silence(1500)));
+  rec.stop();
+  await settle(rec);
+
+  const row = store.rows.get(started.recordingId!)!;
+  assert.ok(row.endedIso, "la reunion est FERMEE : le sauvetage ne doit pas la prendre pour un plantage");
+  assert.ok(row.doc.includes("[00:00:00] Bonjour."), "et son transcript est complet");
+  assert.ok(!row.doc.includes("Interrupted recording"), "rien ne pretend qu'elle a ete interrompue");
+  assert.ok(!row.doc.includes("## Notes"), "et rien ne pretend qu'elle a un resume");
+  assert.equal(rec.isBusy, false, "le moteur n'est pas laisse occupe pour toujours");
+});
