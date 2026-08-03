@@ -61,16 +61,21 @@ export interface RecordingSummary {
   endedIso: string;
 }
 
-/** Une ligne restee ouverte, telle que le sauvetage au demarrage la voit. Le
- * pouls en fait partie parce que c'est lui qui decide : trop recent = quelqu'un
- * enregistre en ce moment, sur cette machine ou sur l'autre. */
-export interface OpenRecording {
-  id: string;
-  title: string;
-  startedIso: string;
-  doc: string;
+/**
+ * Une ligne restee ouverte, telle que le sauvetage au demarrage la voit.
+ *
+ * LA LIGNE ENTIERE, et pas les quatre champs dont le sauvetage a besoin pour
+ * ecrire son avertissement. La difference a compte tout de suite : une premiere
+ * version ne portait que titre, depart, document et duree, et le sauvetage
+ * reecrivait donc la ligne avec `audio_path` vide - il aurait efface l'audio
+ * deja televerse d'une reunion coupee apres la fin de son envoi. Etendre le
+ * type est ce qui rend cette classe d'oubli impossible plutot que rattrapee.
+ *
+ * `heartbeatIso` s'y ajoute parce que c'est lui qui DECIDE : trop recent =
+ * quelqu'un enregistre en ce moment, sur cette machine ou sur l'autre.
+ */
+export interface OpenRecording extends RecordingRow {
   heartbeatIso: string;
-  durationMs: number;
 }
 
 /** Combien de temps une ligne ouverte peut rester sans pouls avant d'etre

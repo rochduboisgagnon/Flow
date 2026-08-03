@@ -60,17 +60,11 @@ export function fakeCaptureStore(seed: RecordingRow[] = []): FakeCaptureStore {
       const open: OpenRecording[] = [];
       for (const r of rows.values()) {
         if (r.endedIso) continue;
-        open.push({
-          id: r.id,
-          title: r.title,
-          startedIso: r.startedIso,
-          doc: r.doc,
-          // Le vrai pouls est pousse cote base a chaque ecriture ; ici on prend
-          // l'instant de depart, et les tests qui ont besoin d'un pouls precis
-          // ensemencent la ligne eux-memes.
-          heartbeatIso: r.startedIso,
-          durationMs: r.durationMs,
-        });
+        // La ligne ENTIERE, comme le vrai depot : rien de ce qu'elle porte ne
+        // doit se perdre en la fermant. Le vrai pouls est pousse cote base a
+        // chaque ecriture ; ici on prend l'instant de depart, et les tests qui
+        // ont besoin d'un pouls precis ensemencent la ligne eux-memes.
+        open.push({ ...r, heartbeatIso: r.startedIso });
       }
       return Promise.resolve(open);
     },

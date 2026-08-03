@@ -1054,6 +1054,23 @@ async function loadAccountData(): Promise<void> {
   primeDictionary(flowLog);
   history.adopt();
   applySettings({}); // reapplique ce qui vient d'arriver : raccourci, langue, theme
+  // B3b : LE SAUVETAGE DES REUNIONS INTERROMPUES.
+  //
+  // Ici et pas au demarrage du moteur, parce qu'il lui faut une session : une
+  // ligne ouverte est une ligne du COMPTE, et avant la connexion il n'y a rien a
+  // lire. C'est aussi le seul moment garanti de chaque session, la meme raison
+  // qui a fait mettre la purge de retention dans workingCopy.load().
+  //
+  // EN ARRIERE-PLAN, delibere : la connexion ne doit pas attendre que des
+  // reunions soient recollees, et un sauvetage qui echoue - hors ligne, par
+  // exemple - sera refait au prochain lancement. La ligne reste ouverte
+  // entre-temps, ce qui est precisement ce qui le rend rejouable.
+  void longRec.rescueAbandoned().then(
+    (n) => {
+      if (n > 0) flowLog(`[long] ${n} reunion(s) interrompue(s) retrouvee(s) et fermee(s)`);
+    },
+    (err) => flowLog(`[long] le sauvetage des reunions interrompues a echoue : ${err}`),
+  );
 }
 
 /** Le dernier etat de compte connu, rafraichi par la poussee a 1 Hz.

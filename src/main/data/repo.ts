@@ -391,21 +391,20 @@ export class Repo {
   async listOpenRecordings(): Promise<RepoResult<OpenRecording[]>> {
     const { data, error } = await this.client
       .from("recordings")
-      .select("id, title, notes_key, started_at, doc, heartbeat_at, duration_ms")
+      .select("*")
       .is("ended_at", null)
       .order("heartbeat_at", { ascending: true });
     if (error) return fail([], error);
     return {
       ok: true,
       error: "",
-      data: (data ?? []).map((r: OpenRow) => ({
-        id: r.id,
-        title: r.title ?? "",
-        startedIso: r.notes_key || r.started_at,
-        doc: r.doc ?? "",
-        heartbeatIso: r.heartbeat_at,
-        durationMs: r.duration_ms ?? 0,
-      })),
+      data: (data ?? []).map((r) => {
+        const row = r as RecordingRow2 & { heartbeat_at: string | null };
+        // Le pouls manquant est traite comme l'instant de depart, donc comme
+        // VIEUX : la ligne existe, elle est ouverte, et refuser de la sauver
+        // parce qu'on ne sait pas la dater perdrait la reunion.
+        return { ...rowToRecording(row), heartbeatIso: row.heartbeat_at ?? row.started_at };
+      }),
     };
   }
 
@@ -501,16 +500,6 @@ interface RecordingRow2 {
 
 interface SummaryRow extends Omit<RecordingRow2, "doc"> {
   doc_bytes: number | null;
-}
-
-interface OpenRow {
-  id: string;
-  title: string | null;
-  notes_key: string | null;
-  started_at: string;
-  doc: string | null;
-  heartbeat_at: string;
-  duration_ms: number | null;
 }
 
 /** `notes_key` d'abord, `started_at` en repli : les lignes ecrites avant que

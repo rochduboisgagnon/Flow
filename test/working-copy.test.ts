@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { WorkingCopy } from "../src/main/data/workingCopy";
 import type { Repo, RepoResult, Snapshot } from "../src/main/data/repo";
 import type { DictEntry } from "../src/shared/ipcContracts";
+import type { RecordingRow } from "../src/shared/recordings";
 
 // ---------------------------------------------------------------------------
 // B1 : la copie de travail.
@@ -27,6 +28,10 @@ function entry(id: string, term = "AGR"): DictEntry {
 /** Un faux depot qui compte ses appels et peut tomber en panne a volonte. */
 function fakeRepo(over: Partial<Record<string, unknown>> = {}) {
   const calls: string[] = [];
+  /** B3 : les reunions REELLEMENT montees, dans l'ordre. Un simple compteur
+   * d'appels ne suffirait pas ici : ce qui compte est ce que la tranche
+   * CONTENAIT quand elle est arrivee. */
+  const sentRecordings: RecordingRow[] = [];
   let online = true;
   const answer = <T,>(name: string, data: T) => {
     calls.push(name);
@@ -40,6 +45,12 @@ function fakeRepo(over: Partial<Record<string, unknown>> = {}) {
     upsertDictEntry: () => answer("upsertDictEntry", null),
     deleteDictEntry: () => answer("deleteDictEntry", null),
     saveStatsDay: () => answer("saveStatsDay", null),
+    // B3 : ajoutee au faux depot en meme temps qu'au vrai.
+    saveRecording: (r: RecordingRow) => {
+      if (online) sentRecordings.push({ ...r });
+      return answer("saveRecording", null);
+    },
+    deleteRecording: () => answer("deleteRecording", null),
     addDictation: () => answer("addDictation", null),
     clearDictations: () => answer("clearDictations", null),
     clearStats: () => answer("clearStats", null),
@@ -49,6 +60,7 @@ function fakeRepo(over: Partial<Record<string, unknown>> = {}) {
   return {
     repo,
     calls,
+    sentRecordings,
     goOffline: () => void (online = false),
     goOnline: () => void (online = true),
   };
@@ -229,4 +241,118 @@ test("B1: un terme supprime avant son envoi ne fait pas echouer la file", async 
   wc.deleteDictEntry("z");
   for (let i = 0; i < 6; i++) await settle();
   assert.equal(wc.pending(), 0, "la file doit se vider malgre la course");
+});
+
+// ---------------------------------------------------------------------------
+// B3b : UNE COUPURE RESEAU EN COURS DE REUNION NE PERD RIEN.
+//
+// C'est la quatrieme des sept regressions annoncees par le plan, et la seule
+// qui coute une heure de travail a quelqu'un. Les tests ci-dessous la prennent
+// par ou elle arrive : la file, avec ses vraies regles de fusion.
+// ---------------------------------------------------------------------------
+
+function rec(id: string, doc: string, over: Partial<RecordingRow> = {}): RecordingRow {
+  return {
+    id,
+    title: "Reunion",
+    startedIso: "2026-08-03T14:00:00.000Z",
+    durationMs: 60_000,
+    doc,
+    audioPath: "",
+    audioBytes: 0,
+    audioUploaded: 0,
+    staged: true,
+    endedIso: "",
+    ...over,
+  };
+}
+
+test("B3b: trente tranches accumulees hors ligne ne font qu'UN envoi au retour", async () => {
+  // Dix minutes de coupure, une tranche toutes les vingt secondes. Sans fusion,
+  // la reconnexion televerserait trente fois le meme document qui grandit, le
+  // plus vieux d'abord - et le dernier arrive gagnerait quand meme. La fusion
+  // n'est donc pas une economie : c'est ce qui rend la coupure indolore.
+  const f = fakeRepo();
+  const wc = new WorkingCopy({ repo: f.repo, retryDelayMs: 1, schedule: () => {} });
+  f.goOffline();
+  let doc = "# Reunion\n\n";
+  for (let i = 0; i < 30; i++) {
+    doc += `[00:0${i % 10}:00] phrase ${i}\n\n`;
+    wc.writeRecording(rec("r1", doc));
+  }
+  await settle();
+  assert.equal(wc.pending(), 1, "trente tranches, UN travail en attente");
+
+  f.goOnline();
+  wc.writeRecording(rec("r1", doc)); // ce qui relance la file
+  for (let i = 0; i < 6; i++) await settle();
+  assert.equal(wc.pending(), 0, "la file se vide");
+  assert.equal(f.sentRecordings.length, 1, `${f.sentRecordings.length} envois : la fusion ne fonctionne pas`);
+  assert.ok(f.sentRecordings[0].doc.includes("phrase 29"), "et c'est la DERNIERE version qui monte");
+  assert.ok(f.sentRecordings[0].doc.includes("phrase 0"), "avec tout ce qui precede dedans");
+});
+
+test("B3b: deux reunions differentes ne se fusionnent JAMAIS entre elles", async () => {
+  // Contre-partie : la fusion porte sur un identifiant. Deux reunions qui se
+  // remplaceraient l'une l'autre feraient disparaitre la premiere.
+  const f = fakeRepo();
+  const wc = new WorkingCopy({ repo: f.repo, retryDelayMs: 1, schedule: () => {} });
+  f.goOffline();
+  wc.writeRecording(rec("a", "# A\n\n"));
+  wc.writeRecording(rec("b", "# B\n\n"));
+  await settle();
+  assert.equal(wc.pending(), 2, "deux reunions, deux travaux");
+  f.goOnline();
+  wc.writeRecording(rec("b", "# B\n\n"));
+  for (let i = 0; i < 8; i++) await settle();
+  assert.deepEqual([...new Set(f.sentRecordings.map((r) => r.id))].sort(), ["a", "b"], "les deux montent");
+});
+
+test("B3b: hors ligne, la reunion est LISIBLE - c'est ce qui rend l'export possible pendant la coupure", async () => {
+  const f = fakeRepo();
+  const wc = new WorkingCopy({ repo: f.repo, retryDelayMs: 1, schedule: () => {} });
+  f.goOffline();
+  wc.writeRecording(rec("r1", "# Reunion\n\n[00:00:00] pendant la coupure\n\n"));
+  await settle();
+  const held = wc.readRecording("r1");
+  assert.ok(held, "la file detient la ligne");
+  assert.ok(held.doc.includes("pendant la coupure"));
+  assert.equal(wc.readRecording("inconnue"), null);
+});
+
+test("B3b: une reunion TERMINEE et montee est lachee de la memoire", async () => {
+  // Sinon la memoire du processus garderait chaque reunion de la journee. Une
+  // reunion en cours, elle, ne peut pas etre lachee : la file doit pouvoir la
+  // renvoyer.
+  const f = fakeRepo();
+  const wc = new WorkingCopy({ repo: f.repo, retryDelayMs: 1, schedule: () => {} });
+  wc.writeRecording(rec("open", "# Ouverte\n\n"));
+  wc.writeRecording(rec("done", "# Finie\n\n", { endedIso: "2026-08-03T15:00:00.000Z" }));
+  for (let i = 0; i < 6; i++) await settle();
+  assert.equal(wc.pending(), 0);
+  assert.equal(wc.readRecording("done"), null, "terminee et montee : lachee");
+  assert.ok(wc.readRecording("open"), "en cours : gardee, la file peut avoir a la renvoyer");
+});
+
+test("B3b: hors ligne, une reunion terminee n'est PAS lachee - la file doit pouvoir reessayer", async () => {
+  const f = fakeRepo();
+  const wc = new WorkingCopy({ repo: f.repo, retryDelayMs: 1, schedule: () => {} });
+  f.goOffline();
+  wc.writeRecording(rec("done", "# Finie\n\n", { endedIso: "2026-08-03T15:00:00.000Z" }));
+  for (let i = 0; i < 4; i++) await settle();
+  assert.equal(wc.pending(), 1);
+  assert.ok(wc.readRecording("done"), "lacher avant que l'envoi ait reussi rendrait la reprise impossible");
+  f.goOnline();
+  wc.writeRecording(rec("done", "# Finie\n\n", { endedIso: "2026-08-03T15:00:00.000Z" }));
+  for (let i = 0; i < 6; i++) await settle();
+  assert.equal(wc.pending(), 0);
+  assert.equal(wc.readRecording("done"), null, "et maintenant qu'elle est arrivee, elle est lachee");
+});
+
+test("B3b: se deconnecter ne laisse pas la reunion de quelqu'un en memoire", () => {
+  const f = fakeRepo();
+  const wc = new WorkingCopy({ repo: f.repo, retryDelayMs: 1, schedule: () => {} });
+  wc.writeRecording(rec("r1", "# Confidentielle\n\n"));
+  wc.reset();
+  assert.equal(wc.readRecording("r1"), null);
 });

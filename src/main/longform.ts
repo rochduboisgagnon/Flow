@@ -1261,18 +1261,13 @@ export class LongRecorder {
       const mine = await store.readLiveNotes(r.startedIso);
       const block = renderMyNotes(mine);
       if (block) doc.spliceNotesBlock(block);
+      // La ligne ENTIERE est reecrite, avec son audio tel qu'il etait : une
+      // reunion coupee apres la fin de son televersement ne doit pas perdre son
+      // audio en se faisant fermer. Seuls le document et l'instant de fin
+      // changent - voir le commentaire d'OpenRecording.
       store.write({
-        id: r.id,
-        title: r.title,
-        startedIso: r.startedIso,
-        durationMs: r.durationMs,
+        ...r,
         doc: doc.text(),
-        audioPath: "",
-        audioBytes: 0,
-        audioUploaded: 0,
-        // Elle n'a jamais ete classee par quelqu'un : elle merite encore un
-        // « Save to... ».
-        staged: true,
         // Le dernier instant dont on sache qu'elle vivait, et non maintenant :
         // une reunion coupee hier ne s'est pas terminee au lancement d'aujourd'hui.
         endedIso: r.heartbeatIso,
