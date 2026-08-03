@@ -1,6 +1,6 @@
-import fs from "node:fs";
+// B2 : plus de `fs` ni de `path` ici. C'etait tout le point de la vague -
+// ce module n'ecrit plus rien sur le disque de personne.
 import os from "node:os";
-import path from "node:path";
 import { DEFAULT_COMBO } from "../shared/constants";
 import { DEFAULT_MODEL_FILE } from "./asr/modelStore";
 import { resolveDataDir } from "./migrate";
@@ -129,8 +129,43 @@ export function dataDir(): string {
   return cachedDataDir;
 }
 
-export function settingsPath(): string {
-  return path.join(dataDir(), "settings.json");
+// ---------------------------------------------------------------------------
+// B2 : `settingsPath()` a disparu, et avec elle settings.json.
+//
+// Les reglages vivent dans le compte, pas sur cette machine. Ce qui reste dans
+// ~/.flow est ce qui decrit CET ordinateur et rien d'autre : le jeton de
+// session, la geometrie de la fenetre, le journal, et le fichier de decouverte
+// de l'API.
+//
+// LES DEUX FONCTIONS CI-DESSOUS GARDENT LEUR SIGNATURE, et c'est ce qui rend
+// cette vague tenable : `loadSettings()` et `saveSettings()` ont une trentaine
+// d'appelants entre index.ts, api.ts et uiBridge.ts. Changer ce qu'il y a
+// DERRIERE plutot que ce qu'elles rendent evite de recrire ces trente sites -
+// et un site de plus recrit est un site de plus ou se glisse une erreur.
+//
+// `sanitizeSettings` reste sur le chemin, exactement comme avant. La source
+// n'est plus un fichier mais elle reste une donnee qu'on n'a pas ecrite :
+// Supabase rend du JSON arbitraire, et un reglage malforme ne doit pas plus
+// empecher Flow de demarrer aujourd'hui qu'hier.
+// ---------------------------------------------------------------------------
+
+/** Ce que settings.ts sait faire de son magasin, et rien de plus. La copie de
+ * travail (main/data/workingCopy.ts) l'implemente. */
+export interface SettingsBacking {
+  readSettings(): Record<string, unknown>;
+  writeSettings(next: Record<string, unknown>): void;
+}
+
+let backing: SettingsBacking | null = null;
+
+/** Installe le magasin, une fois, au demarrage.
+ *
+ * AVANT CET APPEL, ET APRES UNE DECONNEXION, il n'y a pas de magasin du tout -
+ * `loadSettings()` rend alors les valeurs par defaut et `saveSettings()` ne
+ * fait rien. C'est volontaire : ecrire les reglages de personne quelque part
+ * serait pire que de ne pas les ecrire. */
+export function useSettingsBacking(b: SettingsBacking | null): void {
+  backing = b;
 }
 
 /** Tolerant merge: unknown fields dropped, wrong types fall back to defaults.
@@ -229,20 +264,18 @@ export function sanitizeSettings(raw: unknown): FlowSettings {
   return out;
 }
 
+/** Les reglages du compte connecte, ou les defauts quand personne ne l'est.
+ *
+ * SYNCHRONE, et ce n'est pas negociable : cette fonction est appelee sur le
+ * chemin chaud de la dictee. La copie de travail sert depuis la RAM. */
 export function loadSettings(): FlowSettings {
-  try {
-    const raw: unknown = JSON.parse(fs.readFileSync(settingsPath(), "utf8"));
-    return sanitizeSettings(raw);
-  } catch {
-    return sanitizeSettings(null); // first run or unreadable file -> defaults
-  }
+  return sanitizeSettings(backing?.readSettings() ?? null);
 }
 
-/** Atomic write (tmp + rename): a crash mid-save must not corrupt settings. */
+/** Enregistre. L'envoi vers Supabase part EN ARRIERE-PLAN : cette fonction
+ * rend la main tout de suite, et l'ancienne ecriture atomique (tmp + rename)
+ * a disparu avec le fichier qu'elle protegeait. */
 export function saveSettings(s: FlowSettings): void {
-  fs.mkdirSync(dataDir(), { recursive: true });
-  const tmp = settingsPath() + ".tmp";
-  fs.writeFileSync(tmp, JSON.stringify(s, null, 2));
-  fs.renameSync(tmp, settingsPath());
+  backing?.writeSettings({ ...s, combo: [...s.combo] });
 }
 
