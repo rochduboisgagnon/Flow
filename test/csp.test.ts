@@ -160,3 +160,57 @@ test("the CSP names the API's ports exactly, and no wildcard", () => {
   assert.equal(API_PORT_ORIGINS.length, ports.length, "one origin per port, no stragglers");
   assert.doesNotMatch(MAIN_WINDOW_CSP, /127\.0\.0\.1:\*/, "the wildcard must not come back");
 });
+
+// ---------------------------------------------------------------------------
+// F : POPPINS, ET LE REFUS QUI NE SE VOIT PAS.
+//
+// La CSP de la fenetre principale n'a AUCUNE directive `font-src`, donc elle
+// retombe sur `default-src 'self'`. Consequence exacte : un fichier servi avec
+// le document passe, une `data:` URI est REFUSEE - et le refus est silencieux.
+// La page s'affiche dans la police de repli, sans erreur visible, et personne ne
+// sait que la charte n'est pas appliquee.
+//
+// C'est donc la classe de defaut que seule une porte peut attraper : elle ne
+// casse rien, elle ne dit rien, et elle se relit comme un succes. Ces trois
+// tests la ferment par la forme du CSS plutot que par la vigilance.
+//
+// Verifie en LANCANT, aussi : l'application demarree sur ses fichiers construits
+// n'emet aucun « Refused to load the font » dans la console du rendu.
+// ---------------------------------------------------------------------------
+
+const MAIN_CSS = fs.readFileSync(path.join(__dirname, "..", "src", "renderer", "main.css"), "utf8");
+
+test("F: la police est servie par un chemin RELATIF, jamais une data: URI", () => {
+  const faces = [...MAIN_CSS.matchAll(/@font-face\s*\{[\s\S]*?\}/g)].map((m) => m[0]);
+  assert.equal(faces.length, 2, "deux graisses : 400 pour le corps, 600 pour les titres");
+  for (const face of faces) {
+    assert.match(face, /src:\s*url\("\.\/fonts\//, "un chemin relatif, servi avec le document");
+    assert.ok(!/data:/.test(face), "une data: URI serait refusee par default-src 'self', EN SILENCE");
+    assert.ok(!/https?:/.test(face), "et une police distante ferait sortir une application 100 % locale");
+  }
+});
+
+test("F: les deux fichiers de police existent vraiment", () => {
+  // Un @font-face qui pointe un fichier absent echoue exactement comme un refus
+  // de CSP : silencieusement, sur la police de repli.
+  for (const f of ["Poppins-Regular.ttf", "Poppins-SemiBold.ttf"]) {
+    const p = path.join(__dirname, "..", "src", "renderer", "fonts", f);
+    assert.ok(fs.existsSync(p), `${f} doit etre dans le depot`);
+    assert.ok(fs.statSync(p).size > 50_000, `${f} doit etre une vraie police, pas un fichier vide`);
+  }
+});
+
+test("F: la CSP autorise la police, et le raisonnement reste vrai", () => {
+  // Pas de `font-src`, donc `default-src 'self'` decide. Si quelqu'un ajoutait un
+  // jour un `font-src` plus etroit, ce test le lui ferait remarquer avant que la
+  // charte disparaisse sans un mot.
+  assert.ok(!/font-src/.test(MAIN_WINDOW_CSP), "aucune directive font-src : c'est default-src qui decide");
+  assert.match(MAIN_WINDOW_CSP, /default-src 'self'/, "et elle autorise un fichier de meme origine");
+});
+
+test("F: le jeton de police nomme Poppins, avec un repli lisible derriere", () => {
+  const token = /--font:\s*([^;]+);/.exec(MAIN_CSS);
+  assert.ok(token, "le jeton --font doit exister");
+  assert.match(token[1], /^"Poppins"/, "Poppins en premier");
+  assert.match(token[1], /sans-serif/, "et un repli, pour qu'un paquet mal construit reste lisible");
+});

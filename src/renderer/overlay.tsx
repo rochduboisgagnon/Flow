@@ -756,6 +756,14 @@ function Overlay() {
         justifyContent: "center",
         width: "100%",
         height: "100%",
+        // F : la pastille reste sur la police du SYSTEME, delibere.
+        //
+        // Elle s'ouvre au moment ou quelqu'un appuie sur sa touche pour dicter,
+        // elle porte trois mots, et elle vit dans sa propre fenetre - donc dans
+        // son propre document, qui n'importe pas main.css. Lui donner Poppins
+        // voudrait dire charger 157 Ko de police pour ces trois mots, sur le seul
+        // chemin de l'application ou une milliseconde se remarque. La charte
+        // s'arrete ou le chemin chaud commence.
         fontFamily: "'Segoe UI', system-ui, sans-serif",
         fontSize: 10.7, // C1 (v15): text +20% (R8 had shrunk it value-by-value)
       }}

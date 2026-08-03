@@ -1,3 +1,53 @@
+/* ---------------------------------------------------------------------------
+   F : POPPINS, SERVIE COMME UN FICHIER DE L'APPLICATION
+   ---------------------------------------------------------------------------
+   La charte AGR est passee a Poppins le 2026-08-03 : corps 400, titres 600.
+
+   TROIS DECISIONS QUI SE LISENT MAL DANS LE CODE ET PAS DANS UNE CAPTURE.
+
+   1. LES FICHIERS SONT LOCAUX, jamais fonts.googleapis.com. Une police
+      distante voudrait dire qu'une application « 100 % locale » ouvre une
+      connexion sortante au premier rendu, vers un domaine qui apprend a chaque
+      lancement que quelqu'un utilise Flow. Et elle ne s'afficherait pas hors
+      ligne.
+
+   2. UN CHEMIN RELATIF, jamais une `data:` URI. La CSP de la fenetre
+      principale (shared/csp.ts) n'a AUCUNE directive `font-src`, donc elle
+      retombe sur `default-src 'self'` - qui autorise un fichier servi avec le
+      document et refuse un `data:`. Le refus serait SILENCIEUX : la page
+      s'afficherait dans la police de repli, sans une erreur visible, et
+      personne ne saurait que la charte n'est pas appliquee. Vite empreinte ces
+      URL et les emet a cote du CSS, donc elles restent de meme origine.
+
+   3. DU TTF, PAS DU WOFF2. Le woff2 economise environ 200 Ko sur les deux
+      fichiers, c'est-a-dire sur la taille de l'INSTALLEUR - jamais sur une
+      requete reseau, puisqu'il n'y en a aucune. Convertir aurait demande une
+      dependance de plus pour une conversion unique. Les .ttf sont ceux
+      qu'utilise deja la chaine PDF d'AGR, donc une seule police sur cette
+      machine plutot que deux formats a garder en phase.
+
+   Poppins est sous SIL Open Font License 1.1, qui autorise explicitement de
+   l'embarquer dans une application.
+   --------------------------------------------------------------------------- */
+@font-face {
+  font-family: "Poppins";
+  font-style: normal;
+  font-weight: 400;
+  /* `block` et non `swap` : la fenetre s'ouvre sur son propre fond pendant que
+     la police locale se charge (quelques millisecondes, elle est sur le disque),
+     et un echange de police a la premiere frame ferait sauter toute la mise en
+     page sous les yeux de quelqu'un. */
+  font-display: block;
+  src: url("./fonts/Poppins-Regular.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Poppins";
+  font-style: normal;
+  font-weight: 600;
+  font-display: block;
+  src: url("./fonts/Poppins-SemiBold.ttf") format("truetype");
+}
+
 /* Flow main window - ported from the validated mockup (design/mockup.html),
    wave U1. Two themes over the SAME single amber accent: dark is the app's
    signature (derived from the dictation pill's warm near-black), light is the
@@ -50,7 +100,11 @@
      titleBarOverlay). If the two diverge, the native caption buttons float
      over the content or the brand row is half-covered. */
   --titlebar-h: 40px;
-  --font: "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+  /* La pile de repli reste DERRIERE Poppins et n'est pas decorative : si les
+     deux @font-face echouaient (un fichier absent d'un paquet mal construit),
+     l'interface reste lisible au lieu de tomber sur la police par defaut du
+     systeme. Ce que ca ne fait PAS, c'est le dire - voir le point 2 ci-dessus. */
+  --font: "Poppins", "Segoe UI", system-ui, sans-serif;
   /* Native scrollbars and form controls follow the app theme, not the OS. */
   color-scheme: dark;
 }
