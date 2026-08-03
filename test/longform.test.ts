@@ -655,3 +655,40 @@ test("B3a: sans compte connu, l'audio ATTEND au lieu de partir sous un mauvais c
   assert.equal(store.rows.get(started.recordingId!)!.audioPath, "", "et la ligne ne promet aucun audio");
   fs.rmSync(work, { recursive: true, force: true });
 });
+
+test("B3c: la ligne porte le chemin de l'audio AVANT que la file soit prevenue", async () => {
+  // LE DEFAUT QUE CE TEST FERME, trouve en relisant l'ordre plutot qu'en le
+  // subissant : `settleAudio` remplissait `audio_path` et confiait le fichier a la
+  // file dans le meme souffle. La file lit ensuite la LIGNE pour savoir quoi faire.
+  // Si elle la lisait avant que la ligne soit ecrite, elle y trouverait un chemin
+  // VIDE, conclurait « cette reunion ne garde pas son audio », et supprimerait le
+  // .wav que l'utilisateur venait de demander de garder.
+  //
+  // La course etait probablement perdue par la file - son premier `await` est un
+  // vrai acces disque - et « probablement » n'est pas un mot acceptable a cote de
+  // l'audio d'une reunion.
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "flow-audio-order-"));
+  const seen: Array<{ id: string; audioPathAtThatMoment: string | undefined }> = [];
+  const { rec, store } = recorder({
+    transcribeSegment: () => Promise.resolve({ text: "Bonjour.", ms: 1 }),
+    pendingAudioDir: path.join(work, "pending"),
+    accountId: () => Promise.resolve("uid-1"),
+    uploadAudio: (id) => {
+      // Ce que la file VERRAIT si elle lisait la ligne a cet instant.
+      seen.push({ id, audioPathAtThatMoment: store.rows.get(id)?.audioPath });
+    },
+  });
+  const started = rec.start({ title: "Ordre", keepAudio: true });
+  rec.onChunk(concat(speechy(3000), silence(1500)));
+  rec.stop();
+  await settle(rec);
+
+  assert.equal(seen.length, 1, "la file est prevenue une fois");
+  assert.equal(seen[0].id, started.recordingId);
+  assert.equal(
+    seen[0].audioPathAtThatMoment,
+    `uid-1/${started.recordingId}.wav`,
+    "la ligne portait DEJA le chemin de l'objet : la file ne peut pas conclure qu'il n'y a pas d'audio",
+  );
+  fs.rmSync(work, { recursive: true, force: true });
+});

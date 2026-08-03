@@ -1127,8 +1127,22 @@ export class LongRecorder {
       // l'ensemble « lignes ouvertes » que le sauvetage inspecte.
       this.endedIso = new Date(this.now()).toISOString();
       this.elapsedMs = Math.round((this.consumed / SAMPLE_RATE) * 1000);
-      await this.settleAudio();
+      // L'ORDRE DE CES TROIS LIGNES EST UN CORRECTIF, pas une preference.
+      //
+      // `settleAudio` remplissait le chemin de l'objet audio ET confiait le
+      // fichier a la file de televersement. La file lit ensuite la LIGNE pour
+      // savoir quoi faire - et si elle la lisait avant que `publish()` l'ait
+      // ecrite, elle y trouverait `audio_path` vide, conclurait « cette reunion ne
+      // garde pas son audio », et SUPPRIMERAIT le .wav que l'utilisateur venait de
+      // demander de garder.
+      //
+      // La course etait probablement perdue par la file (son premier `await` est
+      // un vrai accès disque, plus lent qu'une micro-tache), et « probablement »
+      // n'est pas un mot acceptable a cote de l'audio d'une reunion. La ligne part
+      // donc AVANT, et `settleAudio` ne fait plus que decider.
+      const audioToUpload = await this.settleAudio();
       this.publish();
+      if (audioToUpload) this.deps.uploadAudio?.(this.recordingId);
       // SEULEMENT MAINTENANT, une fois le document ecrit dans la file avec les
       // notes dedans. Une fente videe avant une ecriture ratee aurait jete les
       // notes de quelqu'un ; et l'ordre FIFO de la file garantit que la
@@ -1167,10 +1181,14 @@ export class LongRecorder {
    * porte « il y a un audio pour cette reunion » des la fin de la capture. C'est
    * ce qui permet a un lancement suivant de savoir qu'il reste du travail meme si
    * la premiere tranche n'est jamais partie.
+   *
+   * NE CONFIE RIEN A LA FILE : rend seulement s'il y a quelque chose a televerser,
+   * et c'est l'appelant qui enfile - apres avoir ecrit la ligne. Voir le
+   * commentaire d'ordre dans finalize().
    */
-  private async settleAudio(): Promise<void> {
+  private async settleAudio(): Promise<boolean> {
     const p = this.audioLocalPath;
-    if (!p) return;
+    if (!p) return false;
     if (!this.keepAudio) {
       try {
         await fsp.rm(p, { force: true });
@@ -1179,7 +1197,7 @@ export class LongRecorder {
       } catch (err) {
         this.deps.log?.(`[long] could not drop the .wav the recording asked not to keep: ${err}`);
       }
-      return;
+      return false;
     }
     const uid = (await this.deps.accountId?.()) ?? "";
     if (!uid) {
@@ -1187,7 +1205,7 @@ export class LongRecorder {
       // le bon prefixe serait refuse par le RLS apres une heure de reunion. Le
       // fichier reste : le balayage du prochain lancement le reprendra.
       this.deps.log?.("[long] l'audio attend : le compte n'est pas connu pour l'instant");
-      return;
+      return false;
     }
     try {
       this.audioBytes = (await fsp.stat(p)).size;
@@ -1196,6 +1214,6 @@ export class LongRecorder {
     }
     this.audioObjectPath = audioObjectName(uid, this.recordingId);
     this.audioUploaded = 0;
-    this.deps.uploadAudio?.(this.recordingId);
+    return true;
   }
 }
