@@ -327,20 +327,21 @@ input[type="number"] {
    --amber clears 3:1 (non-text) in both themes. */
 select:focus, input:focus, button:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
 
-/* ---- Home (hero + status cards) ---- */
-.home-grid { display: grid; grid-template-columns: 1.5fr 1fr; gap: 14px; }
-.hero-card { grid-row: span 2; display: flex; flex-direction: column; justify-content: space-between; background: var(--hero-grad); border: 1px solid var(--line2); }
+/* ---- Home (une seule carte, pleine largeur) ----
+   2026-08-04 : `.home-grid` et `.ribbon-mini` sont partis avec les deux cartes
+   que Roch a fait retirer (voir le bandeau de pages/Home.tsx). Ce qui reste est
+   la carte de dictee, seule et large - donc `grid-row: span 2` n'a plus de
+   grille a enjamber, et la carte n'a plus besoin d'ecarter son contenu vers le
+   haut et le bas : elle est SLIM, elle occupe la hauteur de son texte. */
+.hero-card { background: var(--hero-grad); border: 1px solid var(--line2); }
 .hero-card .big { font-size: 22.7px; font-weight: 600; letter-spacing: -0.01em; margin: 10px 0 4px; }
-.hero-card .ribbon-mini { margin: 22px 0 8px; }
 .stat-inline { display: flex; align-items: baseline; gap: 8px; }
 .progress { height: 5px; border-radius: 999px; background: var(--panel2); overflow: hidden; margin-top: 8px; width: 180px; }
 .progress > div { height: 100%; background: var(--amber); }
 
-/* ---- Diagnostics ---- */
-table.diag { border-collapse: collapse; width: 100%; }
-table.diag td { padding: 9px 14px 9px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
-table.diag tr:last-child td { border-bottom: 0; }
-table.diag td:first-child { color: var(--ink2); white-space: nowrap; min-width: 180px; }
+/* 2026-08-04 : le tableau `table.diag` est parti avec la page Diagnostics. Il
+   n'avait qu'un seul utilisateur. `.mono` reste : Notes, Reglages et la porte du
+   compte s'en servent pour un chemin ou une adresse courriel. */
 .mono { font-family: Consolas, monospace; font-size: 13px; color: var(--ink2); word-break: break-all; }
 
 /* ---- Settings ---- */
@@ -383,13 +384,11 @@ table.diag td:first-child { color: var(--ink2); white-space: nowrap; min-width: 
 /* The shell is non-selectable; FACTS must be copyable. Extend this allowlist
    with every new readable surface (.transcript, .doc, .rich, .snip pre when
    their waves land) - forgetting it makes pages uncopyable. */
-table.diag, .mono, .row .l span, .card .sub, .rich, .snip pre, .tl-raw, .doc-body,
+.mono, .row .l span, .card .sub, .rich, .snip pre, .tl-raw, .doc-body,
 .qitem .nm, .qitem .meta { user-select: text; }
 
-@media (max-width: 960px) {
-  .home-grid { grid-template-columns: 1fr; }
-  .hero-card { grid-row: auto; }
-}
+/* La regle etroite de Home est partie avec sa grille : une carte seule est deja
+   pleine largeur a toutes les tailles. */
 
 /* ---- Snippets (wave U3) ---- */
 .fx-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
@@ -553,6 +552,13 @@ textarea.snip-src:focus { outline: 2px solid var(--amber); outline-offset: 1px; 
   text-underline-offset: 2px;
 }
 .linkish:hover { color: var(--ink); }
+/* 2026-08-04 : L'IMPORT EST UN PANNEAU DE NOTES, PLUS UNE PAGE.
+   Il partage donc la place avec la liste des reunions, et il devait maigrir : le
+   depot de fichiers faisait 40 px de padding vertical quand il occupait un ecran
+   pour lui seul. Sur 18 px il reste une cible de glisser-deposer evidente sans
+   pousser la liste sous le pli. */
+.import-panel { margin-bottom: 14px; }
+.import-panel .drop { margin-top: 12px; padding: 18px 20px; }
 .import-opts { display: flex; gap: 22px; flex-wrap: wrap; margin: 14px 0 0; }
 .queue { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
 .qitem { display: flex; align-items: center; gap: 14px; padding: 12px 16px; }

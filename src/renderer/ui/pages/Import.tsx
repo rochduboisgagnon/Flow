@@ -5,7 +5,6 @@ import {
   type ImportQueueSnapshot,
 } from "../../../shared/audioImport";
 import { hms } from "../../../shared/longform";
-import type { Section } from "../Rail";
 
 // Import (V4 D3). Drop audio files, get the same document a live capture
 // produces: notes on top of a timestamped transcript, filed in the archive.
@@ -26,10 +25,30 @@ import type { Section } from "../Rail";
 //
 // PULL, like every channel that is not the 1 Hz heartbeat: an import runs for
 // minutes and nothing about it belongs in UiStatePayload.
+//
+// ---------------------------------------------------------------------------
+// 2026-08-04 : CE N'EST PLUS UNE PAGE, C'EST UN PANNEAU DE NOTES
+// ---------------------------------------------------------------------------
+//
+// Roch : « le menu Import, toutes les options qui sont dans ce menu-la melees
+// dans le menu Notes ». La section du rail a disparu ; tout le reste - le depot,
+// les deux options, la file - est intact, et rend maintenant dans la page Notes.
+//
+// Deux consequences de code, et aucune n'est cosmetique :
+//
+//  1. LE BOUTON « SEE IT IN NOTES » N'EXISTE PLUS. Il naviguait vers la page ou
+//     ce panneau se trouve deja. A sa place, le panneau PREVIENT son hote quand
+//     un import vient d'etre classe (`onFiled`), et Notes relit sa liste : la
+//     reunion importee apparait d'elle-meme en haut, ce que le bouton demandait
+//     de faire a la main.
+//  2. LA CAPTURE DU GLISSER-DEPOSER SUIT LA VIE DU PANNEAU, donc celle de la
+//     page Notes. C'est le meme raisonnement qu'avant (Electron navigue vers un
+//     fichier lache n'importe ou dans la fenetre), avec une portee qui a
+//     simplement change de nom.
 
 const POLL_MS = 700;
 
-export function Import({ go }: { go: (s: Section) => void }) {
+export function ImportPanel({ onFiled }: { onFiled?: () => void }) {
   const [snap, setSnap] = useState<ImportQueueSnapshot | null>(null);
   const [over, setOver] = useState(false);
   // 2026-07-30: ON by default. It was off, on the reasoning that the source file
@@ -45,16 +64,32 @@ export function Import({ go }: { go: (s: Section) => void }) {
   const [busy, setBusy] = useState(false);
 
   const inFlight = useRef(false);
+  /** Combien d'imports etaient CLASSES au dernier sondage.
+   *
+   * Le declencheur est un comptage et non un drapeau par element : une file peut
+   * en terminer deux entre deux sondages, et un booleen « quelque chose a fini »
+   * n'aurait rafraichi la liste qu'une fois. Un compteur qui monte est aussi
+   * insensible au retrait d'une ligne terminee (« Dismiss »), qui ne doit pas se
+   * lire comme un nouvel import. */
+  const filed = useRef<number | null>(null);
   const tick = useCallback(async () => {
     if (inFlight.current) return; // two overlapping polls would fight over one state
     inFlight.current = true;
     try {
       const s = await window.flowui.importState();
-      if (s) setSnap(s);
+      if (s) {
+        setSnap(s);
+        // « done » est l'etat que le moteur pose APRES avoir ecrit la ligne dans
+        // le compte (main/audioImport.ts, phase "filing" puis "done"), donc au
+        // moment ou une relecture de la liste la trouvera vraiment.
+        const done = s.items.filter((i) => i.phase === "done").length;
+        if (filed.current !== null && done > filed.current) onFiled?.();
+        filed.current = done;
+      }
     } finally {
       inFlight.current = false;
     }
-  }, []);
+  }, [onFiled]);
 
   useEffect(() => {
     void tick();
@@ -131,14 +166,14 @@ export function Import({ go }: { go: (s: Section) => void }) {
   const exts = SUPPORTED_AUDIO_EXTENSIONS.map((e) => e.slice(1)).join(", ");
 
   return (
-    <>
-      <h2>Import</h2>
-      <p className="sub">
+    <div className="card import-panel">
+      <span className="lbl">Import audio</span>
+      <p className="sub" style={{ margin: "6px 0 0", maxWidth: "72ch" }}>
         Drop audio files, get notes. Phone memos, downloaded recordings, any common format. Flow
         reads the file and writes its own document; your file is never moved, renamed or changed.
       </p>
 
-      {error ? <p className="note-err" style={{ marginTop: -12, marginBottom: 16 }}>{error}</p> : null}
+      {error ? <p className="note-err" style={{ margin: "10px 0 0" }}>{error}</p> : null}
 
       <div
         className={"drop" + (over ? " over" : "")}
@@ -202,22 +237,22 @@ export function Import({ go }: { go: (s: Section) => void }) {
       ) : null}
 
       {items.length === 0 ? (
-        <p className="sub" style={{ margin: "18px 0 0", maxWidth: "62ch" }}>
-          Nothing in the queue. One file at a time, and a dictation always goes first.
-          Finished imports land in Notes.
+        <p className="sub" style={{ margin: "14px 0 0", maxWidth: "62ch" }}>
+          Nothing in the queue. One file at a time, and a dictation always goes first. A finished
+          import appears in the list below.
         </p>
       ) : (
         <div className="queue">
           {items.map((i) => (
-            <Row key={i.id} item={i} onAct={() => void act(i)} onSeeNotes={() => go("notes")} />
+            <Row key={i.id} item={i} onAct={() => void act(i)} />
           ))}
         </div>
       )}
-    </>
+    </div>
   );
 }
 
-function Row({ item, onAct, onSeeNotes }: { item: ImportItem; onAct(): void; onSeeNotes(): void }) {
+function Row({ item, onAct }: { item: ImportItem; onAct(): void }) {
   const done = item.phase === "done";
   const over = done || item.phase === "failed" || item.phase === "cancelled";
   // A bar needs a denominator. Without a known length the row states the audio
@@ -238,13 +273,11 @@ function Row({ item, onAct, onSeeNotes }: { item: ImportItem; onAct(): void; onS
         ) : null}
       </div>
       <div className="qacts">
-        {/* The archive is where the document actually is. Notes lists the newest
-            capture first, so the one just filed is the one already open. */}
-        {done || item.partial ? (
-          <button className="btn ghost" onClick={onSeeNotes}>
-            See it in Notes
-          </button>
-        ) : null}
+        {/* 2026-08-04 : « See it in Notes » est parti. Il naviguait vers la page
+            ou ce panneau vit desormais - un controle qui ne peut plus rien
+            atteindre. La liste juste en dessous se relit d'elle-meme quand un
+            import est classe (voir `onFiled`), et elle montre la plus recente en
+            premier : la reunion importee est donc deja la, deja ouverte. */}
         <button className="btn ghost" onClick={onAct}>
           {over ? "Dismiss" : item.phase === "queued" ? "Remove" : "Cancel"}
         </button>

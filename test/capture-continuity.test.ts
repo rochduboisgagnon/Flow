@@ -205,7 +205,7 @@ test("B9-wiring: the press window is read once and cleared, so a WAV without a p
   assert.match(body, new RegExp(`SILENT_FAILURE\\.micDroppedMidDictation`));
 });
 
-test("B9-wiring: the counter name is in the closed vocabulary and reaches Diagnostics", () => {
+test("B9-wiring: the counter name is in the closed vocabulary and reaches the snapshot", () => {
   assert.equal(SILENT_FAILURE.micDroppedMidDictation, "mic-dropped-mid-dictation");
   // It rides the EXISTING snapshot, so no new channel had to be opened.
   assert.match(readSrc("src", "shared", "hotpath.ts"), /silentFailureCounts:\s*silentFailures\.snapshot\(\)/);

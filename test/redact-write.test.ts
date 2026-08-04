@@ -81,7 +81,15 @@ function fixture(opts: { audio?: boolean; notes?: string; seconds?: number } = {
       readRecording: (rid: string) =>
         Promise.resolve(
           rid === id
-            ? { doc, audioObject: hasAudio ? "uid/rec-1.wav" : "", audioBytes: hasAudio ? fs.statSync(audio).size : 0 }
+            ? {
+                doc,
+                audioObject: hasAudio ? "uid/rec-1.wav" : "",
+                audioBytes: hasAudio ? fs.statSync(audio).size : 0,
+                // 2026-08-04 : l'objet est ARRIVE dans le compte. C'est ce que
+                // main/redact.ts lit maintenant pour decider s'il y a un audio a
+                // faire taire, plutot que la seule presence d'un chemin.
+                audioUploaded: hasAudio ? fs.statSync(audio).size : 0,
+              }
             : null,
         ),
       writeDoc: (_rid: string, next: string) => void (doc = next),

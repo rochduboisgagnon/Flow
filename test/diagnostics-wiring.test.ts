@@ -18,7 +18,6 @@ function readSrc(...parts: string[]): string {
 const INDEX_SRC = readSrc("src", "main", "index.ts");
 const API_SRC = readSrc("src", "main", "api.ts");
 const BRIDGE_SRC = readSrc("src", "main", "uiBridge.ts");
-const PANEL_SRC = readSrc("src", "renderer", "ui", "pages", "Diagnostics.tsx");
 const BENCH_SRC = readSrc("scripts", "bench-hotpath.ts");
 
 function bodyOf(src: string, anchor: string, terminator = "\n}\n"): string {
@@ -101,12 +100,29 @@ test("B11: the sampler is actually started, right after the hook it measures for
   assert.ok(startPttAt > 0 && samplerAt > startPttAt, "start it after the hook exists");
 });
 
-test("B11: the number reaches BOTH surfaces - a measurement nobody can read is not a measurement", () => {
-  assert.match(PANEL_SRC, /snap\.loopLag\.p99Ms/, "the Diagnostics panel must render the p99");
-  assert.match(PANEL_SRC, /snap\.loopLag\.count/, "and the sample count behind it");
-  assert.match(PANEL_SRC, /snap\.loopLag\.minMs/, "and the timer floor, or the p50 reads as permanent lag");
-  assert.match(PANEL_SRC, /LOOP_LAG_P99_THRESHOLD_MS/, "the panel must name the T1 threshold");
-  assert.match(BENCH_SRC, /loopLag\.p99Ms/, "bench:hotpath must print it too");
+test("B11: le nombre reste LISIBLE - une mesure que personne ne peut lire n'est pas une mesure", () => {
+  // 2026-08-04 : CE TEST A CHANGE DE SURFACE, PAS D'EXIGENCE.
+  //
+  // Il lisait la page Diagnostics, supprimee a la demande de Roch (« ca ne sert
+  // un peu a rien, je ne pense pas que ce serait des informations utiles a
+  // l'utilisateur »). Il avait raison sur le PUBLIC : c'etait un tableau de
+  // percentiles dans une application de dictee.
+  //
+  // Mais l'exigence que ce test porte n'etait pas « une page existe », c'etait
+  // « la mesure atteint quelqu'un ». Elle reste donc verifiee sur les deux
+  // surfaces qui survivent, et qui sont celles ou on la lit vraiment quand on
+  // cherche une regression de latence : le banc, et la route en lecture seule de
+  // l'API locale. La supprimer parce que son ecran est parti aurait transforme un
+  // retrait d'interface en perte d'instrument.
+  assert.match(BENCH_SRC, /loopLag\.p99Ms/, "bench:hotpath doit imprimer le p99");
+  assert.match(BENCH_SRC, /loopLag\.minMs/, "et le plancher du minuteur, sinon le p50 se lit comme du retard permanent");
+  assert.match(BENCH_SRC, /loopLag\.count/, "et le nombre d'echantillons derriere");
+  assert.match(BENCH_SRC, /LOOP_LAG_P99_THRESHOLD_MS/, "et il doit nommer le seuil T1");
+  assert.match(
+    API_SRC,
+    /req\.method === "GET" && url\.pathname === "\/diagnostics\/hotpath"/,
+    "et l'instantane complet reste servi en lecture seule sur 127.0.0.1",
+  );
 });
 
 // ---- B5: the self-diagnostic ----

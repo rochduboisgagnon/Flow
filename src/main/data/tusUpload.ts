@@ -6,6 +6,7 @@ import {
   readUploadExpires,
   readUploadOffset,
   uploadIsGone,
+  uploadTooLarge,
 } from "../../shared/tus";
 
 // ---------------------------------------------------------------------------
@@ -53,6 +54,9 @@ export interface TusCreated {
   url: string;
   /** Quand elle cesse d'etre valable, ou "" si le serveur ne le dit pas. */
   expiresIso: string;
+  /** 413 : le fichier depasse ce que le projet accepte. DEFINITIF - voir
+   * shared/tus.ts, uploadTooLarge, et la mesure du plafond qui y est ecrite. */
+  tooLarge: boolean;
   error: string;
 }
 
@@ -76,6 +80,10 @@ export interface TusPatched {
    * c'est pourquoi ce drapeau ne cherche pas a les distinguer. */
   conflict: boolean;
   gone: boolean;
+  /** 413 sur une tranche. Le refus arrive normalement au POST, qui declare la
+   * taille entiere ; ce drapeau existe pour que la file n'ait pas UNE porte
+   * ouverte sur la boucle infinie qu'elle vient de fermer. */
+  tooLarge: boolean;
   error: string;
 }
 
@@ -128,7 +136,7 @@ export class TusUpload {
     contentType?: string;
   }): Promise<TusCreated> {
     const headers = await this.authHeaders();
-    if (!headers) return { ok: false, url: "", expiresIso: "", error: "personne n'est connecte" };
+    if (!headers) return { ok: false, url: "", expiresIso: "", tooLarge: false, error: "personne n'est connecte" };
     try {
       const res = await this.fetch(this.endpoint(), {
         method: "POST",
@@ -147,18 +155,26 @@ export class TusUpload {
         },
       });
       if (res.status !== 201) {
-        return { ok: false, url: "", expiresIso: "", error: TusUpload.err("l'audio n'a pas pu etre ouvert", res.status) };
+        return {
+          ok: false,
+          url: "",
+          expiresIso: "",
+          // 413 : le fichier ne passera JAMAIS, et la file doit pouvoir le
+          // distinguer d'une coupure reseau. Voir uploadTooLarge.
+          tooLarge: uploadTooLarge(res.status),
+          error: TusUpload.err("l'audio n'a pas pu etre ouvert", res.status),
+        };
       }
       const url = res.headers.get("location") ?? "";
       if (!url) {
         // Un 201 sans Location est un serveur qui ne respecte pas la spec : il
         // n'y a rien a reprendre, et pretendre le contraire ferait boucler la
         // file sur une URL vide.
-        return { ok: false, url: "", expiresIso: "", error: "le serveur n'a pas rendu d'adresse de televersement" };
+        return { ok: false, url: "", expiresIso: "", tooLarge: false, error: "le serveur n'a pas rendu d'adresse de televersement" };
       }
-      return { ok: true, url: absolutize(url, this.endpoint()), expiresIso: readUploadExpires(res.headers), error: "" };
+      return { ok: true, url: absolutize(url, this.endpoint()), expiresIso: readUploadExpires(res.headers), tooLarge: false, error: "" };
     } catch (e) {
-      return { ok: false, url: "", expiresIso: "", error: reachError(e) };
+      return { ok: false, url: "", expiresIso: "", tooLarge: false, error: reachError(e) };
     }
   }
 
@@ -200,7 +216,7 @@ export class TusUpload {
   /** Envoie une tranche a l'offset donne. */
   async patch(url: string, offset: number, chunk: Uint8Array): Promise<TusPatched> {
     const headers = await this.authHeaders();
-    if (!headers) return { ok: false, offset, complete: false, conflict: false, gone: false, error: "personne n'est connecte" };
+    if (!headers) return { ok: false, offset, complete: false, conflict: false, gone: false, tooLarge: false, error: "personne n'est connecte" };
     try {
       const res = await this.fetch(url, {
         method: "PATCH",
@@ -215,10 +231,10 @@ export class TusUpload {
         body: chunk.slice(),
       });
       if (res.status === 409) {
-        return { ok: false, offset, complete: false, conflict: true, gone: false, error: "" };
+        return { ok: false, offset, complete: false, conflict: true, gone: false, tooLarge: false, error: "" };
       }
       if (uploadIsGone(res.status)) {
-        return { ok: false, offset, complete: false, conflict: false, gone: true, error: "le televersement a expire" };
+        return { ok: false, offset, complete: false, conflict: false, gone: true, tooLarge: false, error: "le televersement a expire" };
       }
       if (res.status !== 204) {
         return {
@@ -227,6 +243,7 @@ export class TusUpload {
           complete: false,
           conflict: false,
           gone: false,
+          tooLarge: uploadTooLarge(res.status),
           error: TusUpload.err("une tranche d'audio a ete refusee", res.status),
         };
       }
@@ -235,7 +252,7 @@ export class TusUpload {
         // La spec impose l'en-tete sur un PATCH reussi. Sans lui on ne sait pas
         // ou on en est : traiter ca comme un conflit force un HEAD, ce qui est
         // exactement la bonne reaction.
-        return { ok: false, offset, complete: false, conflict: true, gone: false, error: "" };
+        return { ok: false, offset, complete: false, conflict: true, gone: false, tooLarge: false, error: "" };
       }
       return {
         ok: true,
@@ -243,10 +260,11 @@ export class TusUpload {
         complete: res.headers.get("tus-complete") === "1",
         conflict: false,
         gone: false,
+        tooLarge: false,
         error: "",
       };
     } catch (e) {
-      return { ok: false, offset, complete: false, conflict: false, gone: false, error: reachError(e) };
+      return { ok: false, offset, complete: false, conflict: false, gone: false, tooLarge: false, error: reachError(e) };
     }
   }
 }

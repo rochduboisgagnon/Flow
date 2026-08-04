@@ -4,13 +4,11 @@ import { Titlebar } from "./Titlebar";
 import { Rail, type Section } from "./Rail";
 import { Coming } from "./components";
 import { Home } from "./pages/Home";
-import { Diagnostics } from "./pages/Diagnostics";
 import { SettingsPage } from "./pages/Settings";
 import { Record } from "./pages/Record";
 import { Notes } from "./pages/Notes";
 import { Dictionary } from "./pages/Dictionary";
 import { Statistics } from "./pages/Statistics";
-import { Import } from "./pages/Import";
 import { SignInScreen } from "./SignIn";
 
 // Flow main window shell (wave U1). State discipline unchanged since A1/A2:
@@ -115,9 +113,10 @@ export function App() {
             // on every navigation (reduced-motion disables it in CSS).
             <section className="page" key={section}>
               {section === "home" ? <Home s={s} go={setSection} /> : null}
-              {section === "diagnostics" ? <Diagnostics s={s} /> : null}
               {section === "record" ? <Record s={s} /> : null}
-              {section === "import" ? <Import go={setSection} /> : null}
+              {/* 2026-08-04 : Import n'est plus une section. Sa page entiere -
+                  depot de fichiers, options, file d'attente - est un panneau de
+                  Notes, parce que c'est la que ses resultats atterrissent. */}
               {section === "notes" ? <Notes s={s} /> : null}
               {section === "stats" ? <Statistics s={s} patch={patch} /> : null}
               {section === "dictionary" ? <Dictionary /> : null}

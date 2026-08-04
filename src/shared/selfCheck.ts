@@ -226,7 +226,7 @@ function engineLine(facts: SelfCheckFacts): SelfCheckLine {
     label,
     status: "fail",
     detail: "No speech engine is running: a dictation would be captured and then have nothing to transcribe it.",
-    fix: "Read flow.log (Diagnostics > Engine log) for the backend selection lines, and try 'force CPU' in Settings > Engine.",
+    fix: "Read flow.log (Settings > Updates & About > Open log) for the backend selection lines, and try 'force CPU' in Settings > Engine.",
   };
 }
 
@@ -238,7 +238,7 @@ function modelLine(facts: SelfCheckFacts): SelfCheckLine {
       label,
       status: "unknown",
       detail: `Flow could not check whether ${facts.modelFile} is on disk.`,
-      fix: "Open Diagnostics > Data folder and check that the models folder is reachable.",
+      fix: "Open Settings > Storage & Privacy > Open Flow's folder and check that the models folder is reachable.",
     };
   }
   if (facts.modelPresent) {
@@ -292,7 +292,7 @@ function dataDirLine(facts: SelfCheckFacts): SelfCheckLine {
       label,
       status: "unknown",
       detail: `Flow could not test whether it can write to ${facts.dataDir}.`,
-      fix: "Open Diagnostics > Data folder and check that the folder exists and is reachable.",
+      fix: "Open Settings > Storage & Privacy > Open Flow's folder and check that it exists and is reachable.",
     };
   }
   if (facts.dataDirWritable) {

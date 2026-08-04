@@ -126,6 +126,53 @@ export function uploadIsGone(status: number): boolean {
   return status === 404 || status === 410 || status === 403;
 }
 
+/**
+ * L'OBJET EST PLUS GROS QUE CE QUE LE PROJET ACCEPTE, ET C'EST DEFINITIF.
+ *
+ * ---------------------------------------------------------------------------
+ * MESURE, PAS DEDUCTION (2026-08-04)
+ * ---------------------------------------------------------------------------
+ *
+ * Trouve en LANCANT l'application : une reunion d'environ 55 minutes, 101 Mo de
+ * .wav, a passe la nuit a se faire refuser. Le journal de Roch, sept fois de
+ * suite avec un intervalle qui grandit :
+ *
+ *     [audio] l'audio n'a pas pu etre ouvert : le serveur a repondu 413
+ *
+ * Le plafond a ete SONDE contre le vrai projet, par des POST de creation qui
+ * n'envoient aucun octet et ne changent que `Upload-Length` :
+ *
+ *     41 943 040 octets (40 Mio)  -> 201
+ *     52 428 800 octets (50 Mio)  -> 201
+ *     52 428 801 octets           -> 413 « Maximum size exceeded »
+ *    106 283 608 octets (le wav)  -> 413 « Maximum size exceeded »
+ *
+ * Donc 50 Mio pile, et ce n'est pas le seau : la migration ne fixe aucun
+ * `file_size_limit`, c'est le plafond du PROJET. A 32 Ko/s, un .wav de dictee
+ * atteint 50 Mio en 27 minutes : au-dela, l'audio d'une reunion ne peut PAS
+ * monter tant que ce plafond ne change pas.
+ *
+ * ---------------------------------------------------------------------------
+ * POURQUOI CETTE FONCTION EXISTE AU LIEU D'UN SIMPLE `!ok`
+ * ---------------------------------------------------------------------------
+ *
+ * Le reste des echecs de televersement sont TRANSITOIRES : hors ligne, jeton
+ * expire, tranche perdue. La file les garde en tete et reessaie, ce qui est
+ * exactement ce qu'il faut. Un 413 ne guerira jamais tout seul, et le traiter
+ * comme les autres produit ce que le journal montre : une requete toutes les
+ * soixante secondes, pour toujours, sur un fichier qui ne passera jamais.
+ *
+ * CE QUI N'EST PAS FAIT ICI, ET DELIBEREMENT : aucun plafond en dur. Le nombre
+ * mesure ci-dessus est celui d'un projet a un instant donne - il monte a 50 Go
+ * sur une offre payante. Une constante locale refuserait alors des fichiers que
+ * le serveur accepte, c'est-a-dire mentirait dans l'autre sens. C'est le serveur
+ * qui tranche, au prix d'une requete sans corps, et la seule chose gardee
+ * localement est sa reponse.
+ */
+export function uploadTooLarge(status: number): boolean {
+  return status === 413;
+}
+
 /** Le seau prive de la premiere migration. Ici, et non dans main/audioUpload.ts,
  * pour que le depot puisse le nommer sans dependre de la file de televersement :
  * la lecture et l'ecriture d'un objet audio sont deux modules differents, et le

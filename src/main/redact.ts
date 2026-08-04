@@ -89,7 +89,9 @@ export interface RedactDeps {
   /** La reunion, telle que le compte la detient. Rend null quand l'identifiant
    * ne designe rien - et il ne peut jamais designer la reunion de quelqu'un
    * d'autre, parce que la requete porte le jeton de celui qui la fait. */
-  readRecording(id: string): Promise<{ doc: string; audioObject: string; audioBytes: number } | null>;
+  readRecording(
+    id: string,
+  ): Promise<{ doc: string; audioObject: string; audioBytes: number; audioUploaded: number } | null>;
   /**
    * Ecrit le document reecrit dans la ligne.
    *
@@ -303,7 +305,17 @@ export class Redactor {
     if (!Array.isArray(expect) || expect.length === 0) return { ok: false, error: "no passage was selected" };
     const entry = await this.deps.readRecording(id);
     if (!entry) return { ok: false, error: "recording not found" };
-    const hasAudio = entry.audioObject !== "" && entry.audioBytes > 0;
+    // 2026-08-04 : « il y a un audio » se lit sur ce que le SERVEUR a confirme,
+    // pas sur le chemin. Un chemin est ecrit a la fin de la reunion, avant le
+    // televersement ; il existe donc deux moments ou ce chemin designe un objet
+    // qui n'est pas la - pendant l'envoi, et pour toujours quand le compte a
+    // refuse le fichier pour sa taille (413, vu en vrai le 2026-08-04).
+    //
+    // Ce que ca change concretement : le retrait d'un passage FONCTIONNE quand
+    // meme sur ces reunions - il enleve le texte - au lieu d'echouer en entier en
+    // essayant de telecharger un objet inexistant. Et la pierre tombale ecrite
+    // dans le document ne promet plus un silence qui n'a pas eu lieu.
+    const hasAudio = entry.audioObject !== "" && entry.audioBytes > 0 && entry.audioUploaded >= entry.audioBytes;
 
     this.busy = true;
     try {

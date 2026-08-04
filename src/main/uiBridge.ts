@@ -93,6 +93,10 @@ export interface UiBridgeDeps {
    * the normal case and makes "legacy-history" a refused destination. U2c: main
    * also returns null when the folder no longer exists on disk. */
   legacyHistoryDirPath(): string | null;
+  /** Le dossier des .wav en transit. Une seule page l'ouvre, et seulement pour
+   * une reunion dont l'audio a ete refuse par le compte : c'est alors le seul
+   * endroit ou cet audio existe. */
+  pendingAudioDir(): string;
   logPath(): string;
   dataDirPath(): string;
   /** U2c: shell.openPath RETURNS an error string instead of throwing, so a
@@ -398,6 +402,20 @@ export class UiBridge {
       if (which === "log") await shell.openPath(this.deps.logPath());
       else if (which === "data") await shell.openPath(this.deps.dataDirPath());
       else if (which === "history") await shell.openPath(this.deps.historyRootDir());
+      else if (which === "pending-audio") {
+        // 2026-08-04 : le dossier de TRANSIT. Normalement il est vide et personne
+        // n'a de raison de l'ouvrir - un .wav n'y reste que le temps de monter
+        // dans le compte. Il devient la seule reponse honnete quand le compte a
+        // REFUSE l'audio pour sa taille (413) : le fichier est la, intact, et
+        // « ou est mon enregistrement » merite un dossier qui s'ouvre plutot
+        // qu'un chemin a recopier a la main.
+        const dir = this.deps.pendingAudioDir();
+        if (!dir) this.deps.log?.("[ui] open pending audio folder: nothing to open");
+        else {
+          const err = await shell.openPath(dir);
+          if (err) this.deps.log?.(`[ui] could not open the pending audio folder: ${err}`);
+        }
+      }
       else if (which === "legacy-history") {
         // U2b: still a FIXED destination - the path comes from main (the
         // migration captured it), the renderer only names the destination. No

@@ -159,21 +159,31 @@ export function Statistics({ s, patch }: {
           </div>
 
           <div className="stats-foot">
-            <p className="sub" style={{ margin: 0, maxWidth: "62ch" }}>
-              <b>Two switches, two different things.</b> Counting words is what fills the tiles
-              above; recording app names is what fills &ldquo;Where you dictate&rdquo;, and it is off
-              until you ask for it. Stopping one does not stop the other. One line per day, nothing
-              per dictation, and days older than twelve months are dropped as they age out. Either
-              switch erases what it had already recorded, rather than merely stopping.
-              {data.perApp ? " Application names are being recorded right now." : ""}
-              {confirmStop ? (
-                <>
-                  {" "}
-                  <b>Stopping deletes the counters already recorded, every day and the streak
-                  included. There is no undo.</b>
-                </>
-              ) : null}
-            </p>
+            {/* 2026-08-04, Roch : « le paragraphe qui dit "two switches, two
+                different things", jusqu'a la fin de ce paragraphe-la, j'aimerais
+                que tu l'enleves au complet. » Fait : c'etait cinq lignes de regles
+                de comptabilite devant quatre boutons qui les disent deja par leur
+                libelle.
+
+                CE QUI RESTE, ET POURQUOI CE N'EST PAS LE MEME TEXTE : les deux
+                phrases ci-dessous ne s'affichent QUE quand elles decrivent
+                l'instant. La premiere est un fait sur la vie privee de quelqu'un
+                (« les noms d'applications sont enregistres en ce moment ») ; la
+                seconde est le seul avertissement qui separe un clic d'une
+                suppression sans retour. Emporter l'une ou l'autre avec la prose
+                aurait retire un fait et une garde, pas une explication. */}
+            {data.perApp || confirmStop ? (
+              <p className="sub" style={{ margin: 0, maxWidth: "62ch" }}>
+                {data.perApp ? "Application names are being recorded right now." : ""}
+                {data.perApp && confirmStop ? " " : ""}
+                {confirmStop ? (
+                  <b>
+                    Stopping deletes the counters already recorded, every day and the streak
+                    included. There is no undo.
+                  </b>
+                ) : null}
+              </p>
+            ) : null}
             <div style={{ display: "flex", gap: 8 }}>
               {data.perApp ? (
                 <button className="btn" onClick={() => void setSetting({ statsPerApp: false })}>

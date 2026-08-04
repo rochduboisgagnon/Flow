@@ -6,6 +6,7 @@ import {
   type RecordingDocPayload,
 } from "../../../shared/recordings";
 import { parseTranscriptPassages, planRedaction, hms, type TranscriptPassage } from "../../../shared/redact";
+import { ImportPanel } from "./Import";
 
 // Notes (wave U5). The captures in Flow's own recordings folder, readable and
 // listenable in place, and downloadable into the system Downloads folder.
@@ -152,6 +153,10 @@ export function Notes({ s }: { s: UiStatePayload }) {
   }, [items, query]);
 
   const current = items?.find((i) => i.id === selected) ?? null;
+  // 2026-08-04 : OU EST L'AUDIO, VRAIMENT. Un seul calcul, en haut, pour les
+  // trois endroits de cette page qui en dependent : le bouton de
+  // telechargement, le lecteur, et le retrait de passage.
+  const audio = audioStateOf(current, s.audioRefusedForSize);
   // Review U5d: the document on screen must belong to the capture the buttons
   // and the player point at. `doc` lagged one selection behind while the next
   // one loaded, so the page showed A's transcript above B's player and B's
@@ -311,9 +316,19 @@ export function Notes({ s }: { s: UiStatePayload }) {
           Both halves of the fix are here: the promise is now the one the page
           can keep, and when the cap is actually reached the page says how many
           it is showing instead of letting the older ones vanish silently. */}
-      <p className="sub">The captures in Flow&apos;s recordings folder, readable and listenable in place.</p>
+      {/* B3d : ce n'est plus un dossier. La phrase disait « the captures in
+          Flow's recordings folder » ; les reunions vivent dans le compte depuis la
+          refonte, et le dossier n'existe plus. */}
+      <p className="sub">Your recorded meetings and imported audio, readable and listenable in place.</p>
 
       {error ? <p className="note-err" style={{ marginTop: -12, marginBottom: 16 }}>{error}</p> : null}
+
+      {/* 2026-08-04 : L'IMPORT VIT ICI. Roch : « dans Notes, on pourrait avoir
+          l'option de Import », et la page Import a disparu du rail.
+          `onFiled={refresh}` est ce qui remplace son ancien bouton « See it in
+          Notes » : quand un import est classe, la liste ci-dessous se relit et la
+          reunion importee apparait en tete. */}
+      <ImportPanel onFiled={() => void refresh()} />
       {note ? (
         <p className="note-saved">
           <span className="mono">{note}</span>
@@ -416,11 +431,14 @@ export function Notes({ s }: { s: UiStatePayload }) {
                     <button className="btn" disabled={downloading !== null} onClick={() => void download("doc")}>
                       {downloading === "doc" ? "Saving..." : "Download notes"}
                     </button>
-                    {current?.hasAudio ? (
+                    {/* SEULEMENT quand l'audio est vraiment dans le compte. Voir
+                        audioStateOf : ce bouton a passe une nuit a promettre
+                        101 Mo que Storage avait refuses. */}
+                    {audio.kind === "ready" ? (
                       <button className="btn" disabled={downloading !== null} onClick={() => void download("audio")}>
                         {downloading === "audio"
-                          ? `Saving ${formatBytes(current.audioBytes)}...`
-                          : `Download audio (${formatBytes(current.audioBytes)})`}
+                          ? `Saving ${formatBytes(audio.bytes)}...`
+                          : `Download audio (${formatBytes(audio.bytes)})`}
                       </button>
                     ) : null}
                     {/* D11. Offered only when there is something to remove: a
@@ -465,7 +483,33 @@ export function Notes({ s }: { s: UiStatePayload }) {
                   </div>
                 </div>
 
-                {current?.hasAudio ? (
+                {/* 2026-08-04 : L'AUDIO QUI N'EST PAS DANS LE COMPTE SE DIT,
+                    plutot que de se presenter comme un lecteur qui refusera de
+                    jouer. Deux etats, deux phrases, et aucune des deux n'est une
+                    excuse : la premiere est temporaire et se resoudra seule, la
+                    seconde dit ou est le fichier. */}
+                {audio.kind === "uploading" ? (
+                  <p className="sub" style={{ margin: "14px 0 0", maxWidth: "62ch" }}>
+                    The audio is still going up to your account
+                    {audio.total > 0 ? ` (${formatBytes(audio.sent)} of ${formatBytes(audio.total)})` : ""}. It
+                    becomes playable and downloadable here as soon as it has arrived. Nothing is lost
+                    if you close Flow meanwhile: the upload picks up where it stopped.
+                  </p>
+                ) : null}
+                {audio.kind === "refused" ? (
+                  <p className="note-legacy" style={{ marginTop: 14 }}>
+                    <span style={{ flex: 1 }}>
+                      Your account refused this audio because of its size ({formatBytes(audio.bytes)}), so
+                      it could not be uploaded and cannot be played here. It was NOT deleted: the
+                      recording is still on this computer, untouched, in Flow&apos;s transit folder.
+                      The transcript and the notes above are in your account as usual.
+                    </span>
+                    <button className="btn ghost" onClick={() => void window.flowui.openPath("pending-audio")}>
+                      Open the folder
+                    </button>
+                  </p>
+                ) : null}
+                {current && audio.kind === "ready" ? (
                   s.apiPort ? (
                     // The engine's own streaming endpoint: range requests work, so
                     // seeking works, and nothing is buffered into the renderer.
@@ -487,10 +531,12 @@ export function Notes({ s }: { s: UiStatePayload }) {
                       />
                       {audioError ? (
                         <p className="note-err" style={{ margin: "8px 0 0" }}>
+                          {/* 2026-08-04 : ne renvoie plus a Diagnostics, page
+                              supprimee. Ce qui reste est ce que quelqu'un peut
+                              FAIRE : les deux gestes sont sur cet ecran. */}
                           Flow could not play that audio. Its local service may have restarted on
-                          another port (Diagnostics shows its state), or the file may have moved
-                          since this list was read. Refresh re-reads the archive; the download
-                          button reads the file directly.
+                          another port, or the object may have moved since this list was read.
+                          Refresh re-reads the archive; the download button reads it directly.
                         </p>
                       ) : null}
                     </>
@@ -500,7 +546,7 @@ export function Notes({ s }: { s: UiStatePayload }) {
                     // beats a silently missing control, and Download still works.
                     <p className="sub" style={{ margin: "14px 0 0" }}>
                       Playback needs Flow&apos;s local service, which is not listening right now.
-                      Diagnostics shows its state. You can still download the audio.
+                      Restarting Flow brings it back. You can still download the audio.
                     </p>
                   )
                 ) : null}
@@ -511,7 +557,12 @@ export function Notes({ s }: { s: UiStatePayload }) {
                     preamble={preamble}
                     picked={picked}
                     onToggle={togglePassage}
-                    hasAudio={current?.hasAudio === true}
+                    /* 2026-08-04 : « il y a un audio a faire taire » veut dire que
+                       l'objet est DANS le compte, pas que la reunion en a garde un.
+                       La meme correction est faite cote moteur (main/redact.ts), et
+                       les deux doivent dire la meme chose : cette phrase promet un
+                       silence, et main l'execute. */
+                    hasAudio={audio.kind === "ready"}
                     notesWillDrop={plan?.notesDropped === true}
                     confirming={confirming}
                     working={working}
@@ -687,6 +738,55 @@ function localDay(startedIso: string): string {
   const d = new Date(ms);
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/**
+ * OU EST L'AUDIO D'UNE REUNION - LES QUATRE REPONSES POSSIBLES.
+ *
+ * ---------------------------------------------------------------------------
+ * CE QUE CETTE FONCTION REPARE
+ * ---------------------------------------------------------------------------
+ *
+ * Trouve en LANCANT l'application, le 2026-08-04 : Roch ouvre une reunion de
+ * 55 minutes, la page annonce « audio 101 MB », propose « Download audio
+ * (101 MB) », affiche un lecteur - et rien ne fonctionne. Le journal disait
+ * pourquoi : Storage avait refuse le fichier (413, le plafond du projet est de
+ * 50 Mio) et l'objet n'a jamais existe.
+ *
+ * La page ne mentait pas par negligence : elle lisait `hasAudio`, qui est vrai
+ * des que la LIGNE porte un chemin d'objet. Or ce chemin est ecrit a la fin de la
+ * reunion, avant le televersement - donc `hasAudio` veut dire « cette reunion a
+ * garde son audio », pas « l'audio est arrive ». La distinction n'existait nulle
+ * part dans la page, et c'est la vraie faute.
+ *
+ * ---------------------------------------------------------------------------
+ * ET CA COUVRE UN SECOND CAS, QUI N'A JAMAIS ETE SIGNALE
+ * ---------------------------------------------------------------------------
+ *
+ * Le meme defaut se produit pour une reunion NORMALE, dans la minute qui suit sa
+ * fin : le televersement de 40 Mo dure, et pendant ce temps la page offrait deja
+ * un lecteur qui ne pouvait rien jouer. Personne ne l'avait rapporte parce que
+ * personne n'ouvre Notes dans les secondes qui suivent - mais c'etait le meme
+ * bouton mort, avec une fenetre plus courte.
+ *
+ * `audioUploaded` (l'offset que le SERVEUR a confirme, pas un compteur local) est
+ * ce qui tranche, et c'est deja dans le resume.
+ */
+type AudioWhere =
+  | { kind: "none" }
+  | { kind: "ready"; bytes: number }
+  | { kind: "uploading"; sent: number; total: number }
+  | { kind: "refused"; bytes: number };
+
+function audioStateOf(current: RecordingSummary | null, refused: string[]): AudioWhere {
+  if (!current || !current.hasAudio) return { kind: "none" };
+  if (refused.includes(current.id)) return { kind: "refused", bytes: current.audioBytes };
+  // Le zero est traite comme « en route » et non comme « pret » : une ligne dont
+  // les octets ne sont pas encore connus n'a certainement pas fini de monter.
+  if (current.audioBytes > 0 && current.audioUploaded >= current.audioBytes) {
+    return { kind: "ready", bytes: current.audioBytes };
+  }
+  return { kind: "uploading", sent: current.audioUploaded, total: current.audioBytes };
 }
 
 function formatBytes(n: number): string {

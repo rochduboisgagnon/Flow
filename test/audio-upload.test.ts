@@ -122,6 +122,11 @@ interface FakeServerOpts {
   gone?: boolean;
   /** Rend un 409 sur le PATCH numero n (1-indexe), une seule fois. */
   conflictOnPatch?: number;
+  /** Refuse en 413 tout televersement dont `Upload-Length` depasse ce nombre,
+   * exactement comme le plafond de taille d'objet d'un projet Supabase (sonde le
+   * 2026-08-04 : 52 428 800 passe, 52 428 801 rend 413 « Maximum size
+   * exceeded »). */
+  tooLargeOverBytes?: number;
 }
 
 function fakeTusServer(opts: FakeServerOpts = {}) {
@@ -153,6 +158,11 @@ function fakeTusServer(opts: FakeServerOpts = {}) {
       }));
       assert.equal(fields.get("bucketName"), AUDIO_BUCKET);
       const total = Number(headers.get("upload-length"));
+      if (opts.tooLargeOverBytes !== undefined && total > opts.tooLargeOverBytes) {
+        // Le vrai serveur repond avec un corps ; il n'est jamais lu (voir
+        // TusUpload.err : le message est construit du STATUT, pas du corps).
+        return new Response("Maximum size exceeded", { status: 413 });
+      }
       const id = "u" + ++seq;
       uploads.set(id, { offset: 0, total, objectName: fields.get("objectName") ?? "", bytes: Buffer.alloc(0) });
       return new Response(null, {
@@ -280,6 +290,81 @@ function harness(o: { bytes: number; server?: FakeServerOpts; id?: string; rowOv
 const settle = async (n = 40) => {
   for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 5));
 };
+
+// ---------------------------------------------------------------------------
+// 2026-08-04 : LE 413. Trouve en LANCANT l'application, pas en lisant du code.
+//
+// Le journal de Roch, sur une reunion de 55 minutes et 101 Mo :
+//
+//     14:06:46 [audio] l'audio n'a pas pu etre ouvert : le serveur a repondu 413
+//     14:06:51 ... 14:07:02 ... 14:07:17 ... 14:07:37 ... 14:08:03 ... 14:08:34
+//
+// Sept fois, avec un intervalle qui grandit, sur un fichier qui ne passera
+// jamais : le plafond de taille d'objet du projet est de 50 Mio (sonde, voir
+// shared/tus.ts). Et pendant ce temps la page Notes offrait « Download audio
+// (101 MB) » pour un objet qui n'a jamais existe.
+//
+// Les quatre assertions ci-dessous sont les quatre moities du defaut.
+// ---------------------------------------------------------------------------
+
+test("2026-08-04 : un 413 est DEFINITIF - rien n'est rejoue, et le .wav n'est pas supprime", async () => {
+  const bytes = TUS_CHUNK_BYTES + 1000;
+  const t = harness({ bytes, server: { tooLargeOverBytes: TUS_CHUNK_BYTES } });
+  t.queue.enqueue(t.id);
+  await settle();
+
+  // 1. AUCUNE REPRISE. C'est la difference avec toutes les autres pannes de ce
+  //    fichier : une coupure reseau en programme une, un 413 non.
+  assert.equal(t.retries.length, 0, "un 413 ne guerit pas en attendant : rien ne doit etre reprogramme");
+  assert.equal(t.queue.pending(), 0, "et la file n'est pas bloquee par ce travail");
+
+  // 2. LE FICHIER SURVIT. C'est la seule copie de l'audio de cette reunion.
+  assert.equal(
+    fs.existsSync(path.join(t.dir, t.id + ".wav")),
+    true,
+    "le .wav en transit est la SEULE copie de cet audio : le refus ne doit rien detruire",
+  );
+
+  // 3. LA PAGE PEUT LE DIRE. Sans cette liste, Notes continue d'offrir un
+  //    telechargement qui rendra 404.
+  assert.deepEqual(t.queue.refusedForSize(), [t.id]);
+
+  // 4. LA LIGNE NE GARDE PAS D'ADRESSE MORTE, et garde la taille reelle - c'est
+  //    elle qui permet d'ecrire « 101 Mo, restes sur cette machine ».
+  const r = t.rows.get(t.id)!;
+  assert.equal(r.audioUploadUrl, "");
+  assert.equal(r.audioUploaded, 0);
+  assert.equal(r.audioBytes, bytes);
+  assert.ok(
+    t.logs.some((m) => /refuse par le compte/.test(m) && /pas supprime/.test(m)),
+    "le refus est dit, avec ce qu'il advient du fichier",
+  );
+  t.cleanup();
+});
+
+test("2026-08-04 : un audio deja refuse n'est pas redemande dans la meme session", async () => {
+  const bytes = TUS_CHUNK_BYTES + 1;
+  const t = harness({ bytes, server: { tooLargeOverBytes: TUS_CHUNK_BYTES } });
+  t.queue.enqueue(t.id);
+  await settle();
+  const asked = t.server.requests.length;
+  assert.ok(asked > 0, "le serveur a bien ete interroge une fois");
+  // Le travail a QUITTE la file - sinon les enqueue suivants seraient ignores
+  // par `queue.includes()` et ce test passerait sans rien prouver.
+  assert.equal(t.queue.pending(), 0);
+
+  // Une fin de reunion, un rebalayage au demarrage, une reconnexion : tout ca
+  // appelle enqueue. Aucun ne doit refaire la meme question.
+  t.queue.enqueue(t.id);
+  t.queue.enqueue(t.id);
+  await settle();
+  assert.equal(t.server.requests.length, asked, "aucune requete de plus");
+
+  // Ce qui n'est PAS teste ici parce que c'est un choix, pas un oubli : le
+  // prochain LANCEMENT redemande. Le plafond est un reglage de projet, donc une
+  // offre superieure le change, et un refus persiste survivrait a sa cause.
+  t.cleanup();
+});
 
 test("B3c: un audio de plusieurs tranches monte en entier, et le .wav en transit disparait", async () => {
   const bytes = TUS_CHUNK_BYTES * 2 + 5000;

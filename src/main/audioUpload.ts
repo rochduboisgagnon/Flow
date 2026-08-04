@@ -83,6 +83,26 @@ export class AudioUploadQueue {
   private working = false;
   private failures = 0;
   private current: AudioUploadProgress | null = null;
+  /**
+   * LES REUNIONS DONT L'AUDIO A ETE REFUSE POUR SA TAILLE.
+   *
+   * Trouve en LANCANT l'application, le 2026-08-04 : une reunion de 55 minutes,
+   * 101 Mo, refusee par Storage en 413 (« Maximum size exceeded » : le plafond du
+   * projet est de 50 Mio, sonde - voir shared/tus.ts). Ce que Flow en faisait
+   * etait faux de trois facons a la fois :
+   *
+   *  1. il reessayait, toutes les soixante secondes, pour toujours ;
+   *  2. la page Notes offrait « Download audio (101 MB) », qui rendait 404 -
+   *     l'interface promettait un fichier que le compte n'a pas ;
+   *  3. rien, nulle part, ne disait que l'audio etait en securite sur le disque.
+   *
+   * Ce Set repare le premier point et rend les deux autres possibles. Il n'est
+   * PAS persiste, et c'est un choix : le plafond est un reglage de projet, donc
+   * une offre superieure le change du jour au lendemain. Un refus grave dans la
+   * base survivrait a la raison qui l'a cause. Chaque lancement redemande donc
+   * au serveur, ce qui coute UN POST sans corps par fichier trop gros.
+   */
+  private refused = new Set<string>();
 
   constructor(deps: AudioUploadDeps) {
     this.deps = deps;
@@ -102,11 +122,20 @@ export class AudioUploadQueue {
     return this.queue.length + (this.working ? 1 : 0);
   }
 
+  /** Les reunions dont l'audio a ete refuse pour sa taille, pour que la page
+   * puisse le DIRE au lieu d'offrir un telechargement qui rendra 404. */
+  refusedForSize(): string[] {
+    return [...this.refused];
+  }
+
   /** Une reunion vient de finir et son audio doit monter. Rend la main tout de
    * suite : l'appelant est `finalize()`, et une reunion n'attend pas 115 Mo. */
   enqueue(recordingId: string): void {
     if (!recordingId) return;
     if (this.queue.includes(recordingId)) return;
+    // Deja refuse pour sa taille dans cette session : le redemander donnerait le
+    // meme 413. Le prochain lancement, lui, redemandera - voir `refused`.
+    if (this.refused.has(recordingId)) return;
     this.queue.push(recordingId);
     void this.drain();
   }
@@ -207,6 +236,34 @@ export class AudioUploadQueue {
     return sent >= total ? { ok: true, error: "" } : { ok: false, error: "le televersement s'est arrete avant la fin" };
   }
 
+  /**
+   * STORAGE REFUSE CE FICHIER POUR SA TAILLE. Ce travail est fini, et le .wav
+   * RESTE.
+   *
+   * Les trois lignes de cette fonction sont chacune une decision :
+   *
+   *  - le .wav n'est PAS supprime. C'est la seule copie de l'audio de cette
+   *    reunion, et la seule chose que Flow puisse encore en faire est de dire ou
+   *    elle est. `dropLocal` est appele partout ailleurs dans ce fichier ; ici,
+   *    l'appeler serait detruire la donnee que le televersement devait sauver.
+   *  - l'URL de televersement est effacee de la ligne. Le POST a echoue, donc il
+   *    n'y a rien a reprendre, et laisser une adresse morte ferait faire un HEAD
+   *    inutile au prochain lancement. `audioBytes` reste : c'est un fait vrai sur
+   *    le fichier, et c'est ce qui permet a la page de dire « 101 Mo, restes
+   *    ici ».
+   *  - `true` est rendu, donc la file passe au suivant et n'y revient plus. Un
+   *    413 ne guerit pas en attendant.
+   */
+  private refuseForSize(id: string, row: RecordingRow, bytes: number): boolean {
+    this.refused.add(id);
+    this.deps.writeRow({ ...row, audioBytes: bytes, audioUploaded: 0, audioUploadUrl: "", audioUploadExpires: "" });
+    this.deps.log?.(
+      `[audio] refuse par le compte : ${Math.round(bytes / (1024 * 1024))} Mo depassent la taille maximale d'un objet. ` +
+        "Le .wav reste sur cette machine et n'est pas supprime.",
+    );
+    return true;
+  }
+
   private async dropLocal(id: string, why: string): Promise<void> {
     try {
       await fsp.rm(path.join(this.deps.pendingDir(), id + ".wav"), { force: true });
@@ -298,6 +355,7 @@ export class AudioUploadQueue {
           objectName: audioObjectName(uid, id),
           totalBytes: size,
         });
+        if (made.tooLarge) return this.refuseForSize(id, row, size);
         if (!made.ok) {
           this.deps.log?.(`[audio] ${made.error}`);
           return false;
@@ -341,6 +399,7 @@ export class AudioUploadQueue {
             this.deps.writeRow({ ...row, audioUploadUrl: "", audioUploadExpires: "", audioUploaded: 0 });
             return false;
           }
+          if (res.tooLarge) return this.refuseForSize(id, row, total);
           if (!res.ok) {
             this.deps.log?.(`[audio] ${res.error}`);
             // L'offset confirme est garde dans la ligne : la reprise ne

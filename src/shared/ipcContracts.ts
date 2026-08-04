@@ -419,6 +419,16 @@ export interface UiStatePayload {
   /** Ce qui n'est pas encore monte dans le compte, toutes files confondues. Pour
    * le DIRE, jamais pour l'attendre. */
   unsent: number;
+  /** Les reunions dont l'audio a ete REFUSE par le compte a cause de sa taille.
+   *
+   * Une liste d'identifiants et pas un compteur, parce que la page Notes doit
+   * savoir de QUELLE reunion il s'agit : sans ca, elle continuerait d'offrir
+   * « Download audio (101 MB) » pour un objet qui n'existe pas - c'est le defaut
+   * que ce champ existe pour fermer (2026-08-04, trouve dans le journal de Roch).
+   *
+   * Elle est courte par nature : il faut une reunion de plus de 27 minutes pour y
+   * entrer, et l'audio reste sur le disque de la machine qui l'a enregistree. */
+  audioRefusedForSize: string[];
   /** F1: what the SECOND (batch) engine is doing. Four scalars at most, derived
    * fresh in main from the live settings and the live process, so it rides the
    * 1 Hz push like modelState above rather than being pulled: Settings > Engine

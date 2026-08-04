@@ -31,27 +31,54 @@ import iconUrl from "../assets/icon.png";
 // par-dessus l'epaule.
 // ---------------------------------------------------------------------------
 
-export function SignInForm({ onDone }: { onDone?: () => void }) {
+export function SignInForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  const [signedIn, setSignedIn] = useState(false);
   const [error, setError] = useState("");
 
   async function signIn(ev: React.FormEvent) {
     ev.preventDefault();
-    if (busy) return;
+    if (busy || signedIn) return;
     setBusy(true);
     setError("");
+    let ok = false;
     try {
       const r = await window.flowui.signIn(email, password);
+      ok = r.ok;
       if (!r.ok) setError(r.error || "Could not sign in.");
-      else onDone?.();
     } finally {
       // Dans le `finally` : le mot de passe s'efface meme quand ca a rate.
       setPassword("");
-      setBusy(false);
+      // LE MOT DE PASSE QUI CLIGNOTE UNE SECONDE, ET POURQUOI CE N'EST PAS
+      // COSMETIQUE.
+      //
+      // Roch, le 2026-08-04 : « apres avoir clique sur Enter, il y a comme un
+      // mini bug graphique, le password disparait pendant comme une seconde,
+      // puis ca me logged in ».
+      //
+      // Ce qu'il voyait etait exact, et c'etait CE `finally` : la connexion
+      // reussit en ~200 ms, mais l'ecran ne disparait qu'une fois le compte
+      // charge (reglages + dictionnaire + reunions, une seconde de reseau).
+      // Entre les deux, le formulaire etait encore la, avec son champ de mot de
+      // passe vide et son bouton revenu a « Sign in » : donc exactement l'image
+      // d'une tentative qui vient d'echouer, juste avant d'entrer.
+      //
+      // La reparation N'EST PAS de garder le mot de passe a l'ecran - il doit
+      // partir, y compris quand ca rate, c'est la decision du bandeau ci-dessus.
+      // C'est de ne plus montrer un formulaire du tout des que la connexion est
+      // acquise : le succes remplace les champs par la ligne d'attente, ce qui
+      // se lit comme une PROGRESSION et non comme un retour a la case depart.
+      setSignedIn(ok);
+      if (!ok) setBusy(false);
     }
   }
+
+  // Le succes, avant que l'ecran entier disparaisse. Meme phrase que la branche
+  // « connecte, donnees pas encore la » de SignInScreen, parce que c'est le meme
+  // etat : la session existe, le compte n'est pas encore descendu.
+  if (signedIn) return <p className="gate-msg">Loading your account...</p>;
 
   // 2026-08-04, Roch : « rien d'ecrit ». Les deux phrases qui expliquaient sous
   // chaque champ qu'il n'y a pas d'inscription et que le mot de passe ne survit

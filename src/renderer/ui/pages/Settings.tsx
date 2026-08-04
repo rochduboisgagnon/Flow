@@ -3,28 +3,47 @@ import type { UiStatePayload } from "../../../shared/ipcContracts";
 import { Toggle, Row } from "../components";
 import { SignInForm } from "../SignIn";
 
-// Settings (wave U1 restyle): the eight tabs' LOGIC is transplanted verbatim
-// from the pre-split main.tsx - same window.flowui calls, same state shapes.
-// Only the markup moved to the mockup's .row .l/.c pattern, plus ONE new
-// control: Theme in General (the wave that ships the light theme).
+// Settings (wave U1 restyle): the tabs' LOGIC is transplanted verbatim from the
+// pre-split main.tsx - same window.flowui calls, same state shapes. Only the
+// markup moved to the mockup's .row .l/.c pattern.
+//
+// ---------------------------------------------------------------------------
+// NEUF ONGLETS SONT DEVENUS QUATRE (2026-08-04, demande de Roch)
+// ---------------------------------------------------------------------------
+//
+// « La section Dictation & Audio, enleve-les puis transfere-les dans General.
+// Puis la section Account, mais la aussi dans General. La section Local AI, je te
+// dirais de l'enlever. La section About, tu pourrais l'enlever ou la mettre
+// combinee avec Updates. Comme ca, ca va liberer un peu les settings. »
+//
+// AUCUN CONTROLE N'A DISPARU, et c'est la seule chose qui rendait ce
+// regroupement acceptable : chaque rangee des cinq onglets retires vit
+// maintenant dans un des quatre qui restent. Ou elle est allee, nommement :
+//
+//   Account     -> General, en TETE (rien ne fonctionne sans compte)
+//   Dictation   -> General
+//   Audio       -> General
+//   Local AI    -> Engine. C'est un MODELE qui se telecharge, donc il rejoint
+//                  l'onglet des modeles plutot que de mourir avec son onglet.
+//   About       -> Updates, renomme « Updates & About ». La rangee de version en
+//                  double a fusionne avec celle qui etait deja la ; le depot et
+//                  le journal sont intacts.
+//
+// Une seule collision a fallu trancher : « Microphone » etait le libelle de DEUX
+// rangees - le selecteur de peripherique (Audio) et l'etat de prechauffage
+// (Dictation). La seconde est devenue « Microphone readiness ».
 
-type SettingsTab =
-  | "account" | "general" | "dictation" | "audio" | "engine" | "localai"
-  | "storage" | "updates" | "about";
+type SettingsTab = "general" | "engine" | "storage" | "updates";
 
 type Patch = (p: Record<string, unknown>) => Promise<void>;
 
 export function SettingsPage({ s, patch }: { s: UiStatePayload; patch: Patch }) {
   const [tab, setTab] = useState<SettingsTab>("general");
   const tabs: Array<[SettingsTab, string]> = [
-    // A2 : Account en PREMIER, parce que rien d'autre ne fonctionne sans lui.
-    // Depuis la refonte, les reglages, le dictionnaire, les dictees et les
-    // reunions vivent dans le compte : un Flow deconnecte n'a pas de reglages
-    // a montrer dans les huit onglets suivants.
-    ["account", "Account"],
-    ["general", "General"], ["dictation", "Dictation"], ["audio", "Audio"],
-    ["engine", "Engine"], ["localai", "Local AI"], ["storage", "Storage & Privacy"],
-    ["updates", "Updates"], ["about", "About"],
+    ["general", "General"],
+    ["engine", "Engine"],
+    ["storage", "Storage & Privacy"],
+    ["updates", "Updates & About"],
   ];
   return (
     <>
@@ -37,15 +56,12 @@ export function SettingsPage({ s, patch }: { s: UiStatePayload; patch: Patch }) 
           </button>
         ))}
       </div>
-      {tab === "account" ? <TabAccount s={s} /> : null}
       {tab === "general" ? <TabGeneral s={s} patch={patch} /> : null}
-      {tab === "dictation" ? <TabDictation s={s} patch={patch} /> : null}
-      {tab === "audio" ? <TabAudio s={s} patch={patch} /> : null}
       {tab === "engine" ? <TabEngine s={s} patch={patch} /> : null}
-      {tab === "localai" ? <TabLocalAi s={s} patch={patch} /> : null}
-      {tab === "storage" ? <TabStorage s={s} patch={patch} /> : null}
+      {/* Storage ne PATCHE plus rien : la regle de nettoyage a 90 jours etait son
+          seul reglage, et elle est partie avec le dossier qu'elle nettoyait. */}
+      {tab === "storage" ? <TabStorage s={s} /> : null}
       {tab === "updates" ? <TabUpdates s={s} /> : null}
-      {tab === "about" ? <TabAbout s={s} /> : null}
     </>
   );
 }
@@ -67,7 +83,7 @@ export function SettingsPage({ s, patch }: { s: UiStatePayload; patch: Patch }) 
 // echoue. Un mot de passe qui reste dans un champ est un mot de passe visible
 // par-dessus l'epaule, et lisible par les outils de developpement.
 // ---------------------------------------------------------------------------
-function TabAccount({ s }: { s: UiStatePayload }) {
+function AccountRows({ s }: { s: UiStatePayload }) {
   const a = s.account;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -96,7 +112,7 @@ function TabAccount({ s }: { s: UiStatePayload }) {
     // ci-dessous n'apparaissent que quand elles disent quelque chose de vrai a cet
     // instant, et leur absence est l'etat normal.
     return (
-      <div className="rows">
+      <>
         <Row label="Signed in as" help="">
           <span className="pinned">{a.email}</span>
         </Row>
@@ -116,7 +132,7 @@ function TabAccount({ s }: { s: UiStatePayload }) {
           </button>
         </Row>
         {error ? <p className="sub">{error}</p> : null}
-      </div>
+      </>
     );
   }
 
@@ -126,11 +142,36 @@ function TabAccount({ s }: { s: UiStatePayload }) {
   return <SignInForm />;
 }
 
+/**
+ * L'ONGLET QUI PORTE TOUT CE QU'ON REGLE VRAIMENT.
+ *
+ * L'ORDRE DES QUATRE BLOCS N'EST PAS L'ORDRE DES ANCIENS ONGLETS. Il va du plus
+ * structurel au plus fin :
+ *
+ *  1. LE COMPTE, en tete, parce que rien d'autre dans cette page ne fonctionne
+ *     sans lui - les reglages eux-memes vivent dedans depuis la refonte.
+ *  2. L'APPLICATION : theme, demarrage, comportement de la fenetre.
+ *  3. LA DICTEE : le raccourci et ce qui arrive au texte.
+ *  4. LE MICRO : quel appareil, et ce que Flow en fait.
+ *
+ * Il n'y a volontairement PAS de sous-titres de section. Une page de reglages qui
+ * s'organise en quatre paves titres redemande de lire une table des matieres pour
+ * trouver un interrupteur ; les rangees sont deja etiquetees, et le regroupement
+ * se voit dans l'ordre.
+ */
 function TabGeneral({ s, patch }: { s: UiStatePayload; patch: Patch }) {
   const [login, setLogin] = useState<boolean | null>(null);
+  const [rec, setRec] = useState(false);
+  const [mics, setMics] = useState<Array<{ id: string; label: string }> | null>(null);
   useEffect(() => { void window.flowui.getLoginItem().then(setLogin); }, []);
+  useEffect(() => { void window.flowui.listMics().then(setMics); }, []);
+  async function record() {
+    setRec(true);
+    try { await window.flowui.recordShortcut(); } finally { setRec(false); }
+  }
   return (
     <div className="rows">
+      <AccountRows s={s} />
       <Row label="Theme" help="System follows Windows. The dictation pill stays dark in both themes: it floats over other apps, not over Flow.">
         <select value={s.settings.theme} onChange={(e) => void patch({ theme: e.target.value })} aria-label="Theme">
           <option value="system">System</option>
@@ -146,19 +187,6 @@ function TabGeneral({ s, patch }: { s: UiStatePayload; patch: Patch }) {
       <Row label="Window behavior" help="Closing this window hides it. Flow keeps running in the notification area; quit from the tray menu.">
         <span />
       </Row>
-    </div>
-  );
-}
-
-
-function TabDictation({ s, patch }: { s: UiStatePayload; patch: Patch }) {
-  const [rec, setRec] = useState(false);
-  async function record() {
-    setRec(true);
-    try { await window.flowui.recordShortcut(); } finally { setRec(false); }
-  }
-  return (
-    <div className="rows">
       <Row label="Shortcut" help="Hold to talk; release to insert. While recording a new one, every key is captured - press your combo, Esc cancels, Backspace clears.">
         <span className="kbd">{s.comboLabel}</span>
         <button className="btn" disabled={rec} onClick={() => void record()}>{rec ? "Press your keys..." : "Change"}</button>
@@ -187,21 +215,15 @@ function TabDictation({ s, patch }: { s: UiStatePayload; patch: Patch }) {
           What is left is the middle option, which was always the right one. The
           row stays so that someone who used to set this finds the answer where
           the control was, rather than wondering what happened to their choice. */}
+      {/* 2026-08-04 : renommee. Elle s'appelait « Microphone », comme le
+          selecteur de peripherique juste en dessous - deux rangees du meme nom
+          dans le meme onglet, dont une qui ne se regle pas. */}
       <Row
-        label="Microphone"
+        label="Microphone readiness"
         help="Stays ready a few seconds after each dictation so your first word is never clipped. Windows shows its microphone indicator meanwhile. Nothing reaches the disk, the buffer is erased after use, and locking the session releases it."
       >
         <span className="pinned">Always ready &#183; nothing to configure</span>
       </Row>
-    </div>
-  );
-}
-
-function TabAudio({ s, patch }: { s: UiStatePayload; patch: Patch }) {
-  const [mics, setMics] = useState<Array<{ id: string; label: string }> | null>(null);
-  useEffect(() => { void window.flowui.listMics().then(setMics); }, []);
-  return (
-    <div className="rows">
       <Row label="Microphone" help="Which microphone dictation and recordings use. If your pick is unplugged, Flow falls back to the system default.">
         {mics === null ? <span className="sub" style={{ margin: 0 }}>Looking for microphones...</span> : (
           <select value={s.settings.micDeviceId} onChange={(e) => void patch({ micDeviceId: e.target.value })} aria-label="Microphone">
@@ -305,31 +327,15 @@ function TabEngine({ s, patch }: { s: UiStatePayload; patch: Patch }) {
       <Row label="Force CPU" help="Skip the GPU (Vulkan) backend entirely. Applies right away (the engine reloads). Slower, but an escape hatch for capricious GPU drivers.">
         <Toggle label="Force CPU" on={s.settings.forceCpu} onChange={(v) => void patch({ forceCpu: v })} />
       </Row>
-    </div>
-  );
-}
+      {/* 2026-08-04 : cette rangee arrive de l'onglet « Local AI », supprime a la
+          demande de Roch. Elle est ici et pas ailleurs parce que c'est un MODELE
+          qui se telecharge, comme celui du dessus : l'onglet des modeles est
+          l'endroit ou quelqu'un qui cherche « pourquoi je n'ai pas de notes » va
+          regarder.
 
-// U8: the wording of the most intrusive switch in Flow, written to the same rule
-// as PREWARM_HELP above - the COST comes before the benefit, because a privacy
-// trade the user cannot read is a privacy trade they did not make. Three things
-
-function TabLocalAi({ s }: { s: UiStatePayload; patch: Patch }) {
-  const nm = s.notesModel;
-
-  return (
-    <div className="rows">
-      {/* D : le selecteur de fournisseur a disparu, et avec lui la pastille
-          « vos transcripts partent chez X », le tableau found/answered et les
-          boutons Test et Re-scan. Il n'y a plus qu'un lieu d'execution et il
-          est sur cette machine : un choix a une seule option n'est pas un
-          choix, c'est une rangee qui occupe l'ecran.
-
-          D1 : et le selecteur de modele Ollama a suivi. Il demandait a
-          l'utilisateur de choisir parmi ce qu'il avait installe LUI-MEME, ce
-          qui, sur la machine de quelqu'un qui vient de telecharger Flow, est
-          une liste vide et un choix impossible. Flow apporte maintenant son
-          propre modele ; le seul geste qui reste est de le faire venir, et
-          c'est un bouton, pas un reglage.
+          D : le selecteur de fournisseur a disparu bien avant, et avec lui la
+          pastille « vos transcripts partent chez X ». Il n'y a plus qu'un lieu
+          d'execution et il est sur cette machine.
 
           POURQUOI UN BOUTON ET PAS UN TELECHARGEMENT AUTOMATIQUE : 1,9 Go.
           Personne ne devrait decouvrir apres coup qu'une application a pris ca
@@ -338,51 +344,99 @@ function TabLocalAi({ s }: { s: UiStatePayload; patch: Patch }) {
         label="Meeting notes model"
         help="Speech is always transcribed on this machine, by Flow's own engine. This second model writes the meeting NOTES from that transcript, and it runs here too - nothing is sent anywhere. It is optional: without it, a recording still produces its full timestamped transcript, just no notes."
       >
-        {nm.status === "ready" ? (
+        {s.notesModel.status === "ready" ? (
           <span className="sub" style={{ margin: 0 }}>Installed. Notes are written on this machine.</span>
-        ) : nm.status === "downloading" ? (
-          <span className="sub" style={{ margin: 0 }}>Downloading... {nm.pct ?? 0}%</span>
+        ) : s.notesModel.status === "downloading" ? (
+          <span className="sub" style={{ margin: 0 }}>Downloading... {s.notesModel.pct ?? 0}%</span>
         ) : (
           <button type="button" onClick={() => void window.flowui.downloadNotesModel()}>
             Download (1.9 GB)
           </button>
         )}
       </Row>
-      {nm.status === "error" && (
+      {s.notesModel.status === "error" ? (
         // Dit, pas avale : le cas le plus probable est une coupure reseau au
         // milieu de 1,9 Go, et l'utilisateur doit pouvoir reappuyer en sachant
         // pourquoi le premier essai n'a pas abouti.
-        <p className="sub">Download failed: {nm.message}</p>
-      )}
+        <p className="sub">Download failed: {s.notesModel.message}</p>
+      ) : null}
     </div>
   );
 }
 
-// B3d : LE DOSSIER D'ENREGISTREMENTS N'EXISTE PLUS.
-//
-// Cet onglet montrait un chemin, un bouton « Ouvrir », et une regle de nettoyage
-// a 90 jours. Les trois decrivaient un dossier que Flow remplissait. Les reunions
-// vivent maintenant dans le compte, donc :
-//
-//  - il n'y a plus de chemin a montrer, ni de nettoyage a suspendre ou a
-//    reprendre. Un bouton « Reprendre le nettoyage a 90 jours » qui ne nettoie
-//    plus rien serait pire que pas de bouton : ce serait une interface qui ment.
-//  - il reste le dossier de CEUX D'AVANT, et il compte plus qu'avant : c'est le
-//    seul endroit ou sont les reunions enregistrees par une version precedente.
-//    Il est donc montre, avec son chemin, et rien n'y est jamais touche.
-function TabStorage({ s }: { s: UiStatePayload; patch: Patch }) {
+
+/**
+ * OU VIVENT LES DONNEES. Quatre rangees, dont deux conditionnelles.
+ *
+ * Roch, le 2026-08-04 : « la section Storage & Privacy, tu pourrais l'ameliorer
+ * juste pour dire que tout est stocke dans le cloud. That's it, garde ca
+ * simple. »
+ *
+ * C'est fait, avec UNE reserve qui n'est pas une desobeissance : « tout est dans
+ * le cloud » n'est pas exact, et cette page est la seule qui puisse le corriger.
+ * Deux choses restent sur la machine :
+ *
+ *  - l'historique des DICTEES (le texte, un mois, liste sur Home) ;
+ *  - un .wav en transit, le temps qu'il monte - et pour toujours quand le compte
+ *    l'a refuse pour sa taille (vu en vrai le 2026-08-04).
+ *
+ * Une page « vie privee » qui aurait dit « tout est dans le cloud » aurait donc
+ * ete rassurante et fausse, exactement comme le « rien de ce que vous dictez
+ * n'est conserve » que cette meme page a deja du corriger une fois. Les deux
+ * exceptions tiennent en une phrase chacune, ce qui reste simple.
+ *
+ * B3d : et il n'y a plus de chemin de dossier d'enregistrements, ni de regle de
+ * nettoyage a 90 jours. Un bouton « Reprendre le nettoyage » qui ne nettoie plus
+ * rien serait une interface qui ment.
+ */
+function TabStorage({ s }: { s: UiStatePayload }) {
   const legacy = s.legacyHistory;
   return (
     <div className="rows">
       <Row
-        label="Where your meetings live"
-        help="In your Flow account, not on this computer. Open the Notes page to browse them; they follow you to any machine you sign in on."
+        label="Everything is in your account"
+        help="Your settings, your dictionary, your meetings and their audio live in your Flow account, not on this computer. Sign in on another machine and they follow you. Nothing is kept here to be lost with the disk."
       >
         <span className="mono">{s.account?.email || "your account"}</span>
       </Row>
+      <Row
+        label="What stays on this computer"
+        help="Two things, both on purpose: a rolling month of DICTATION text (listed on Home, erasable there - its audio is never written anywhere), and a recording's audio file for as long as it takes to upload."
+      >
+        <span />
+      </Row>
+      {/* 2026-08-04 : LA SEULE CAPACITE QUE LA SUPPRESSION DE DIAGNOSTICS AURAIT
+          FAIT PERDRE. Ce bouton etait la-bas ; il ouvre le dossier ou vivent le
+          journal, la session et les .wav en transit. Il est ici parce que c'est
+          l'onglet qui parle de ce qui reste sur la machine, et parce que
+          l'auto-diagnostic y renvoie nommement quand il ne trouve pas un
+          dossier (voir shared/selfCheck.ts). */}
+      <Row
+        label="Flow's folder on this computer"
+        help="Holds the engine log, your session, and an audio file only while it is on its way up. Nothing you dictate is kept here."
+      >
+        <button className="btn" onClick={() => void window.flowui.openPath("data")}>
+          Open Flow&apos;s folder
+        </button>
+      </Row>
+      {/* Montre UNIQUEMENT quand il y a vraiment un fichier en attente. Un compte
+          qui refuse un audio pour sa taille laisse le .wav ici, et c'est alors la
+          seule copie qui existe : le dire est le minimum. */}
+      {s.audioRefusedForSize.length > 0 ? (
+        <Row
+          label="Audio your account refused"
+          help="One or more recordings were too large for your account's per-file limit, so their audio could not be uploaded. Nothing was deleted: the files are still on this computer. Open a recording in Notes to see which one."
+        >
+          <span className="num">{s.audioRefusedForSize.length}</span>
+          <button className="btn" onClick={() => void window.flowui.openPath("pending-audio")}>
+            Open the folder
+          </button>
+        </Row>
+      ) : null}
       {/* Montre UNIQUEMENT quand un dossier porte encore des enregistrements
-          d'avant. Les faire disparaitre de l'ecran sans un mot ferait croire
-          qu'ils ont ete supprimes, alors qu'ils sont intacts sur le disque. */}
+          d'avant la refonte. Les faire disparaitre de l'ecran sans un mot ferait
+          croire qu'ils ont ete supprimes, alors qu'ils sont intacts sur le
+          disque. */}
       {legacy ? (
         <Row
           label="Recordings made before this update"
@@ -398,23 +452,6 @@ function TabStorage({ s }: { s: UiStatePayload; patch: Patch }) {
           ) : null}
         </Row>
       ) : null}
-      {/* Review U6/U7 (major): this row claimed there was "nothing to purge" on
-          the ONE screen whose subject is retention - while two waves had since
-          added files that do persist. Nothing of what is DICTATED is kept, and
-          that part was and stays true; what is kept is counters and settings,
-          and a screen about retention has to name them. */}
-      {/* 2026-07-30: this row said "none of what you dictate is kept", which
-          stopped being true the moment the history landed. Corrected here at
-          the same time as the README and the module note - the third place in
-          this campaign where a code change quietly falsified a written promise,
-          and the reason the rule is now to grep for the promise before shipping
-          the change. */}
-      <Row label="Dictation retention" help="Text kept a month and listed on Home, erasable there. The audio is never written anywhere. Nothing leaves this machine.">
-        <span />
-      </Row>
-      <Row label="What Flow does keep" help="Your settings, your dictionary, your long recordings, a month of dictations, and word counters. Everything else is dropped.">
-        <span />
-      </Row>
     </div>
   );
 }
@@ -432,7 +469,15 @@ function TabUpdates({ s }: { s: UiStatePayload }) {
   }
   return (
     <div className="rows">
-      <Row label="Current version" help="Flow updates itself from GitHub Releases. Updates never install while you are dictating or recording.">
+      {/* 2026-08-04 : l'onglet About a fondu ici, a la demande de Roch. Sa
+          rangee « Flow » portait le MEME numero de version que celle-ci ; garder
+          les deux aurait affiche deux fois le meme fait dans un onglet cense en
+          liberer. Ce qu'elle disait en plus - l'auteur et la licence - a rejoint
+          cette aide. */}
+      <Row
+        label="Flow"
+        help="Local, on-device voice transcription by AGR Labs, MIT license. Flow updates itself from GitHub Releases, and never installs an update while you are dictating or recording."
+      >
         <b className="num" style={{ fontSize: 16.2 }}>{s.version}</b>
       </Row>
       {/* 2026-07-30: the row used to show ONE sentence from the last click and
@@ -447,6 +492,15 @@ function TabUpdates({ s }: { s: UiStatePayload }) {
       {s.update.phase === "downloading" ? (
         <div className="progress" style={{ marginTop: -6 }}><div style={{ width: `${s.update.pct}%` }} /></div>
       ) : null}
+      {/* Les deux rangees de l'onglet About qui faisaient VRAIMENT quelque
+          chose : elles ouvrent chacune une chose reelle, et il n'y avait aucune
+          raison de les perdre en supprimant l'onglet. */}
+      <Row label="Source code" help="github.com/rochduboisgagnon/Flow">
+        <button className="btn" onClick={() => void window.flowui.openPath("repo")}>Open on GitHub</button>
+      </Row>
+      <Row label="Engine log" help="The rotating diagnostic log. Nothing you dictate is ever written to it.">
+        <button className="btn" onClick={() => void window.flowui.openPath("log")}>Open log</button>
+      </Row>
     </div>
   );
 }
@@ -465,18 +519,4 @@ function updateHelp(s: UiStatePayload, msg: string | null): string {
   }
 }
 
-function TabAbout({ s }: { s: UiStatePayload }) {
-  return (
-    <div className="rows">
-      <Row label="Flow" help="Local, on-device voice transcription. By AGR Labs. MIT license.">
-        <b className="num" style={{ fontSize: 16.2 }}>{s.version}</b>
-      </Row>
-      <Row label="Source code" help="github.com/rochduboisgagnon/Flow">
-        <button className="btn" onClick={() => void window.flowui.openPath("repo")}>Open on GitHub</button>
-      </Row>
-      <Row label="Engine log" help="The rotating diagnostic log. Nothing you dictate is ever written to it.">
-        <button className="btn" onClick={() => void window.flowui.openPath("log")}>Open log</button>
-      </Row>
-    </div>
-  );
-}
+

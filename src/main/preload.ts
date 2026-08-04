@@ -209,7 +209,9 @@ const ui = {
   signIn: (email: string, password: string): Promise<SignInResult> =>
     ipcRenderer.invoke(UI_SIGN_IN, email, password),
   signOut: (): Promise<{ ok: boolean; error: string }> => ipcRenderer.invoke(UI_SIGN_OUT),
-  openPath: (which: "log" | "data" | "history" | "legacy-history" | "repo" | "downloaded-file"): Promise<void> =>
+  openPath: (
+    which: "log" | "data" | "history" | "legacy-history" | "pending-audio" | "repo" | "downloaded-file",
+  ): Promise<void> =>
     ipcRenderer.invoke(UI_OPEN_PATH, which),
   getLoginItem: (): Promise<boolean> => ipcRenderer.invoke(UI_GET_LOGIN_ITEM),
   setLoginItem: (on: boolean): Promise<boolean> => ipcRenderer.invoke(UI_SET_LOGIN_ITEM, on),

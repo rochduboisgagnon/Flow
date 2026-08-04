@@ -80,7 +80,15 @@ export const SETTINGS_DEFAULTS: FlowSettings = {
   // an upgrade lands on.
   batchModel: BATCH_MODEL_SHARED,
   micDeviceId: "",
-  sounds: false, // v5 c5: no audible cues at all
+  // 2026-08-04, Roch : « les settings pour le start/stop sound, j'aimerais ca
+  // qu'il soit enabled par defaut ». Le defaut etait `false` depuis la v5 (« no
+  // audible cues at all »), et ce raisonnement tenait quand le son etait la seule
+  // reponse a une pression : il valait mieux se taire que japper. Aujourd'hui la
+  // pastille dit deja ce qui se passe a l'ecran, et le son repond a la question
+  // qu'elle ne peut pas atteindre - « est-ce que ca ecoute » quand on regarde
+  // ailleurs, c'est-a-dire tout le temps, puisqu'on dicte dans une AUTRE
+  // application. Il est synthetise sur la machine et se coupe en un clic.
+  sounds: true,
   summaryModel: "", // "" = the first installed Ollama model
   // P5: the default is the machine. It is never a remote provider, not even
   // when one is installed and the local one is not.

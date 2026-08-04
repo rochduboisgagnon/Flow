@@ -534,6 +534,7 @@ if (!app.requestSingleInstanceLock()) {
           const info = legacyHistoryForUi();
           return info && info.exists ? info.dir : null;
         },
+        pendingAudioDir: () => pendingAudioDir,
         log: flowLog,
         logPath: () => path.join(dataDir(), "flow.log"),
         dataDirPath: () => dataDir(),
@@ -699,6 +700,10 @@ function getUiState(): UiStatePayload {
     // le DIRE : une reunion en cours hors ligne est en securite, mais quelqu'un
     // doit pouvoir le savoir plutot que de l'esperer.
     unsent: workingCopy.pending() + audioUploads.pending(),
+    // Et ce qui ne montera JAMAIS tel quel : un .wav plus gros que la taille
+    // maximale d'un objet du compte. La page Notes s'en sert pour dire ou est
+    // l'audio au lieu d'offrir un telechargement qui rendrait 404.
+    audioRefusedForSize: audioUploads.refusedForSize(),
     // F1: derived on every snapshot from the live settings AND the live process,
     // never remembered here - the Settings row that reads it must not be able to
     // outlive the fact it describes.
@@ -1613,7 +1618,14 @@ const redactor = new Redactor({
   readRecording: async (id) => {
     const row = await captureStore.read(id);
     if (!row) return null;
-    return { doc: row.doc, audioObject: row.audioPath, audioBytes: row.audioBytes };
+    return {
+      doc: row.doc,
+      audioObject: row.audioPath,
+      audioBytes: row.audioBytes,
+      // Ce que Storage a CONFIRME. Voir redact.ts : c'est ce nombre, et non le
+      // chemin, qui dit s'il y a un objet a nettoyer.
+      audioUploaded: row.audioUploaded,
+    };
   },
   // Mise en file, jamais attendue jusqu'a Supabase : voir RedactDeps.writeDoc sur
   // pourquoi l'ordre du bandeau de redact.ts tient quand meme.

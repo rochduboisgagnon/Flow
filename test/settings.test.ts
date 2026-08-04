@@ -62,11 +62,15 @@ test("insertMode and summaryModel: valid values kept, junk falls back to default
   assert.equal(SETTINGS_DEFAULTS.summaryModel, "");
 });
 
-test("defaults are Ctrl+Win, large-v3-turbo, French forced, no sounds (v5)", () => {
+test("defaults are Ctrl+Win, large-v3-turbo, French forced, and the press is audible", () => {
   assert.deepEqual(SETTINGS_DEFAULTS.combo, ["CTRL", "WIN"]);
   assert.match(SETTINGS_DEFAULTS.model, /^ggml-large-v3-turbo/);
   assert.equal(SETTINGS_DEFAULTS.language, "fr");
-  assert.equal(SETTINGS_DEFAULTS.sounds, false);
+  // 2026-08-04, a la demande de Roch. Le raisonnement du renversement est ecrit
+  // au-dessus du defaut lui-meme (main/settings.ts) : on dicte dans une AUTRE
+  // application, donc la pastille est hors du champ de vision et le son est la
+  // seule confirmation qui arrive quand on regarde ailleurs.
+  assert.equal(SETTINGS_DEFAULTS.sounds, true);
 });
 
 test("theme: valid preferences kept, junk falls back to the default (U0/U1)", () => {
