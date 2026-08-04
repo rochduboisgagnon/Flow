@@ -191,17 +191,43 @@ jobs:
       # gh release create publishes a NON-DRAFT release in one step (a draft
       # would be invisible to electron-updater - review A10). Exactly the four
       # asset kinds electron-builder would have uploaded itself.
+      #
+      # 2026-08-04 : ET IL SAIT REPRENDRE UNE RELEASE QUI EXISTE DEJA.
+      #
+      # `gh release create` echoue avec « a release with the same tag name
+      # already exists ». Cette etape etait donc a UN incident de devenir
+      # definitivement rouge : une relance apres un test instable, un `npm ci`
+      # qui tombe, ou n'importe quel echec de la moitie precedente du workflow
+      # mourait ici pour toujours - et la seule facon de s'en sortir etait de
+      # publier a la main, ce qui prive les binaires de l'attestation de
+      # provenance que ce workflow existe pour signer.
+      #
+      # Les releases 2.0.0 et 2.0.1 en ont fait la demonstration : publiees a la
+      # main par-dessus ce workflow, elles ont laisse cette etape rouge, et
+      # `gh attestation verify` rendait 404 sur leur installeur.
+      #
+      # `--clobber` remplace les fichiers de meme nom, donc une relance rend la
+      # release IDENTIQUE a ce qu'un premier passage aurait produit plutot que
+      # d'y empiler des doublons.
       - name: Publish the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "Flow $GITHUB_REF_NAME" \
-            --generate-notes \
-            dist-build/Flow*Setup*.exe \
-            dist-build/*.blockmap \
-            dist-build/Flow-*-win.zip \
+          ASSETS=(
+            dist-build/Flow*Setup*.exe
+            dist-build/*.blockmap
+            dist-build/Flow-*-win.zip
             dist-build/latest.yml
+          )
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "la release existe deja : on remplace ses fichiers au lieu d'echouer"
+            gh release upload "$GITHUB_REF_NAME" --clobber "${ASSETS[@]}"
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "Flow $GITHUB_REF_NAME" \
+              --generate-notes \
+              "${ASSETS[@]}"
+          fi
 
       # Review A10: the release existing is not the same as the UPDATER seeing
       # it. This asserts what a user's machine will actually fetch: the feed
