@@ -1,19 +1,51 @@
 {
   "appId": "ca.agrlabs.agrflow",
   "productName": "Flow",
-  "directories": { "output": "dist-build" },
-  "files": ["dist/**", "package.json"],
-  "asarUnpack": ["node_modules/keyspy/runtime/**"],
+  "directories": {
+    "output": "dist-build"
+  },
+  "files": [
+    "dist/**",
+    "package.json"
+  ],
+  "asarUnpack": [
+    "node_modules/keyspy/runtime/**"
+  ],
   "extraResources": [
-    { "from": "resources/icon.png", "to": "icon.png" },
-    { "from": "resources/focus-probe.ps1", "to": "focus-probe.ps1" },
-    { "from": "resources/probe.wav", "to": "probe.wav" },
-    { "from": "resources/bin", "to": "bin", "filter": ["**/*"] }
+    {
+      "from": "resources/icon.png",
+      "to": "icon.png"
+    },
+    {
+      "from": "resources/focus-probe.ps1",
+      "to": "focus-probe.ps1"
+    },
+    {
+      "from": "resources/probe.wav",
+      "to": "probe.wav"
+    },
+    {
+      "from": "resources/bin",
+      "to": "bin",
+      "filter": [
+        "**/*"
+      ]
+    }
   ],
   "win": {
     "target": [
-      { "target": "nsis", "arch": ["x64"] },
-      { "target": "zip", "arch": ["x64"] }
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      },
+      {
+        "target": "zip",
+        "arch": [
+          "x64"
+        ]
+      }
     ],
     "icon": "resources/icon.png"
   },
@@ -23,5 +55,38 @@
     "deleteAppDataOnUninstall": false,
     "artifactName": "Flow-Setup-${version}.${ext}"
   },
-  "publish": [{ "provider": "github", "owner": "rochduboisgagnon", "repo": "Flow", "releaseType": "release" }]
+  "publish": [
+    {
+      "provider": "github",
+      "owner": "rochduboisgagnon",
+      "repo": "Flow",
+      "releaseType": "release"
+    }
+  ],
+  "mac": {
+    "target": [
+      {
+        "target": "dmg",
+        "arch": [
+          "arm64"
+        ]
+      },
+      {
+        "target": "zip",
+        "arch": [
+          "arm64"
+        ]
+      }
+    ],
+    "icon": "resources/icon.png",
+    "category": "public.app-category.productivity",
+    "entitlementsInherit": "build/entitlements.mac.plist",
+    "entitlements": "build/entitlements.mac.plist",
+    "artifactName": "Flow-${version}-mac-${arch}.${ext}",
+    "identity": null,
+    "extendInfo": {
+      "NSMicrophoneUsageDescription": "Flow transcribes what you dictate, on this machine. The audio of a dictation is never written anywhere.",
+      "NSSpeechRecognitionUsageDescription": "Flow uses its own local speech engine and never sends audio anywhere."
+    }
+  }
 }

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- 2026-08-04, portage macOS. Le strict minimum, et chaque droit a une raison.
+
+       Flow n'est PAS en bac a sable (app-sandbox absent) : un crochet clavier
+       global et un serveur de parole lance en sous-processus sont incompatibles
+       avec le bac a sable, et un droit qu'on demanderait sans pouvoir s'en servir
+       serait une demande de plus a l'utilisateur pour rien. -->
+
+  <!-- Le microphone : c'est ce que Flow fait. -->
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+
+  <!-- Les deux moteurs sont des binaires tiers non signes par nous, charges avec
+       leurs propres bibliotheques. Sans ces deux droits, une signature ad-hoc les
+       empeche de se lancer, et Flow n'aurait ni transcript ni notes. -->
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>

@@ -1,0 +1,135 @@
+name: macOS build (test)
+
+# ---------------------------------------------------------------------------
+# 2026-08-04, PORTAGE macOS : un build a la demande, pour Roch.
+#
+# CE WORKFLOW NE PUBLIE RIEN, et c'est le point. Il depose un artefact
+# telechargeable ; il ne touche ni aux releases, ni a `latest.yml`, ni au feed
+# d'auto-update que les installations Windows interrogent. Un build Mac non signe
+# publie sur ce feed ne s'installerait pas et casserait la mise a jour de Windows -
+# la release a deja ete cassee une fois cette semaine (publication locale par
+# `--publish always`), et la regle qui en est sortie est : jamais deux chemins de
+# publication.
+#
+# MANUEL (`workflow_dispatch`) plutot qu'a chaque tag : un runner macOS coute dix
+# fois un runner Linux en minutes, le depot est public donc c'est gratuit, mais
+# construire un paquet Mac a chaque commit Windows serait du bruit.
+#
+# ---------------------------------------------------------------------------
+# LA SIGNATURE EST AD-HOC, ET CE QUE CA COUTE EST DIT
+# ---------------------------------------------------------------------------
+#
+# Decision de Roch : « on n'a pas besoin du 99 $ pour dev ». Exact. `codesign
+# --sign -` est gratuit et suffit a ce qu'un binaire arm64 s'execute (Apple Silicon
+# refuse un binaire non signe, meme localement). electron-builder le fait de
+# lui-meme quand `mac.identity` vaut null.
+#
+# Trois consequences, ecrites ici pour qu'elles ne soient pas decouvertes :
+#
+#  1. Gatekeeper rale au premier lancement (« Apple ne peut pas verifier »). Clic
+#     droit sur l'app, puis Ouvrir, une fois.
+#  2. LES PERMISSIONS NE COLLENT PAS. macOS attache l'autorisation Accessibilite a
+#     la signature ; en ad-hoc elle change a chaque build, donc elle doit etre
+#     redonnee a chaque version. C'est la surprise la plus probable.
+#  3. Pas d'auto-update : Squirrel.Mac exige une vraie signature Developer ID.
+# ---------------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      note:
+        description: "Ce que ce build est cense verifier (apparait dans le resume)"
+        required: false
+        default: "portage macOS"
+
+jobs:
+  build:
+    # macos-14 est arm64, ce qui est l'architecture des assets epingles pour mac.
+    # Un runner Intel produirait un paquet x64 pour lequel aucun moteur n'est
+    # epingle, et la recuperation echouerait bruyamment - ce qui est le bon
+    # comportement, mais autant demander la bonne machine.
+    runs-on: macos-14
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+
+      # Les memes portes que la CI de Windows, dans le meme ordre. Un portage qui
+      # se construirait sans passer les tests ne serait pas un portage.
+      - run: npm run lint
+      - run: npm test
+      - run: npm run typecheck
+
+      # Les moteurs, choisis par plateforme depuis le manifeste d'empreintes.
+      # `GH_TOKEN` pour la meme raison que sur Windows : les runners partagent
+      # leurs adresses et le quota anonyme de l'API GitHub est de 60 appels a
+      # l'heure pour tout le monde.
+      - name: Fetch the engine binaries (macOS arm64)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node scripts/fetch-whisper.cjs
+          node scripts/fetch-llama.cjs
+          ls -la resources/bin
+
+      # Le serveur de touches de macOS est deja dans le paquet npm de keyspy
+      # (runtime/MacKeyServer, a cote de WinKeyServer.exe), donc rien a telecharger.
+      # Verifie quand meme : sans lui, l'app se lance et le raccourci ne repond
+      # jamais - exactement la panne silencieuse que ce depot chasse.
+      - name: Ensure the macOS key server is present (hard gate)
+        run: |
+          test -f node_modules/keyspy/runtime/MacKeyServer || {
+            echo "MISSING MacKeyServer (no dictation shortcut)"; exit 1; }
+          chmod +x node_modules/keyspy/runtime/MacKeyServer
+          ls -la node_modules/keyspy/runtime
+
+      - run: npm run build
+
+      - name: Build the macOS app (ad-hoc signed)
+        run: npx electron-builder --mac --publish never
+
+      # Le zip est la verite de ce qui va etre installe. Un paquet sans moteur
+      # passe toutes les portes ci-dessus SAUF celle-la.
+      - name: Inspect the artifact BEFORE handing it over
+        run: |
+          APP="dist-build/mac-arm64/Flow.app"
+          test -d "$APP" || APP="dist-build/mac/Flow.app"
+          test -d "$APP" || { echo "no Flow.app in dist-build"; ls -R dist-build | head -40; exit 1; }
+          BIN="$APP/Contents/Resources/bin"
+          test -f "$BIN/whisper-server-darwin-arm64" || { echo "MISSING whisper-server (no transcript)"; exit 1; }
+          test -f "$BIN/llama-server" || { echo "MISSING llama-server (no meeting notes)"; exit 1; }
+          ls "$APP/Contents/Resources" | head
+          # La signature ad-hoc doit etre LA : sans elle, macOS refuse de lancer un
+          # binaire arm64, et l'app est morte avant sa premiere fenetre.
+          codesign -dv "$APP" 2>&1 | head -5
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Flow-macOS-arm64
+          path: |
+            dist-build/*.dmg
+            dist-build/*-mac-*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: What to do with it
+        run: |
+          {
+            echo "### Flow pour macOS (arm64) : ${{ inputs.note }}"
+            echo ""
+            echo "1. Telecharger l'artefact **Flow-macOS-arm64**, ouvrir le .dmg, glisser Flow dans Applications."
+            echo "2. **Premier lancement** : clic droit sur Flow, puis *Ouvrir*. Gatekeeper rale une fois"
+            echo "   parce que le build est signe ad-hoc (pas de compte Apple Developer, choix assume)."
+            echo "3. macOS demandera la permission **Accessibilite** au nom de « Flow » : c'est le raccourci"
+            echo "   de dictee. Elle devra etre redonnee a chaque nouveau build, la signature ad-hoc changeant"
+            echo "   a chaque fois."
+            echo "4. Le raccourci par defaut sur Mac est **Fn + Shift**."
+            echo ""
+            echo "Ce qui NE fonctionne pas encore sur Mac, et l'application le dit elle-meme :"
+            echo "la capture du son du PC pendant une reunion (ScreenCaptureKit, en cours) et le silence"
+            echo "des autres applications pendant une dictee (macOS n'a pas d'API de volume par application)."
+          } >> "$GITHUB_STEP_SUMMARY"
