@@ -14,12 +14,29 @@ const REPO = "OpenWhispr/whisper.cpp";
 const OUT_DIR = path.join(__dirname, "..", "resources", "bin");
 // The exe inside each zip is already variant-named; we keep those names so the
 // runtime can choose. base = current cross-platform naming used by the sidecar.
-const VARIANTS = ["cpu", "vulkan"];
-const exeFor = (v) => path.join(OUT_DIR, `whisper-server-win32-x64-${v}.exe`);
+// 2026-08-04, PORTAGE macOS : les assets a prendre viennent du MANIFESTE
+// (native-deps.json), filtres par plateforme, et non d'une liste ecrite ici.
+//
+// C'est le point : le manifeste est ce qui porte les EMPREINTES. Deriver les noms
+// d'ailleurs rendrait possible de telecharger un asset non epingle, ce qui est
+// precisement le trou que le scan de securite du 2026-08-02 a ferme. Ici, un asset
+// qui n'est pas dans le manifeste n'est pas telechargeable du tout.
+//
+// macOS : UN seul binaire (Metal fait partie du systeme, donc rien a choisir).
+// Windows : deux constructions, Vulkan puis CPU, choisies a l'execution.
+const PLATFORM_TAG = process.platform === "darwin" ? "darwin" : "win32";
 
-if (process.platform !== "win32") {
-  console.log("[fetch-whisper] windows only for now");
-  process.exit(0);
+/** Les assets epingles pour CETTE plateforme, et le fichier attendu apres
+ * extraction (le nom de l'archive, sans son extension). */
+function assetsForPlatform(pinnedAssets) {
+  return Object.keys(pinnedAssets)
+    .filter((name) => name.includes(PLATFORM_TAG))
+    .map((asset) => ({
+      asset,
+      // whisper-server-darwin-arm64.zip -> whisper-server-darwin-arm64
+      // whisper-server-win32-x64-cpu.zip -> whisper-server-win32-x64-cpu.exe
+      binary: process.platform === "darwin" ? asset.replace(/\.zip$/, "") : asset.replace(/\.zip$/, ".exe"),
+    }));
 }
 
 // CI, 2026-07-27: the v1.3.0 release job died here on "API rate limit
@@ -75,9 +92,17 @@ function downloadTo(url, dest, redirects = 0) {
 }
 
 (async () => {
-  const missing = VARIANTS.filter((v) => process.env.WHISPER_FORCE || !fs.existsSync(exeFor(v)));
+  // Le manifeste d'abord : il decide QUELS assets existent, et c'est lui qui porte
+  // les empreintes. Lu avant tout appel reseau.
+  const pinnedAll = JSON.parse(fs.readFileSync(path.join(__dirname, "native-deps.json"), "utf8"));
+  const wanted = assetsForPlatform(pinnedAll.whisper.assets);
+  if (!wanted.length) {
+    console.error(`[fetch-whisper] aucun asset epingle pour ${PLATFORM_TAG} dans native-deps.json`);
+    process.exit(1);
+  }
+  const missing = wanted.filter((w) => process.env.WHISPER_FORCE || !fs.existsSync(path.join(OUT_DIR, w.binary)));
   if (!missing.length) {
-    console.log("[fetch-whisper] both builds already present:", OUT_DIR);
+    console.log(`[fetch-whisper] already present (${PLATFORM_TAG}):`, OUT_DIR);
     process.exit(0);
   }
   // 2026-08-02, security scan (HIGH): this used to fall through to /releases/latest
@@ -86,7 +111,7 @@ function downloadTo(url, dest, redirects = 0) {
   // unverified, and the provenance attestation signed the result as genuine.
   // The pinned version now comes from the committed manifest, and the env var is
   // an override for local experiments only.
-  const pinned = JSON.parse(fs.readFileSync(path.join(__dirname, "native-deps.json"), "utf8"));
+  const pinned = pinnedAll;
   const tagged = process.env.WHISPER_CPP_VERSION || pinned.whisper.version;
   const release = await getJson(
     tagged
@@ -94,9 +119,16 @@ function downloadTo(url, dest, redirects = 0) {
       : `https://api.github.com/repos/${REPO}/releases/latest`,
   );
   fs.mkdirSync(OUT_DIR, { recursive: true });
-  const sysTar = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe");
-  for (const variant of missing) {
-    const zip = `whisper-server-win32-x64-${variant}.zip`;
+  // Windows 10+ livre bsdtar dans System32, qui lit les zips. Le chemin ABSOLU
+  // compte : Git Bash met le tar GNU en premier, et lui ne lit ni les zips ni
+  // « C:\ ». Sur macOS, le tar du systeme lit les zips aussi, et il est dans le
+  // PATH sans piege.
+  const sysTar =
+    process.platform === "darwin"
+      ? "tar"
+      : path.join(process.env.SystemRoot || "C:\\Windows", "System32", "tar.exe");
+  for (const want of missing) {
+    const zip = want.asset;
     const asset = (release.assets || []).find((a) => a.name === zip);
     if (!asset) throw new Error(`asset ${zip} not found in ${REPO} ${release.tag_name}`);
     const zipPath = path.join(OUT_DIR, zip);
@@ -111,17 +143,19 @@ function downloadTo(url, dest, redirects = 0) {
     // matters: Git Bash puts GNU tar first, which reads neither zips nor "C:\".
     execSync(`"${sysTar}" -xf "${zip}"`, { stdio: "inherit", cwd: OUT_DIR });
     fs.unlinkSync(zipPath);
-    // The extracted exe is already `whisper-server-win32-x64-<variant>.exe`.
-    if (!fs.existsSync(exeFor(variant))) {
-      const found = fs
-        .readdirSync(OUT_DIR)
-        .find((f) => f.startsWith("whisper-server") && f.includes(variant) && f.endsWith(".exe"));
-      if (!found) throw new Error(`no ${variant} whisper-server exe after extraction`);
-      if (path.join(OUT_DIR, found) !== exeFor(variant)) fs.renameSync(path.join(OUT_DIR, found), exeFor(variant));
+    const out = path.join(OUT_DIR, want.binary);
+    if (!fs.existsSync(out)) {
+      const found = fs.readdirSync(OUT_DIR).find((f) => f.startsWith("whisper-server") && f.includes(PLATFORM_TAG));
+      if (!found) throw new Error(`no whisper-server binary after extracting ${zip}`);
+      if (path.join(OUT_DIR, found) !== out) fs.renameSync(path.join(OUT_DIR, found), out);
     }
-    console.log(`[fetch-whisper] ready: ${exeFor(variant)}`);
+    // Un zip ne porte pas toujours le bit d'execution, et un binaire non
+    // executable echoue au `spawn` avec EACCES - une panne qui ressemble a un
+    // fichier manquant. Sans effet sur Windows.
+    if (process.platform === "darwin") fs.chmodSync(out, 0o755);
+    console.log(`[fetch-whisper] ready: ${out}`);
   }
-  console.log(`[fetch-whisper] done (${release.tag_name}, variants: ${VARIANTS.join(", ")})`);
+  console.log(`[fetch-whisper] done (${release.tag_name}, ${PLATFORM_TAG})`);
 })().catch((e) => {
   console.error("[fetch-whisper] FAILED:", e.message);
   process.exit(1);
