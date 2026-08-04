@@ -39,6 +39,10 @@ import type { SupabaseStorage } from "./sessionStore";
  * qu'on discute. Une ligne de re-export coute moins cher que ce debat. */
 export type { SupabaseClient, Session } from "@supabase/supabase-js";
 
+/** La clef sous laquelle la session vit dans le magasin. Partagee entre le
+ * client (qui l'ecrit) et la restauration au demarrage (qui la relit). */
+export const SESSION_STORAGE_KEY = "flow-session";
+
 export interface FlowClientDeps {
   storage: SupabaseStorage;
   /** Injectable pour les tests, et pour pointer un projet de test. */
@@ -56,7 +60,11 @@ export function createFlowClient(deps: FlowClientDeps): SupabaseClient {
       // Une seule cle de stockage, nommee, plutot que celle derivee de l'URL du
       // projet : le jour ou le projet change, la session precedente doit etre
       // trouvee et remplacee, pas oubliee a cote sous un autre nom.
-      storageKey: "flow-session",
+      //
+      // 2026-08-04 : exportee, parce que la RESTAURATION de session la lit aussi
+      // (Auth.restore). Deux litteraux qui doivent coincider sont un defaut qui
+      // attend son jour.
+      storageKey: SESSION_STORAGE_KEY,
     },
     global: {
       headers: { "x-flow-client": "flow-desktop" },

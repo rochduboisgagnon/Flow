@@ -1,4 +1,4 @@
-import { snapshotOf, type SupabaseClient } from "./client";
+import { snapshotOf, SESSION_STORAGE_KEY, type SupabaseClient } from "./client";
 import type { SignInResult, AccountSnapshot } from "../../shared/ipcContracts";
 import type { SessionStore } from "./sessionStore";
 
@@ -43,8 +43,9 @@ import type { SessionStore } from "./sessionStore";
 export interface AuthDeps {
   client: SupabaseClient;
   /** Le magasin du jeton. `clear()` est appele a la deconnexion, en plus de
-   * celle du client : voir signOut. */
-  store: Pick<SessionStore, "clear">;
+   * celle du client ; `getItem` sert a la RESTAURATION au demarrage (voir
+   * restore). */
+  store: Pick<SessionStore, "clear" | "getItem">;
   log?(msg: string): void;
 }
 
@@ -94,6 +95,96 @@ export class Auth {
     this.deps.client.auth.onAuthStateChange((_event, session) => {
       cb(snapshotOf(session ?? null));
     });
+  }
+
+  /**
+   * REMETTRE LA SESSION EN PLACE AU DEMARRAGE.
+   *
+   * ---------------------------------------------------------------------------
+   * LE DEFAUT QUE CETTE METHODE FERME, ET IL DURAIT DEPUIS LE PREMIER JOUR
+   * ---------------------------------------------------------------------------
+   *
+   * Roch, le 2026-08-04 : « a chaque fois que j'eteins l'application, sur le Mac
+   * comme sur Windows, puis je la rallume, ca me demande de me reconnecter.
+   * J'aimerais ca qu'une fois connecte, tu restes connecte. »
+   *
+   * Son journal disait pourquoi, et la meme paire de lignes revenait a CHAQUE
+   * lancement :
+   *
+   *   [session] le trousseau du systeme ne repond pas encore : la session vit en
+   *             memoire pour l'instant.
+   *   [auth] connecte            <- lui, retapant son mot de passe
+   *
+   * LA CHAINE COMPLETE. Le client Supabase interroge son stockage des sa
+   * CONSTRUCTION, c'est-a-dire au chargement du module - bien avant
+   * `app.whenReady()`. Or `safeStorage` repond « indisponible » avant que
+   * l'application soit prete, sur Windows comme sur macOS. Le magasin rend donc
+   * `null`, le client conclut « personne n'est connecte », et l'ecran de connexion
+   * s'affiche.
+   *
+   * LE MAGASIN AVAIT DEJA ETE CORRIGE DEUX FOIS pour ce genre de piege - il ne
+   * met pas en cache un « non », et il ne se marque pas « charge » quand il n'a
+   * rien pu lire - precisement pour pouvoir repondre plus tard. Mais il n'y avait
+   * pas de plus tard : le client ne demande QU'UNE FOIS. La moitie manquante
+   * n'etait pas dans le magasin, elle etait dans l'absence de second appelant.
+   *
+   * ---------------------------------------------------------------------------
+   * POURQUOI `setSession` ET NON UN SIMPLE `getSession`
+   * ---------------------------------------------------------------------------
+   *
+   * `getSession` lit ce que le client detient en memoire, et il ne detient rien.
+   * `setSession` lui REMET les deux jetons, et c'est lui qui sait quoi faire du
+   * reste : si le jeton d'acces a expire - une heure - il le renouvelle avec le
+   * jeton de rafraichissement, emet le changement d'etat, et le nouveau couple est
+   * reecrit dans le magasin (le trousseau repond, a ce stade). Un lancement du
+   * lendemain repart donc d'un jeton perime sans que personne s'en occupe.
+   *
+   * NE LEVE JAMAIS. Hors ligne, le renouvellement echoue : la bonne reponse est un
+   * ecran de connexion, pas un plantage au demarrage. Et un jeton refuse - change
+   * de mot de passe, session revoquee - se traite pareil.
+   */
+  async restore(): Promise<{ restored: boolean; reason: string }> {
+    // Deja en place ? Rien a faire. Le cas d'un appel en double, et surtout celui
+    // d'une connexion manuelle qui aurait devance la restauration.
+    const live = await this.deps.client.auth.getSession();
+    if (live.data.session) return { restored: true, reason: "deja en place" };
+
+    const raw = this.deps.store.getItem(SESSION_STORAGE_KEY);
+    if (!raw) return { restored: false, reason: "aucune session enregistree" };
+
+    let access = "";
+    let refresh = "";
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        const o = parsed as Record<string, unknown>;
+        if (typeof o.access_token === "string") access = o.access_token;
+        if (typeof o.refresh_token === "string") refresh = o.refresh_token;
+      }
+    } catch {
+      // Un contenu illisible se traite comme une absence : la bonne reponse a « je
+      // n'arrive pas a te reconnaitre » est un ecran de connexion.
+      return { restored: false, reason: "session enregistree illisible" };
+    }
+    if (!access || !refresh) return { restored: false, reason: "session enregistree incomplete" };
+
+    try {
+      const { data, error } = await this.deps.client.auth.setSession({
+        access_token: access,
+        refresh_token: refresh,
+      });
+      if (error || !data.session) {
+        // JAMAIS le message brut dans le journal sans le filtre : `readable` existe
+        // pour ne recopier ni identifiant ni jeton.
+        this.deps.log?.(`[auth] la session enregistree n'a pas pu etre reprise : ${readable(error)}`);
+        return { restored: false, reason: readable(error) || "refusee" };
+      }
+      this.deps.log?.("[auth] session reprise du trousseau : pas besoin de se reconnecter");
+      return { restored: true, reason: "" };
+    } catch (err) {
+      this.deps.log?.(`[auth] la reprise de session a echoue : ${err}`);
+      return { restored: false, reason: "injoignable" };
+    }
   }
 
   async signIn(email: string, password: string): Promise<SignInResult> {

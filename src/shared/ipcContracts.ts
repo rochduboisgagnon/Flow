@@ -440,6 +440,14 @@ export interface UiStatePayload {
    *
    * La liste de ce qui manque, et pourquoi, est dans shared/platform.ts. */
   caps: PlatformCapabilities;
+  /** Flow est-il en train de reprendre une session enregistree ?
+   *
+   * 2026-08-04. Sans ce champ, la fenetre montre le formulaire de connexion
+   * pendant la seconde ou le jeton est renouvele, puis bascule toute seule. C'est
+   * le meme clignotement que celui corrige sur le champ de mot de passe, et il a
+   * la meme reponse : ne rien montrer qui se lise comme un echec pendant qu'une
+   * chose est en train de reussir. */
+  restoringSession: boolean;
   /** F1: what the SECOND (batch) engine is doing. Four scalars at most, derived
    * fresh in main from the live settings and the live process, so it rides the
    * 1 Hz push like modelState above rather than being pulled: Settings > Engine

@@ -207,8 +207,15 @@ test("le mot de passe quitte le champ MEME quand la connexion echoue", () => {
   assert.match(body.slice(fin), /setPassword\(""\)/, "et il doit vider le mot de passe");
 });
 
-test("l'ecran distingue « pas connecte » de « connecte, ca charge »", () => {
-  assert.match(SIGNIN, /const loading = s\.account\.signedIn && !s\.accountDataReady/);
+test("l'ecran distingue « pas connecte » de « on est en train de te reconnaitre »", () => {
+  // 2026-08-04 : la condition a gagne un TROISIEME cas, et le test le nomme plutot
+  // que de relacher son ancre. Flow peut etre en train de REPRENDRE la session
+  // enregistree dans le trousseau : personne n'est encore « connecte » au sens du
+  // client, et pourtant montrer le formulaire serait demander un mot de passe a
+  // quelqu'un qui est deja reconnu. C'est le defaut que Roch a signale - se
+  // reconnecter a chaque lancement - vu du cote de la fenetre.
+  assert.match(SIGNIN, /const loading =\s*s\.restoringSession \|\|/);
+  assert.match(SIGNIN, /s\.account\.signedIn && !s\.accountDataReady/);
   // Un compte connecte ne doit JAMAIS revoir le formulaire : ce serait lui
   // demander son mot de passe pour un probleme de reseau.
   const at = SIGNIN.indexOf("export function SignInScreen");

@@ -168,6 +168,32 @@ if (!app.requestSingleInstanceLock()) {
     // they could ever read the note. Persisting it here settles that by order.
     captureLegacyHistory(migratedLegacyHistoryDir);
     for (const line of migrationLogs) flowLog(line);
+    // 2026-08-04 : REPRENDRE LA SESSION, ICI ET PAS AILLEURS.
+    //
+    // C'est le premier instant du programme ou `safeStorage` repond : avant
+    // `whenReady`, il se declare indisponible sur Windows comme sur macOS, et c'est
+    // exactement ce qui faisait retaper son mot de passe a Roch a chaque lancement
+    // (le raisonnement complet est au-dessus de `Auth.restore`).
+    //
+    // PAS ATTENDU, delibere : `setSession` renouvelle le jeton d'acces s'il a
+    // expire, donc c'est un appel reseau. Le faire attendre au demarrage rendrait
+    // le lancement dependant de la connexion, ce que ce produit refuse partout
+    // ailleurs. `onChange` fait le reste quand la reponse arrive - c'est lui qui
+    // appelle `loadAccountData()`, exactement comme pour une connexion manuelle.
+    //
+    // `restoringSession` empeche l'ecran de connexion d'apparaitre entre-temps :
+    // sans lui, la fenetre montrerait un formulaire pendant une seconde avant de
+    // basculer toute seule, ce qui est le meme clignotement que celui corrige sur
+    // le champ de mot de passe ce matin.
+    void auth
+      .restore()
+      .then((r) => {
+        if (!r.restored && r.reason) flowLog(`[auth] pas de reprise de session : ${r.reason}`);
+      })
+      .finally(() => {
+        restoringSession = false;
+        uiBridge?.pushNow();
+      });
     // U6a/U6e: load the dictionary ONCE, here, and write the shipped default
     // terms on a machine that has never had a dictionary.json. Both storeys
     // read a cache from now on, so no dictation ever pays a synchronous read
@@ -764,6 +790,9 @@ function getUiState(): UiStatePayload {
     // Ce que cette machine sait faire. Constant pour toute la duree du processus :
     // lu une fois au chargement du module (voir CAPS).
     caps: CAPS,
+    // Une reprise de session est-elle en cours ? La porte du compte s'en sert pour
+    // ne pas montrer un formulaire a quelqu'un qui est deja en train d'etre reconnu.
+    restoringSession,
     // F1: derived on every snapshot from the live settings AND the live process,
     // never remembered here - the Settings row that reads it must not be able to
     // outlive the fact it describes.
@@ -1298,6 +1327,17 @@ async function loadAccountData(): Promise<void> {
  * que ... » - et bien preferable a rendre synchrone une chose qui ne l'est
  * pas. */
 let accountSnapshot: AccountSnapshot = { signedIn: false, email: "", userId: "" };
+
+/** UNE REPRISE DE SESSION EST-ELLE EN COURS ?
+ *
+ * Vrai des le chargement du module, faux quand la tentative a rendu son verdict -
+ * reprise ou pas. La fenetre s'en sert pour ne pas montrer un formulaire de
+ * connexion a quelqu'un qui est en train d'etre reconnu.
+ *
+ * Le defaut est VRAI, et c'est le bon sens de l'erreur : afficher « on te
+ * reconnait » une demi-seconde de trop est invisible, afficher un formulaire a
+ * quelqu'un qui n'en a pas besoin lui fait retaper son mot de passe. */
+let restoringSession = true;
 void auth.account().then((a) => {
   accountSnapshot = a;
 });

@@ -159,7 +159,12 @@ export function SignInForm() {
  * reglages du compte.
  */
 export function SignInScreen({ s }: { s: UiStatePayload }) {
-  const loading = s.account.signedIn && !s.accountDataReady;
+  // 2026-08-04 : `restoringSession` s'ajoute a la condition, et pour la meme
+  // raison que le reste de cette branche - il y a une TROISIEME facon d'etre en
+  // train d'entrer sans avoir a taper quoi que ce soit : Flow reprend la session
+  // du trousseau. Montrer le formulaire pendant ce temps-la, c'est demander un mot
+  // de passe a quelqu'un qui est deja reconnu.
+  const loading = s.restoringSession || (s.account.signedIn && !s.accountDataReady);
   return (
     <div className="gate-card">
       {/* LE LOGO, PAS LE MOT. Roch, le 2026-08-04 : « ou c'est ecrit Flow, mais le
@@ -182,7 +187,9 @@ export function SignInScreen({ s }: { s: UiStatePayload }) {
           {/* Le SEUL cas ou une phrase est due : quelqu'un est connecte et l'ecran
               ne bouge pas, donc il doit savoir si Flow travaille ou s'il est
               bloque. */}
-          <p className="gate-who">{s.account.email}</p>
+          {/* L'adresse n'est connue qu'une fois la session reprise : pendant la
+              reprise, la ligne serait vide. */}
+          {s.account.email ? <p className="gate-who">{s.account.email}</p> : null}
           <p className="gate-msg">Loading your account...</p>
         </>
       ) : (

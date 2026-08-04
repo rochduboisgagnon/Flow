@@ -1,4 +1,4 @@
-import { BrowserWindow, screen, shell } from "electron";
+import { app, BrowserWindow, screen, shell } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 import { THEME_BG, THEME_TITLEBAR, type ResolvedTheme } from "../shared/theme";
@@ -80,6 +80,11 @@ export class MainWindow {
 
   /** Create (if needed) and show the window. Safe to call repeatedly. */
   show(dev: boolean): void {
+    // L'icone du Dock revient AVEC la fenetre, et avant elle : une fenetre qui
+    // apparait pendant que le Dock est encore vide donne une application qu'on ne
+    // peut pas retrouver en cliquant a l'endroit ou tout le monde clique. Voir le
+    // gestionnaire de fermeture pour le geste inverse.
+    void app.dock?.show();
     if (this.win && !this.win.isDestroyed()) {
       if (this.win.isMinimized()) this.win.restore();
       this.win.show();
@@ -169,6 +174,28 @@ export class MainWindow {
       if (!this.quitting) {
         e.preventDefault();
         this.win?.hide();
+        // 2026-08-04, demande de Roch : « si je clique sur le X, je veux que
+        // l'application disparaisse de mon Dock mais reste ouverte en arriere-plan
+        // pour qu'elle fonctionne pareil. »
+        //
+        // C'est la convention macOS d'une application d'arriere-plan, et Flow en
+        // est une : le crochet clavier, le moteur de parole et l'enregistrement
+        // continuent, fenetre fermee ou pas. Une icone de Dock pour une fenetre qui
+        // n'existe plus est du bruit dans une rangee ou l'on cherche ce qu'on est
+        // en train d'utiliser.
+        //
+        // CE QUI REND CE GESTE SUR PLUTOT QU'UN PIEGE : l'icone de la barre de
+        // menus reste. Elle est creee sans condition de plateforme, donc il y a
+        // toujours un chemin de retour - `show()` juste au-dessus remet l'icone du
+        // Dock au meme moment que la fenetre. Cacher le Dock SANS ce chemin
+        // enfermerait quelqu'un dehors, ce qui est le seul etat que ce fichier
+        // refuse depuis toujours (« une fenetre que personne ne peut fermer »,
+        // devenue ici son inverse).
+        //
+        // `app.dock` n'existe pas ailleurs que sur macOS : le `?.` est ce qui rend
+        // cette ligne inoffensive sur Windows plutot qu'un test de plateforme de
+        // plus a maintenir.
+        void app.dock?.hide();
       }
     });
     if (dev) void this.win.loadURL("http://localhost:5183/main.html");
