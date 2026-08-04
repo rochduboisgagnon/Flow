@@ -4,7 +4,6 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { CaptureDoc } from "../shared/captureDoc";
 import { looksAbandoned, type OpenRecording, type RecordingRow } from "../shared/recordings";
-import { audioObjectName } from "../shared/tus";
 import { encodeWav } from "../shared/wav";
 import { analyzeSpeech } from "../shared/vad";
 import { gateTranscript } from "../shared/textGate";
@@ -125,10 +124,13 @@ export interface LongDeps {
   /** B3a : ou la reunion est ecrite. La copie de travail en memoire devant, le
    * compte derriere ; le recorder ne sait ni l'un ni l'autre. */
   store: CaptureStore;
-  /** Ou le .wav en transit est ecrit. INJECTE, et non resolu ici : c'est ce qui
-   * permet a ce module de ne plus appeler `dataDir()` du tout. Absent = pas
-   * d'audio du tout, ce qui est le cas des tests qui ne testent que le document. */
-  pendingAudioDir?: string;
+  /** Ou le .wav de la reunion est ecrit. INJECTE, et non resolu ici : c'est ce
+   * qui permet a ce module de ne plus appeler `dataDir()` du tout. Absent = pas
+   * d'audio du tout, ce qui est le cas des tests qui ne testent que le document.
+   *
+   * 2026-08-04 : ce n'est plus un dossier de TRANSIT. Le fichier qui y est ecrit
+   * y reste - c'est la decision de Roch, et le nom du champ le dit maintenant. */
+  audioDir?: string;
   log?: (msg: string) => void;
   /** Couture de test : l'horloge des tranches. Rend de quoi l'arreter. */
   schedule?(fn: () => void, ms: number): () => void;
@@ -136,12 +138,6 @@ export interface LongDeps {
   now?(): number;
   /** Couture de test : l'identifiant de la ligne. */
   newId?(): string;
-  /** B3c : l'identifiant du compte, pour composer le chemin de l'objet audio.
-   * Absent = pas de televersement (les tests qui ne testent que le document). */
-  accountId?(): Promise<string>;
-  /** B3c : confie l'audio d'une reunion terminee a la file de televersement.
-   * Rend la main tout de suite - 115 Mo n'ont pas a retenir une finalisation. */
-  uploadAudio?(recordingId: string): void;
 }
 
 const MAX_QUEUE = 240; // ~100 min of backlog before we refuse to grow (safety)
@@ -154,7 +150,7 @@ const MAX_QUEUE = 240; // ~100 min of backlog before we refuse to grow (safety)
 //  - `historyRoot()`, `stagingRoot()`, `recentPath()` : trois dossiers sous
 //    dataDir(). Le grep du plan est maintenant vrai - ce module n'appelle plus
 //    `dataDir()` du tout, et le seul chemin qu'il connait lui est INJECTE
-//    (`pendingAudioDir`, le .wav en transit).
+//    (`audioDir`, le .wav de la reunion).
 //
 //  - LA PURGE DE RETENTION (90 jours) et ses garde-fous : le marqueur de
 //    dossier, le refus d'operer sur une racine de volume ou un enfant du profil,
@@ -335,6 +331,10 @@ export class LongRecorder {
    * exactement le fichier de la ligne inachevee. */
   private audioLocalPath = "";
   /** Le chemin de l'objet dans Storage. Vide jusqu'a ce que B3c le remplisse. */
+  /** 2026-08-04 : TOUJOURS VIDE sur une reunion neuve, et c'est le sujet - une
+   * ligne ne cite plus d'objet dans le seau, parce qu'il n'y en a plus. Le champ
+   * survit dans la LIGNE pour les reunions faites par une version 2.0.x, que le
+   * balayage de demarrage ramene (main/audioLocal.ts). */
   private audioObjectPath = "";
   private audioStream: fs.WriteStream | null = null;
   private audioBytes = 0; // octets PCM ecrits dans le .wav local (pour l'entete)
@@ -575,7 +575,7 @@ export class LongRecorder {
     this.audioStream = null;
     this.audioBytes = 0;
     this.audioFailed = false;
-    const dir = this.deps.pendingAudioDir;
+    const dir = this.deps.audioDir;
     if (!dir) return "";
     const p = path.join(dir, this.recordingId + ".wav");
     try {
@@ -1142,21 +1142,20 @@ export class LongRecorder {
       this.elapsedMs = Math.round((this.consumed / SAMPLE_RATE) * 1000);
       // L'ORDRE DE CES TROIS LIGNES EST UN CORRECTIF, pas une preference.
       //
-      // `settleAudio` remplissait le chemin de l'objet audio ET confiait le
-      // fichier a la file de televersement. La file lit ensuite la LIGNE pour
-      // savoir quoi faire - et si elle la lisait avant que `publish()` l'ait
-      // ecrite, elle y trouverait `audio_path` vide, conclurait « cette reunion ne
-      // garde pas son audio », et SUPPRIMERAIT le .wav que l'utilisateur venait de
-      // demander de garder.
+      // 2026-08-04 : L'AUDIO NE PART PLUS. `settleAudio` ne fait plus que deux
+      // choses - supprimer le .wav si la reunion avait demande de ne pas le
+      // garder, et mesurer sa taille reelle pour la ligne.
       //
-      // La course etait probablement perdue par la file (son premier `await` est
-      // un vrai accès disque, plus lent qu'une micro-tache), et « probablement »
-      // n'est pas un mot acceptable a cote de l'audio d'une reunion. La ligne part
-      // donc AVANT, et `settleAudio` ne fait plus que decider.
-      const audioToUpload = await this.settleAudio();
+      // CE QUI A DISPARU EST UNE COURSE ENTIERE. La version d'avant remplissait
+      // `audio_path` puis confiait le fichier a une file de televersement qui
+      // relisait la ligne pour savoir quoi faire : lue avant l'ecriture, elle y
+      // trouvait un chemin vide, en concluait « cette reunion ne garde pas son
+      // audio » et supprimait le .wav. L'ordre etait devenu une garantie a
+      // maintenir ; il n'y a plus d'ordre a maintenir.
+      await this.settleAudio();
       this.publish();
       closed = true;
-      if (audioToUpload) this.deps.uploadAudio?.(this.recordingId);
+
       // SEULEMENT MAINTENANT, une fois le document ecrit dans la file avec les
       // notes dedans. Une fente videe avant une ecriture ratee aurait jete les
       // notes de quelqu'un ; et l'ordre FIFO de la file garantit que la
@@ -1220,34 +1219,28 @@ export class LongRecorder {
    * et c'est l'appelant qui enfile - apres avoir ecrit la ligne. Voir le
    * commentaire d'ordre dans finalize().
    */
-  private async settleAudio(): Promise<boolean> {
+  private async settleAudio(): Promise<void> {
     const p = this.audioLocalPath;
-    if (!p) return false;
+    if (!p) return;
     if (!this.keepAudio) {
       try {
         await fsp.rm(p, { force: true });
         this.deps.log?.("[long] audio dropped: the recording asked not to keep the .wav");
         this.audioLocalPath = "";
+        this.audioBytes = 0;
       } catch (err) {
         this.deps.log?.(`[long] could not drop the .wav the recording asked not to keep: ${err}`);
       }
-      return false;
+      return;
     }
-    const uid = (await this.deps.accountId?.()) ?? "";
-    if (!uid) {
-      // Sans compte connu, le chemin ne peut pas etre compose - et un chemin sans
-      // le bon prefixe serait refuse par le RLS apres une heure de reunion. Le
-      // fichier reste : le balayage du prochain lancement le reprendra.
-      this.deps.log?.("[long] l'audio attend : le compte n'est pas connu pour l'instant");
-      return false;
-    }
+    // LA TAILLE REELLE DU FICHIER, et non celle calculee sur la duree. C'est ce
+    // que la ligne annonce a toute machine qui lira cette reunion, y compris
+    // celle qui n'a pas le fichier : « 101 Mo, sur l'ordinateur qui l'a
+    // enregistree ».
     try {
       this.audioBytes = (await fsp.stat(p)).size;
     } catch {
       /* la taille mesuree pendant la capture reste la meilleure estimation */
     }
-    this.audioObjectPath = audioObjectName(uid, this.recordingId);
-    this.audioUploaded = 0;
-    return true;
   }
 }

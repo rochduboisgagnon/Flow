@@ -176,7 +176,7 @@ test("B3a: une reunion produit un document complet dans le compte, sans ecrire u
   } as unknown as WhisperSidecar;
   const { rec, store } = recorder({
     transcribeSegment: (wav) => mockSidecar.transcribe(wav),
-    pendingAudioDir: path.join(work, "pending-audio"),
+    audioDir: path.join(work, "pending-audio"),
   });
 
   const started = rec.start({ title: "Test Meeting", keepAudio: true });
@@ -318,7 +318,7 @@ test("B3a: l'export ecrit une COPIE dans le dossier choisi et ne deplace rien", 
   fs.mkdirSync(dest);
   const { rec, store } = recorder({
     transcribeSegment: () => Promise.resolve({ text: "Bonjour tout le monde.", ms: 5 }),
-    pendingAudioDir: path.join(work, "pending"),
+    audioDir: path.join(work, "pending"),
   });
   const started = rec.start({ title: "Client kickoff", keepAudio: true });
   rec.onChunk(speechy(5000));
@@ -383,7 +383,7 @@ test("B3a: un export qui echoue ne laisse rien dans le dossier de l'utilisateur 
   const pending = path.join(work, "pending");
   const { rec, store } = recorder({
     transcribeSegment: () => Promise.resolve({ text: "Un.", ms: 1 }),
-    pendingAudioDir: pending,
+    audioDir: pending,
   });
   const started = rec.start({ title: "Note", keepAudio: true });
   rec.onChunk(concat(speechy(3000), silence(1500)));
@@ -590,7 +590,7 @@ test("U4-2: keepAudio decoche - le .wav en transit est supprime des que le docum
   const pending = path.join(work, "pending");
   const { rec } = recorder({
     transcribeSegment: () => Promise.resolve({ text: "Bonjour.", ms: 5 }),
-    pendingAudioDir: pending,
+    audioDir: pending,
   });
   const started = rec.start({ title: "No Audio Please", keepAudio: false });
   assert.equal(started.ok, true, started.error ?? "expected ok");
@@ -613,8 +613,7 @@ test("U4-2: keepAudio cochee - le .wav survit a la fin, avec une entete valide",
   const pending = path.join(work, "pending");
   const { rec, store } = recorder({
     transcribeSegment: () => Promise.resolve({ text: "Bonjour.", ms: 5 }),
-    pendingAudioDir: pending,
-    accountId: () => Promise.resolve("uid-1"),
+    audioDir: pending,
   });
   const started = rec.start({ title: "Keep It", keepAudio: true });
   rec.onChunk(speechy(5000));
@@ -623,73 +622,56 @@ test("U4-2: keepAudio cochee - le .wav survit a la fin, avec une entete valide",
   await settle(rec);
 
   const wav = path.join(pending, started.recordingId! + ".wav");
-  assert.equal(fs.existsSync(wav), true, "la case cochee garde l'audio, pour que B3c le televerse");
+  assert.equal(fs.existsSync(wav), true, "la case cochee garde l'audio, et il RESTE ici (2026-08-04)");
   // Et son entete de taille a ete corrigee : un fichier lu avant la fermeture du
   // flux parait vide a tous les lecteurs.
   const head = fs.readFileSync(wav);
   assert.equal(head.subarray(0, 4).toString(), "RIFF");
   assert.equal(head.readUInt32LE(4), 36 + head.readUInt32LE(40), "RIFF et data se repondent");
-  // Et la ligne porte le chemin de l'objet, prefixe par le compte.
+  // 2026-08-04 : LA LIGNE NE CITE AUCUN OBJET, et elle annonce la taille reelle.
+  //
+  // Elle portait `uid-1/<id>.wav`, le nom de l'objet a televerser. L'audio ne
+  // monte plus (decision de Roch), donc un chemin d'objet serait une promesse que
+  // rien ne tient. Ce qui traverse est la TAILLE : c'est elle qui permet a une
+  // autre machine de dire « cette reunion a 101 Mo d'audio, sur l'ordinateur qui
+  // l'a enregistree » plutot que de croire qu'il n'y a pas d'audio du tout.
   const row = store.rows.get(started.recordingId!)!;
-  assert.equal(row.audioPath, `uid-1/${started.recordingId}.wav`);
-  assert.ok(row.audioBytes > 44, "et sa taille, mesuree sur le fichier reel");
+  assert.equal(row.audioPath, "", "aucun objet n'est cite : l'audio ne quitte pas la machine");
+  assert.equal(row.audioBytes, fs.statSync(wav).size, "la taille annoncee est celle du fichier, mesuree");
   fs.rmSync(work, { recursive: true, force: true });
 });
 
-test("B3a: sans compte connu, l'audio ATTEND au lieu de partir sous un mauvais chemin", async () => {
-  // Un objet dont le prefixe n'est pas l'identifiant du compte est refuse par les
-  // politiques de Storage, et le refus arriverait apres une heure de reunion. Le
-  // fichier reste donc en transit, pour le balayage du prochain lancement.
+test("2026-08-04 : garder l'audio ne demande AUCUN compte", async () => {
+  // CE TEST REMPLACE DEUX AUTRES, ET LES DEUX PREMISSES ONT DISPARU LE MEME JOUR.
+  //
+  //  - « sans compte connu, l'audio ATTEND au lieu de partir sous un mauvais
+  //    chemin » : il n'y a plus de chemin d'objet a composer, donc plus rien a
+  //    attendre. Une reunion enregistree avant que la session soit lue gardait son
+  //    audio en suspens ; elle le garde maintenant, simplement.
+  //  - « la ligne porte le chemin de l'audio AVANT que la file soit prevenue » :
+  //    cette course protegeait un ordre entre deux ecritures - la ligne, puis la
+  //    file qui la relit pour savoir s'il faut supprimer le .wav. Il n'y a plus de
+  //    file, donc plus d'ordre a garantir. Le defaut qu'elle fermait est ecrit
+  //    dans le journal de campagne ; le supprimer sans le nommer aurait efface la
+  //    lecon avec le code.
+  //
+  // Ce qui RESTE a prouver est la promesse visible : la case cochee garde
+  // l'audio, ici, quoi qu'il arrive au reseau ou a la session.
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "flow-audio-noacct-"));
-  const pending = path.join(work, "pending");
+  const dir = path.join(work, "audio");
   const { rec, store } = recorder({
     transcribeSegment: () => Promise.resolve({ text: "Bonjour.", ms: 5 }),
-    pendingAudioDir: pending,
-    accountId: () => Promise.resolve(""),
+    audioDir: dir,
   });
   const started = rec.start({ title: "No account", keepAudio: true });
   rec.onChunk(concat(speechy(3000), silence(1500)));
   rec.stop();
   await settle(rec);
-  assert.equal(fs.existsSync(path.join(pending, started.recordingId! + ".wav")), true, "le fichier reste");
-  assert.equal(store.rows.get(started.recordingId!)!.audioPath, "", "et la ligne ne promet aucun audio");
-  fs.rmSync(work, { recursive: true, force: true });
-});
-
-test("B3c: la ligne porte le chemin de l'audio AVANT que la file soit prevenue", async () => {
-  // LE DEFAUT QUE CE TEST FERME, trouve en relisant l'ordre plutot qu'en le
-  // subissant : `settleAudio` remplissait `audio_path` et confiait le fichier a la
-  // file dans le meme souffle. La file lit ensuite la LIGNE pour savoir quoi faire.
-  // Si elle la lisait avant que la ligne soit ecrite, elle y trouverait un chemin
-  // VIDE, conclurait « cette reunion ne garde pas son audio », et supprimerait le
-  // .wav que l'utilisateur venait de demander de garder.
-  //
-  // La course etait probablement perdue par la file - son premier `await` est un
-  // vrai acces disque - et « probablement » n'est pas un mot acceptable a cote de
-  // l'audio d'une reunion.
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "flow-audio-order-"));
-  const seen: Array<{ id: string; audioPathAtThatMoment: string | undefined }> = [];
-  const { rec, store } = recorder({
-    transcribeSegment: () => Promise.resolve({ text: "Bonjour.", ms: 1 }),
-    pendingAudioDir: path.join(work, "pending"),
-    accountId: () => Promise.resolve("uid-1"),
-    uploadAudio: (id) => {
-      // Ce que la file VERRAIT si elle lisait la ligne a cet instant.
-      seen.push({ id, audioPathAtThatMoment: store.rows.get(id)?.audioPath });
-    },
-  });
-  const started = rec.start({ title: "Ordre", keepAudio: true });
-  rec.onChunk(concat(speechy(3000), silence(1500)));
-  rec.stop();
-  await settle(rec);
-
-  assert.equal(seen.length, 1, "la file est prevenue une fois");
-  assert.equal(seen[0].id, started.recordingId);
-  assert.equal(
-    seen[0].audioPathAtThatMoment,
-    `uid-1/${started.recordingId}.wav`,
-    "la ligne portait DEJA le chemin de l'objet : la file ne peut pas conclure qu'il n'y a pas d'audio",
-  );
+  const wav = path.join(dir, started.recordingId! + ".wav");
+  assert.equal(fs.existsSync(wav), true, "le fichier est la");
+  const row = store.rows.get(started.recordingId!)!;
+  assert.equal(row.audioPath, "", "et la ligne ne cite aucun objet dans le seau");
+  assert.ok(row.audioBytes > 44, "mais elle annonce sa taille : la reunion A un audio");
   fs.rmSync(work, { recursive: true, force: true });
 });
 

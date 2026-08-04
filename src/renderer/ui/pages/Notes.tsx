@@ -156,7 +156,7 @@ export function Notes({ s }: { s: UiStatePayload }) {
   // 2026-08-04 : OU EST L'AUDIO, VRAIMENT. Un seul calcul, en haut, pour les
   // trois endroits de cette page qui en dependent : le bouton de
   // telechargement, le lecteur, et le retrait de passage.
-  const audio = audioStateOf(current, s.audioRefusedForSize);
+  const audio = audioStateOf(current);
   // Review U5d: the document on screen must belong to the capture the buttons
   // and the player point at. `doc` lagged one selection behind while the next
   // one loaded, so the page showed A's transcript above B's player and B's
@@ -431,10 +431,10 @@ export function Notes({ s }: { s: UiStatePayload }) {
                     <button className="btn" disabled={downloading !== null} onClick={() => void download("doc")}>
                       {downloading === "doc" ? "Saving..." : "Download notes"}
                     </button>
-                    {/* SEULEMENT quand l'audio est vraiment dans le compte. Voir
+                    {/* SEULEMENT quand le fichier est vraiment atteignable. Voir
                         audioStateOf : ce bouton a passe une nuit a promettre
                         101 Mo que Storage avait refuses. */}
-                    {audio.kind === "ready" ? (
+                    {audio.kind === "here" || audio.kind === "account" ? (
                       <button className="btn" disabled={downloading !== null} onClick={() => void download("audio")}>
                         {downloading === "audio"
                           ? `Saving ${formatBytes(audio.bytes)}...`
@@ -483,33 +483,21 @@ export function Notes({ s }: { s: UiStatePayload }) {
                   </div>
                 </div>
 
-                {/* 2026-08-04 : L'AUDIO QUI N'EST PAS DANS LE COMPTE SE DIT,
+                {/* 2026-08-04 : UN AUDIO QUI N'EST PAS SUR CETTE MACHINE SE DIT,
                     plutot que de se presenter comme un lecteur qui refusera de
-                    jouer. Deux etats, deux phrases, et aucune des deux n'est une
-                    excuse : la premiere est temporaire et se resoudra seule, la
-                    seconde dit ou est le fichier. */}
-                {audio.kind === "uploading" ? (
+                    jouer. Ce n'est pas une excuse : c'est la contrepartie de
+                    « l'audio ne quitte pas votre machine », et quelqu'un qui
+                    ouvre une reunion sur son autre ordinateur doit lire ou est
+                    son enregistrement au lieu de le croire perdu. */}
+                {audio.kind === "elsewhere" ? (
                   <p className="sub" style={{ margin: "14px 0 0", maxWidth: "62ch" }}>
-                    The audio is still going up to your account
-                    {audio.total > 0 ? ` (${formatBytes(audio.sent)} of ${formatBytes(audio.total)})` : ""}. It
-                    becomes playable and downloadable here as soon as it has arrived. Nothing is lost
-                    if you close Flow meanwhile: the upload picks up where it stopped.
+                    This meeting kept {formatBytes(audio.bytes)} of audio, and it stays on the computer
+                    that recorded it. Only the transcript and the notes follow you between machines, so
+                    there is nothing to play here. Nothing was lost: open this meeting on that computer
+                    and the recording is there.
                   </p>
                 ) : null}
-                {audio.kind === "refused" ? (
-                  <p className="note-legacy" style={{ marginTop: 14 }}>
-                    <span style={{ flex: 1 }}>
-                      Your account refused this audio because of its size ({formatBytes(audio.bytes)}), so
-                      it could not be uploaded and cannot be played here. It was NOT deleted: the
-                      recording is still on this computer, untouched, in Flow&apos;s transit folder.
-                      The transcript and the notes above are in your account as usual.
-                    </span>
-                    <button className="btn ghost" onClick={() => void window.flowui.openPath("pending-audio")}>
-                      Open the folder
-                    </button>
-                  </p>
-                ) : null}
-                {current && audio.kind === "ready" ? (
+                {current && (audio.kind === "here" || audio.kind === "account") ? (
                   s.apiPort ? (
                     // The engine's own streaming endpoint: range requests work, so
                     // seeking works, and nothing is buffered into the renderer.
@@ -562,7 +550,7 @@ export function Notes({ s }: { s: UiStatePayload }) {
                        La meme correction est faite cote moteur (main/redact.ts), et
                        les deux doivent dire la meme chose : cette phrase promet un
                        silence, et main l'execute. */
-                    hasAudio={audio.kind === "ready"}
+                    hasAudio={audio.kind === "here"}
                     notesWillDrop={plan?.notesDropped === true}
                     confirming={confirming}
                     working={working}
@@ -744,49 +732,45 @@ function localDay(startedIso: string): string {
  * OU EST L'AUDIO D'UNE REUNION - LES QUATRE REPONSES POSSIBLES.
  *
  * ---------------------------------------------------------------------------
- * CE QUE CETTE FONCTION REPARE
+ * CE QUE CETTE FONCTION REPARE, ET CE QU'ELLE DIT MAINTENANT
  * ---------------------------------------------------------------------------
  *
  * Trouve en LANCANT l'application, le 2026-08-04 : Roch ouvre une reunion de
- * 55 minutes, la page annonce « audio 101 MB », propose « Download audio
- * (101 MB) », affiche un lecteur - et rien ne fonctionne. Le journal disait
- * pourquoi : Storage avait refuse le fichier (413, le plafond du projet est de
- * 50 Mio) et l'objet n'a jamais existe.
+ * 55 minutes, la page annonce « audio 101 MB », propose « Download audio » et
+ * affiche un lecteur. Rien ne fonctionne : Storage avait refuse le fichier (413)
+ * et l'objet n'a jamais existe. La page lisait `hasAudio`, vrai des que la LIGNE
+ * porte un chemin d'objet - or ce chemin etait ecrit AVANT le televersement.
  *
- * La page ne mentait pas par negligence : elle lisait `hasAudio`, qui est vrai
- * des que la LIGNE porte un chemin d'objet. Or ce chemin est ecrit a la fin de la
- * reunion, avant le televersement - donc `hasAudio` veut dire « cette reunion a
- * garde son audio », pas « l'audio est arrive ». La distinction n'existait nulle
- * part dans la page, et c'est la vraie faute.
+ * La decision de Roch a suivi : l'audio reste sur la machine, seul le document se
+ * synchronise. La question a donc change de nature. Elle n'est plus « le
+ * televersement est-il fini » mais « CE disque a-t-il ce fichier », et c'est une
+ * bien meilleure question - elle se repond en regardant, pas en croyant une
+ * colonne. Le moteur y repond pour toute la liste en un seul `readdir`
+ * (main/index.ts, listRecordingsDep).
  *
- * ---------------------------------------------------------------------------
- * ET CA COUVRE UN SECOND CAS, QUI N'A JAMAIS ETE SIGNALE
- * ---------------------------------------------------------------------------
+ * LES QUATRE ETATS, ET AUCUN NE SE FAIT PASSER POUR UN AUTRE :
  *
- * Le meme defaut se produit pour une reunion NORMALE, dans la minute qui suit sa
- * fin : le televersement de 40 Mo dure, et pendant ce temps la page offrait deja
- * un lecteur qui ne pouvait rien jouer. Personne ne l'avait rapporte parce que
- * personne n'ouvre Notes dans les secondes qui suivent - mais c'etait le meme
- * bouton mort, avec une fenetre plus courte.
- *
- * `audioUploaded` (l'offset que le SERVEUR a confirme, pas un compteur local) est
- * ce qui tranche, et c'est deja dans le resume.
+ *  - `none`     : cette reunion n'a pas garde d'audio. Rien a montrer.
+ *  - `here`     : le fichier est sur cette machine. Lecteur, telechargement et
+ *                 retrait de passage, tous les trois.
+ *  - `elsewhere`: la reunion A un audio, mais pas ici. C'est l'etat que la
+ *                 decision de Roch CREE, et le taire serait laisser quelqu'un
+ *                 croire que son enregistrement a disparu.
+ *  - `account`  : il reste un objet dans le seau, sur une reunion faite par une
+ *                 version 2.0.x. Etat transitoire : le balayage du prochain
+ *                 lancement ramene le fichier et cet etat disparait.
  */
 type AudioWhere =
   | { kind: "none" }
-  | { kind: "ready"; bytes: number }
-  | { kind: "uploading"; sent: number; total: number }
-  | { kind: "refused"; bytes: number };
+  | { kind: "here"; bytes: number }
+  | { kind: "elsewhere"; bytes: number }
+  | { kind: "account"; bytes: number };
 
-function audioStateOf(current: RecordingSummary | null, refused: string[]): AudioWhere {
+function audioStateOf(current: RecordingSummary | null): AudioWhere {
   if (!current || !current.hasAudio) return { kind: "none" };
-  if (refused.includes(current.id)) return { kind: "refused", bytes: current.audioBytes };
-  // Le zero est traite comme « en route » et non comme « pret » : une ligne dont
-  // les octets ne sont pas encore connus n'a certainement pas fini de monter.
-  if (current.audioBytes > 0 && current.audioUploaded >= current.audioBytes) {
-    return { kind: "ready", bytes: current.audioBytes };
-  }
-  return { kind: "uploading", sent: current.audioUploaded, total: current.audioBytes };
+  if (current.audioLocal) return { kind: "here", bytes: current.audioBytes };
+  if (current.audioInAccount) return { kind: "account", bytes: current.audioBytes };
+  return { kind: "elsewhere", bytes: current.audioBytes };
 }
 
 function formatBytes(n: number): string {

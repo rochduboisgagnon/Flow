@@ -11,6 +11,7 @@ import {
   UI_SIGN_IN,
   UI_SIGN_OUT,
   UI_OPEN_PATH,
+  UI_AUDIO_USAGE,
   UI_GET_LOGIN_ITEM,
   UI_SET_LOGIN_ITEM,
   UI_CHECK_UPDATES,
@@ -97,6 +98,7 @@ test("every ui:* invoke channel this bridge owns is registered through guarded()
     // D1: the Local AI tab's one button. It fetches a PINNED file (immutable
     // revision, hash checked before the rename) - the renderer names nothing.
     UI_OPEN_PATH,
+    UI_AUDIO_USAGE,
     UI_GET_LOGIN_ITEM,
     UI_SET_LOGIN_ITEM,
     UI_CHECK_UPDATES,

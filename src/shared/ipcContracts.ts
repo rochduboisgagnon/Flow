@@ -242,6 +242,17 @@ export interface SignInResult {
 // (U5c: "downloaded-file" reveals the LAST file U5c's downloads wrote, tracked
 // in main - never a path the renderer supplies).
 export const UI_OPEN_PATH = "ui:open-path";
+/** Ce que l'audio des reunions pese sur ce disque.
+ *
+ * 2026-08-04 : TIRE, jamais pousse, comme les statistiques et l'historique des
+ * dictees. Compter des fichiers est du vrai travail disque, et le processus qui le
+ * ferait porte le crochet clavier : le faire a 1 Hz pour une page que personne ne
+ * regarde serait la faute que ce depot chasse ailleurs.
+ *
+ * Il existe parce que l'audio ne quitte plus la machine et que rien ne l'enleve
+ * tout seul. 115 Mo par heure sans jamais le dire serait la mauvaise version de
+ * « vos donnees restent chez vous ». */
+export const UI_AUDIO_USAGE = "ui:audio-usage";
 export const UI_GET_LOGIN_ITEM = "ui:get-login-item";
 export const UI_SET_LOGIN_ITEM = "ui:set-login-item";
 export const UI_CHECK_UPDATES = "ui:check-updates";
@@ -419,16 +430,6 @@ export interface UiStatePayload {
   /** Ce qui n'est pas encore monte dans le compte, toutes files confondues. Pour
    * le DIRE, jamais pour l'attendre. */
   unsent: number;
-  /** Les reunions dont l'audio a ete REFUSE par le compte a cause de sa taille.
-   *
-   * Une liste d'identifiants et pas un compteur, parce que la page Notes doit
-   * savoir de QUELLE reunion il s'agit : sans ca, elle continuerait d'offrir
-   * « Download audio (101 MB) » pour un objet qui n'existe pas - c'est le defaut
-   * que ce champ existe pour fermer (2026-08-04, trouve dans le journal de Roch).
-   *
-   * Elle est courte par nature : il faut une reunion de plus de 27 minutes pour y
-   * entrer, et l'audio reste sur le disque de la machine qui l'a enregistree. */
-  audioRefusedForSize: string[];
   /** F1: what the SECOND (batch) engine is doing. Four scalars at most, derived
    * fresh in main from the live settings and the live process, so it rides the
    * 1 Hz push like modelState above rather than being pulled: Settings > Engine
@@ -565,7 +566,7 @@ export const UI_HISTORY_DOC = "ui:history-doc"; // takes an id, answers one entr
 // remplacent HistoryItem/HistoryDocPayload, qui decrivaient un DOSSIER (un
 // identifiant opaque encodant « <date>/<titre> », une taille de fichier, un
 // mtime) plutot qu'une reunion.
-export type { RecordingSummary, RecordingDocPayload, AudioUploadProgress } from "./recordings";
+export type { RecordingSummary, RecordingDocPayload } from "./recordings";
 
 // ---- capture downloads (U5c, Roch's decision) ----
 // Browser-style: straight into the OS Downloads folder, no dialog. The

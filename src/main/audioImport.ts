@@ -30,7 +30,6 @@ import {
 import type { DecodeCall, DecodeResult, DecodeVerdict } from "./audioDecode";
 import { randomUUID } from "node:crypto";
 import { CaptureDoc } from "../shared/captureDoc";
-import { audioObjectName } from "../shared/tus";
 import type { CaptureStore } from "./longform";
 import type { RecordingRow } from "../shared/recordings";
 
@@ -118,12 +117,8 @@ export interface ImportDeps {
    * l'import. La promesse du §5.1.4 est tenue par un seul mecanisme, comme
    * avant - simplement, ce mecanisme n'est plus un dossier. */
   store: CaptureStore;
-  /** L'identifiant du compte, pour composer le chemin de l'objet audio. */
-  accountId(): Promise<string>;
-  /** Confie l'audio decode a la file de televersement. */
-  uploadAudio(recordingId: string): void;
-  /** Ou le .wav decode attend son televersement. */
-  pendingAudioDir(): string;
+  /** Ou la copie de l'audio decode est ecrite, et ou elle RESTE (2026-08-04). */
+  audioDir(): string;
   /** settings.summaryModel, read lazily. "" falls back to the first installed
    * Ollama model, exactly like LongRecorder.finalize. */
   summaryModel?(): string;
@@ -639,7 +634,7 @@ export class ImportQueue {
       // l'utilisateur est exactement la ou il etait (un import n'y touche
       // jamais), donc une seconde copie serait du poids, pas un filet.
       if (job.keepAudio) {
-        const dir = this.deps.pendingAudioDir();
+        const dir = this.deps.audioDir();
         fs.mkdirSync(dir, { recursive: true });
         job.audioPath = path.join(dir, job.recordingId + ".wav");
         fs.writeFileSync(job.audioPath, encodeWav(new Int16Array(0))); // the 44-byte header alone
@@ -828,25 +823,18 @@ export class ImportQueue {
    */
   private async file(job: Job): Promise<void> {
     this.sealAudio(job);
-    let audioPath = "";
-    let audioBytes = 0;
-    if (job.audioPath && job.keepAudio) {
-      const uid = await this.deps.accountId();
-      if (uid) {
-        audioPath = audioObjectName(uid, job.recordingId);
-        audioBytes = job.audioBytes + 44;
-      } else {
-        // Sans compte connu, le chemin ne peut pas porter le bon prefixe, et un
-        // objet mal prefixe serait refuse par les politiques de Storage. Le
-        // fichier reste : le balayage du prochain lancement le reprendra.
-        this.deps.log?.("[import] l'audio attend : le compte n'est pas connu pour l'instant");
-      }
-    }
+    // 2026-08-04 : LA COPIE DE L'AUDIO RESTE ICI, comme celle d'une reunion
+    // enregistree. Il n'y a plus de chemin d'objet a composer, donc plus besoin
+    // de connaitre le compte pour classer un import - un import fait juste apres
+    // le lancement, avant que la session soit lue, gardait auparavant son audio
+    // en attente d'un balayage. `audioBytes` reste rempli : c'est ce qui dit
+    // « cette entree a garde son audio », y compris sur une machine qui n'a pas
+    // le fichier.
+    const audioBytes = job.audioPath && job.keepAudio ? job.audioBytes + 44 : 0;
     // `endedIso` est ce qui sort la ligne de l'ensemble « ouvertes » que le
     // sauvetage inspecte : jusqu'a cette ligne, un import interrompu etait
     // recuperable, et c'etait le but.
-    this.publish(job, { endedIso: new Date(this.now()).toISOString(), audioPath, audioBytes });
-    if (audioPath) this.deps.uploadAudio(job.recordingId);
+    this.publish(job, { endedIso: new Date(this.now()).toISOString(), audioPath: "", audioBytes });
     job.pub.historyId = job.recordingId;
     this.deps.log?.(`[import] "${job.pub.fileName}" -> ${job.recordingId}`);
   }
@@ -932,7 +920,7 @@ export class ImportQueue {
    * que « un import qui n'a rien produit ne laisse rien » est une suppression
    * qui ne peut jamais atteindre un fichier de l'utilisateur. */
   private underPendingAudio(p: string): boolean {
-    const rel = path.relative(this.deps.pendingAudioDir(), p);
+    const rel = path.relative(this.deps.audioDir(), p);
     return !!rel && !rel.startsWith("..") && !path.isAbsolute(rel);
   }
 

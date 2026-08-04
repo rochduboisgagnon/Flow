@@ -61,10 +61,14 @@ test("B3b: la connexion sauve les reunions interrompues, et l'audio inachve repr
   assert.ok(at > 0, "loadAccountData a change de nom : verifier ou les sauvetages doivent vivre");
   const body = INDEX_SRC.slice(at, INDEX_SRC.indexOf("\n}\n", at));
   assert.match(body, /longRec\.rescueAbandoned\(\)/, "un plantage ne passe jamais par before-quit");
-  assert.match(body, /audioUploads\.resumePending\(\)/, "et un televersement de 115 Mo coupe doit reprendre");
+  // 2026-08-04 : le second balayage n'est plus une REPRISE de televersement - il
+  // n'y en a plus - mais le rapatriement de l'audio des reunions faites par une
+  // version 2.0.x. Meme exigence, meme endroit : il lui faut une session, donc il
+  // part du chargement du compte.
+  assert.match(body, /audioLocal[\s\S]{0,40}\.sweep\(/, "et l'audio reste des versions 2.0.x doit etre ramene");
   // Aucun des deux ne retient la connexion : `void`, jamais `await`.
   assert.match(body, /void longRec\.rescueAbandoned\(\)/);
-  assert.match(body, /void audioUploads\.resumePending\(\)/);
+  assert.match(body, /void audioLocal\s*\n?\s*\.sweep\(/);
 });
 
 test("U4-1: Quit Flow consults the same isBusy the updater does, instead of quitting blind", () => {

@@ -8,6 +8,7 @@ import {
   UI_SIGN_IN,
   UI_SIGN_OUT,
   UI_OPEN_PATH,
+  UI_AUDIO_USAGE,
   UI_GET_LOGIN_ITEM,
   UI_SET_LOGIN_ITEM,
   UI_CHECK_UPDATES,
@@ -93,10 +94,11 @@ export interface UiBridgeDeps {
    * the normal case and makes "legacy-history" a refused destination. U2c: main
    * also returns null when the folder no longer exists on disk. */
   legacyHistoryDirPath(): string | null;
-  /** Le dossier des .wav en transit. Une seule page l'ouvre, et seulement pour
-   * une reunion dont l'audio a ete refuse par le compte : c'est alors le seul
-   * endroit ou cet audio existe. */
+  /** Le dossier ou vivent les .wav des reunions. Ouvert depuis Reglages, et
+   * mesure par `audioUsage` juste en dessous. */
   pendingAudioDir(): string;
+  /** Ce que ce dossier pese. Asynchrone : c'est un vrai balayage. */
+  audioUsage(): Promise<{ files: number; bytes: number }>;
   logPath(): string;
   dataDirPath(): string;
   /** U2c: shell.openPath RETURNS an error string instead of throwing, so a
@@ -437,6 +439,10 @@ export class UiBridge {
         else shell.showItemInFolder(last);
       } else if (which === "repo") await shell.openExternal(REPO_URL);
     });
+
+    this.guarded<[], { files: number; bytes: number }>(UI_AUDIO_USAGE, { files: 0, bytes: 0 }, () =>
+      this.deps.audioUsage(),
+    );
 
     this.guarded<[], boolean>(UI_GET_LOGIN_ITEM, false, () => app.getLoginItemSettings({ args: LOGIN_ARGS }).openAtLogin);
 

@@ -227,9 +227,7 @@ function rig(opts: {
       }),
     userEngineClaim: () => claim.value,
     store,
-    accountId: () => Promise.resolve("uid-1"),
-    uploadAudio: (id) => uploaded.push(id),
-    pendingAudioDir: () => pending,
+    audioDir: () => pending,
     summaryModel: () => opts.summaryModel ?? "",
     ollamaModels: async () => (opts.summarize ? ["llama"] : null),
     summarize: opts.summarize,
@@ -277,7 +275,9 @@ async function drain(q: ImportQueue, timeoutMs = 20_000): Promise<void> {
 function filedDoc(store: FakeCaptureStore): { id: string; text: string; hasAudio: boolean } | null {
   const rows = [...store.rows.values()].filter((r) => r.endedIso);
   if (rows.length === 0) return null;
-  return { id: rows[0].id, text: rows[0].doc, hasAudio: rows[0].audioPath !== "" };
+  // 2026-08-04 : sur les OCTETS et non sur le chemin d'objet. Un import garde sa
+  // copie audio sur la machine, donc aucune ligne ne cite plus d'objet.
+  return { id: rows[0].id, text: rows[0].doc, hasAudio: rows[0].audioBytes > 0 };
 }
 
 /** Combien de reunions terminees le compte detient. Le remplacant de
@@ -544,9 +544,9 @@ test("keepAudio off keeps no audio; keepAudio on keeps a 16 kHz mono wav of the 
   await drain(on.queue);
   const doc = filedDoc(on.store);
   assert.equal(doc?.hasAudio, true);
-  // Le .wav decode attend dans le dossier de transit, sous l'identifiant de sa
-  // ligne, et il a ete confie a la file de televersement.
-  assert.deepEqual(on.uploaded, [doc!.id], "l'audio est confie a la file, une fois");
+  // 2026-08-04 : le .wav decode RESTE dans le dossier audio, sous l'identifiant de
+  // sa ligne. Il n'est confie a personne : il est deja a sa place definitive.
+  assert.equal(on.uploaded.length, 0, "rien n'est confie a une file de televersement : il n'y en a plus");
   const pcm = pcmFromWav(fs.readFileSync(path.join(on.pending, doc!.id + ".wav")));
   assert.equal(pcm.length, 12 * SAMPLE_RATE, "the kept wav holds exactly the decoded audio, and parses as 16 kHz mono");
   assert.deepEqual(fingerprint(on.src), before, "THE SOURCE FILE IS UNTOUCHED");

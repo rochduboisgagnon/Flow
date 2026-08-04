@@ -70,14 +70,14 @@ function switchableRepo() {
   };
 }
 
-function chain(over: { transcribeSegment?: (wav: Uint8Array) => Promise<{ text: string; ms: number }>; pendingAudioDir?: string } = {}) {
+function chain(over: { transcribeSegment?: (wav: Uint8Array) => Promise<{ text: string; ms: number }>; audioDir?: string } = {}) {
   const backing = switchableRepo();
   const workingCopy = new WorkingCopy({ repo: backing.repo, retryDelayMs: 1, schedule: () => {} });
   const store = new WorkingCopyCaptureStore({ workingCopy, repo: backing.repo });
   const rec = new LongRecorder({
     transcribeSegment: over.transcribeSegment ?? (() => Promise.resolve({ text: "phrase transcrite.", ms: 2 })),
     store,
-    pendingAudioDir: over.pendingAudioDir,
+    audioDir: over.audioDir,
     schedule: () => () => {},
   });
   return { backing, workingCopy, store, rec };

@@ -28,11 +28,9 @@ const SR = 16_000;
 
 interface Fixture {
   work: string;
-  /** Le dossier de travail que le retrait utilise pour descendre et reecrire. */
+  /** Le dossier ou vit l'audio, donc celui que le retrait balaie. */
   dir: string;
-  /** Le fichier qui tient lieu d'objet de Storage : ce que `fetchAudio` copie, et
-   * ce que `replaceAudio` remplace. C'est sur lui que les assertions comptent
-   * les zeros. */
+  /** Le .wav de la reunion. C'est sur lui que les assertions comptent les zeros. */
   audio: string;
   id: string;
   /** Le document, tel que le compte le detient. Muté par `writeDoc`. */
@@ -57,17 +55,31 @@ function fixture(opts: { audio?: boolean; notes?: string; seconds?: number } = {
       ? head + body
       : head + "## Notes\n\n" + opts.notes + "\n\n## Transcript\n\n" + body;
 
-  // « L'objet de Storage » : un fichier hors du dossier de travail, dont chaque
-  // echantillon est non nul, pour que « cette plage a-t-elle ete rendue
-  // silencieuse » se decide en lisant les octets.
-  const audio = path.join(work, "object.wav");
+  // 2026-08-04 : LE .WAV DE LA REUNION, sur cette machine. C'etait « l'objet de
+  // Storage », qu'il fallait descendre puis remonter ; l'audio ne quitte plus la
+  // machine (decision de Roch), donc le retrait le reecrit sur place.
+  //
+  // Il vit hors du dossier de travail, et chaque echantillon est non nul, pour que
+  // « cette plage a-t-elle ete rendue silencieuse » se decide en lisant les octets.
+  //
+  // IL VIT DANS LE DOSSIER BALAYE, et c'est une consequence du 2026-08-04 plutot
+  // qu'un detail de harnais : la copie nettoyee s'ecrit A COTE de l'originale
+  // (`silenceAudio` ajoute son suffixe au chemin du fichier), parce qu'un
+  // renommage n'est atomique que sur le meme volume. Le dossier de travail
+  // injecte n'existe donc plus - il n'y avait plus rien a y mettre.
+  const audio = path.join(dir, "rec-1.wav");
   const hasAudio = opts.audio !== false;
   if (hasAudio) {
     const samples = new Int16Array(SR * (opts.seconds ?? 30));
     for (let i = 0; i < samples.length; i++) samples[i] = ((i % 1000) + 1) as number;
     fs.writeFileSync(audio, encodeWav(samples));
   }
-  let replaced = false;
+  // 2026-08-04 : « l'audio a-t-il ete reecrit » se decide en comparant AU
+  // FICHIER D'ORIGINE, et non sur un drapeau pose par une fausse remontee. Une
+  // premiere version cherchait un octet nul, ce qui etait faux pour une raison
+  // instructive : un echantillon 16 bits de valeur 1 s'ecrit `01 00`, donc le
+  // fichier intact est deja plein d'octets nuls.
+  const pristine = hasAudio ? fs.readFileSync(audio) : Buffer.alloc(0);
   const id = "rec-1";
 
   const f: Fixture = {
@@ -76,33 +88,19 @@ function fixture(opts: { audio?: boolean; notes?: string; seconds?: number } = {
     audio,
     id,
     doc: () => doc,
-    audioReplaced: () => replaced,
+    // 2026-08-04 : « l'audio a-t-il ete remplace » se lit maintenant sur le
+    // FICHIER, et non sur un drapeau pose par une fausse remontee. C'est une
+    // meilleure question de test : elle ne peut pas etre vraie sans que les
+    // octets aient change.
+    audioReplaced: () => hasAudio && !fs.readFileSync(audio).equals(pristine),
     deps: (over = {}) => ({
       readRecording: (rid: string) =>
-        Promise.resolve(
-          rid === id
-            ? {
-                doc,
-                audioObject: hasAudio ? "uid/rec-1.wav" : "",
-                audioBytes: hasAudio ? fs.statSync(audio).size : 0,
-                // 2026-08-04 : l'objet est ARRIVE dans le compte. C'est ce que
-                // main/redact.ts lit maintenant pour decider s'il y a un audio a
-                // faire taire, plutot que la seule presence d'un chemin.
-                audioUploaded: hasAudio ? fs.statSync(audio).size : 0,
-              }
-            : null,
-        ),
+        Promise.resolve(rid === id ? { doc, audioBytes: hasAudio ? fs.statSync(audio).size : 0 } : null),
       writeDoc: (_rid: string, next: string) => void (doc = next),
-      fetchAudio: async (_o: string, dest: string) => {
-        await fs.promises.copyFile(audio, dest);
-        return { ok: true, error: "" };
-      },
-      replaceAudio: async (_o: string, src: string) => {
-        await fs.promises.copyFile(src, audio);
-        replaced = true;
-        return { ok: true, error: "" };
-      },
-      workDir: () => dir,
+      // 2026-08-04 : UNE seule couture au lieu de deux. Le module ne descend plus
+      // et ne remonte plus rien : il nomme le fichier, le reecrit a cote, et le
+      // remplace par un renommage.
+      audioFile: () => audio,
       ...over,
     }),
   };
@@ -310,40 +308,35 @@ test("AUDIO FIRST: l'audio est silencieux AVANT que le document bouge", async ()
   cleanup(f);
 });
 
-test("AUDIO FIRST: un audio qu'on ne peut pas REMPLACER refuse tout le retrait", async () => {
-  // Le pire etat possible serait l'inverse de celui du test ci-dessus : un
-  // document qui annonce un passage supprime au-dessus d'un audio qui le joue
-  // encore. Si la remontee echoue, le document ne doit PAS etre ecrit.
+test("AUDIO FIRST: un audio qu'on ne peut pas REECRIRE refuse tout le retrait", async () => {
+  // Le pire etat possible est un document qui annonce un passage supprime au-dessus
+  // d'un audio qui le joue encore. Si la reecriture echoue, le document ne doit PAS
+  // etre ecrit.
+  //
+  // 2026-08-04 : CE TEST A REMPLACE DEUX AUTRES, et la raison vaut d'etre ecrite.
+  // Il y avait « un audio qu'on ne peut pas DESCENDRE » et « un audio qu'on ne
+  // peut pas REMPLACER » : deux echecs reseau, sur les deux moities d'un
+  // aller-retour avec Storage. L'audio ne quitte plus la machine, donc ces deux
+  // pannes n'existent plus. Celle qui reste est la seule vraie : le disque refuse.
+  //
+  // La panne est provoquee en faisant pointer `audioFile` vers un fichier qui
+  // n'est pas un .wav lisible - ce que `silenceAudio` refuse avant d'ecrire quoi
+  // que ce soit.
   const f = fixture();
   const before = f.doc();
-  const red = new Redactor(
-    f.deps({ replaceAudio: () => Promise.resolve({ ok: false, error: "le stockage a refuse" }) }),
-  );
+  const junk = path.join(f.work, "pas-un-wav.wav");
+  fs.writeFileSync(junk, "ceci n'est pas un RIFF");
+  const red = new Redactor(f.deps({ audioFile: () => junk }));
   const r = await red.remove(f.id, [{ index: 1, startMs: 7000 }]);
   assert.equal(r.ok, false);
-  assert.match(r.error ?? "", /could not replace/i);
   assert.equal(f.doc(), before, "le document n'a pas ete reecrit");
   assert.equal(hasSound(f.audio, 7000, 14_000), true, "et l'audio joue encore le passage");
-  // Et les deux fichiers de travail sont partis, meme sur ce chemin d'echec.
+  // Et aucun fichier de travail ne reste, meme sur ce chemin d'echec.
   assert.deepEqual(
-    fs.readdirSync(f.dir).filter((n) => n.includes(f.id)),
+    fs.readdirSync(f.dir).filter((n) => n.includes(REDACT_SUFFIX)),
     [],
     "aucun fichier de travail ne reste apres un echec",
   );
-  cleanup(f);
-});
-
-test("B3e: un audio qu'on ne peut pas DESCENDRE refuse tout le retrait", async () => {
-  const f = fixture();
-  const before = f.doc();
-  const red = new Redactor(
-    f.deps({ fetchAudio: () => Promise.resolve({ ok: false, error: "hors ligne" }) }),
-  );
-  const r = await red.remove(f.id, [{ index: 1, startMs: 7000 }]);
-  assert.equal(r.ok, false);
-  assert.match(r.error ?? "", /could not fetch/i);
-  assert.equal(f.doc(), before);
-  assert.equal(hasSound(f.audio, 7000, 14_000), true);
   cleanup(f);
 });
 
@@ -353,33 +346,34 @@ test("canari de source : l'audio est remplace AVANT que le document soit ecrit",
   // processus. Si quelqu'un inverse ces deux appels un jour, l'argument de
   // securite du bandeau de ce module cesse de tenir, et ce test tombe.
   //
-  // B3e a change les moyens, pas l'ordre. Le tmp+rename a disparu avec le
-  // fichier : la bascule atomique est maintenant le `upsert` de Storage pour
-  // l'audio, et une ligne de base pour le document. Ce qui reste vrai, et qui
-  // est tout le sujet : au moment ou le document annonce un audio silencieux,
-  // l'audio EST silencieux.
+  // B3e avait change les moyens, pas l'ordre : la bascule atomique etait devenue
+  // le `upsert` de Storage. 2026-08-04 la change encore, et toujours pas l'ordre :
+  // l'audio reste sur la machine, donc la bascule est redevenue un renommage sur
+  // le meme volume. Ce qui reste vrai a travers les trois versions, et qui est
+  // tout le sujet : au moment ou le document annonce un audio silencieux, l'audio
+  // EST silencieux.
   const src = fs.readFileSync(new URL("../src/main/redact.ts", import.meta.url), "utf8");
-  const silence = src.indexOf("await this.silenceStoredAudio(");
+  const silence = src.indexOf("await this.silenceLocalAudio(");
   const write = src.indexOf("this.deps.writeDoc(id, plan.doc)");
   assert.ok(silence > 0 && write > 0, "les deux etapes sont toujours la");
   assert.ok(silence < write, "l'audio d'abord, le document ensuite : voir le bandeau du module");
-  // Et le remplacement est ATTENDU. Sans `await`, le document partirait pendant
-  // que l'audio monte encore, ce qui rendrait la pierre tombale fausse
-  // exactement le temps du televersement - des minutes, sur 115 Mo.
-  assert.match(src.slice(silence - 10, silence + 40), /await this\.silenceStoredAudio\(/);
+  // Et la reecriture est ATTENDUE. Sans `await`, le document partirait pendant que
+  // la copie nettoyee s'ecrit encore, ce qui rendrait la pierre tombale fausse
+  // exactement le temps d'une passe sur 115 Mo.
+  assert.match(src.slice(silence - 10, silence + 40), /await this\.silenceLocalAudio\(/);
 });
 
-test("un fichier de travail laisse par une execution tuee est balaye, et l'objet survit", async () => {
-  // B3e : le balayage porte sur le dossier de TRAVAIL, pas sur le dossier de
-  // l'enregistrement - il n'y en a plus. Ce qui ne change pas : un reste d'une
-  // execution morte ne doit ni s'accumuler, ni etre confondu avec l'audio.
+test("un fichier de travail laisse par une execution tuee est balaye, et l'audio survit", async () => {
+  // Le balayage porte sur le dossier de TRAVAIL. Ce qui ne change pas d'une
+  // version a l'autre : un reste d'une execution morte ne doit ni s'accumuler, ni
+  // etre confondu avec l'audio de la reunion.
   const f = fixture();
   const orphan = path.join(f.dir, "rec-0" + REDACT_SUFFIX);
   fs.writeFileSync(orphan, "debris from a run that died mid-scrub");
   const r = await redactor(f).remove(f.id, [{ index: 1, startMs: 7000 }]);
   assert.equal(r.ok, true);
   assert.equal(fs.existsSync(orphan), false, "the orphan is gone");
-  assert.equal(f.audioReplaced(), true, "et l'objet a bien ete remplace");
+  assert.equal(f.audioReplaced(), true, "et l'audio a bien ete reecrit");
   cleanup(f);
 });
 
@@ -393,12 +387,17 @@ test("the sweep only ever touches its own suffix", async () => {
 });
 
 test("un retrait termine ne laisse aucun fichier de travail derriere lui", async () => {
-  // Les DEUX fichiers - la copie descendue et sa version nettoyee - partent dans
-  // un `finally`, y compris quand la remontee echoue. Un .wav d'une heure pese
-  // 115 Mo : deux restes par retrait rempliraient un disque en silence.
+  // Il n'y a plus qu'un fichier de travail - la copie nettoyee - et il devient le
+  // .wav de la reunion par un renommage, ou il part dans un `finally`. Un .wav
+  // d'une heure pese 115 Mo : un reste par retrait remplirait un disque en
+  // silence.
   const f = fixture();
   await redactor(f).remove(f.id, [{ index: 1, startMs: 7000 }]);
-  assert.deepEqual(fs.readdirSync(f.dir).sort(), [], "le dossier de travail est vide");
+  // 2026-08-04 : le dossier n'est plus VIDE, il contient l'audio de la reunion -
+  // c'est le meme dossier depuis que la copie nettoyee s'ecrit a cote de
+  // l'originale. Ce qu'il ne doit pas contenir est un reste de travail, et c'est
+  // exactement ce que cette assertion dit maintenant.
+  assert.deepEqual(fs.readdirSync(f.dir).sort(), ["rec-1.wav"], "il ne reste que l'audio de la reunion");
   cleanup(f);
 });
 

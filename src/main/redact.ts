@@ -89,9 +89,7 @@ export interface RedactDeps {
   /** La reunion, telle que le compte la detient. Rend null quand l'identifiant
    * ne designe rien - et il ne peut jamais designer la reunion de quelqu'un
    * d'autre, parce que la requete porte le jeton de celui qui la fait. */
-  readRecording(
-    id: string,
-  ): Promise<{ doc: string; audioObject: string; audioBytes: number; audioUploaded: number } | null>;
+  readRecording(id: string): Promise<{ doc: string; audioBytes: number } | null>;
   /**
    * Ecrit le document reecrit dans la ligne.
    *
@@ -104,14 +102,14 @@ export interface RedactDeps {
    * ecrit, jamais moins.
    */
   writeDoc(id: string, doc: string): void;
-  /** Descend l'objet audio dans un fichier local, pour pouvoir le reecrire. */
-  fetchAudio(objectName: string, destPath: string): Promise<{ ok: boolean; error: string }>;
-  /** Remplace l'objet audio par ce fichier local. ATTENDU : voir writeDoc. */
-  replaceAudio(objectName: string, srcPath: string): Promise<{ ok: boolean; error: string }>;
-  /** Un dossier de travail sur cette machine. Le silence s'ecrit sur un fichier,
-   * pas sur un objet distant - un .wav d'une heure pese 115 Mo et Storage ne sait
-   * pas mettre des zeros au milieu d'un objet. */
-  workDir(): string;
+  /** Le .wav de cette reunion SUR CETTE MACHINE. Rendu meme quand le fichier
+   * n'existe pas : c'est `silenceStoredAudio` qui constate, une seule fois.
+   *
+   * 2026-08-04 : remplace `fetchAudio` + `replaceAudio`. Le trajet « descendre,
+   * reecrire, remonter » existait parce que l'audio vivait dans un seau et que
+   * Storage ne sait pas mettre des zeros au milieu d'un objet. L'audio ne quitte
+   * plus la machine (decision de Roch), donc le silence s'ecrit sur place. */
+  audioFile(id: string): string;
   log?(msg: string): void;
 }
 
@@ -305,17 +303,19 @@ export class Redactor {
     if (!Array.isArray(expect) || expect.length === 0) return { ok: false, error: "no passage was selected" };
     const entry = await this.deps.readRecording(id);
     if (!entry) return { ok: false, error: "recording not found" };
-    // 2026-08-04 : « il y a un audio » se lit sur ce que le SERVEUR a confirme,
-    // pas sur le chemin. Un chemin est ecrit a la fin de la reunion, avant le
-    // televersement ; il existe donc deux moments ou ce chemin designe un objet
-    // qui n'est pas la - pendant l'envoi, et pour toujours quand le compte a
-    // refuse le fichier pour sa taille (413, vu en vrai le 2026-08-04).
+    // 2026-08-04 : « IL Y A UN AUDIO A FAIRE TAIRE » SE CONSTATE SUR LE DISQUE.
     //
-    // Ce que ca change concretement : le retrait d'un passage FONCTIONNE quand
-    // meme sur ces reunions - il enleve le texte - au lieu d'echouer en entier en
-    // essayant de telecharger un objet inexistant. Et la pierre tombale ecrite
-    // dans le document ne promet plus un silence qui n'a pas eu lieu.
-    const hasAudio = entry.audioObject !== "" && entry.audioBytes > 0 && entry.audioUploaded >= entry.audioBytes;
+    // Ca se lisait sur la ligne (un chemin d'objet, puis un offset confirme), ce
+    // qui etait la bonne lecture tant que l'audio vivait dans un seau. Il vit ici
+    // maintenant, et un fichier qu'on vient de voir est un fait plus fort que
+    // n'importe quelle colonne.
+    //
+    // Ce que ca change pour l'utilisateur : le retrait d'un passage FONCTIONNE sur
+    // une reunion enregistree sur une AUTRE machine - il enleve le texte, qui est
+    // dans le compte - au lieu d'echouer en entier. La pierre tombale ecrite dans
+    // le document dit alors qu'il n'y avait pas d'audio a faire taire ici, ce qui
+    // est exactement vrai.
+    const hasAudio = entry.audioBytes > 0 && fs.existsSync(this.deps.audioFile(id));
 
     this.busy = true;
     try {
@@ -346,7 +346,7 @@ export class Redactor {
       // et la remontee est un `upsert` sur le meme chemin : a aucun instant
       // l'objet ne contient une copie a moitie nettoyee, parce que c'est
       // Storage qui bascule l'objet, pas nous.
-      if (hasAudio) await this.silenceStoredAudio(id, entry.audioObject, plan.ranges);
+      if (hasAudio) await this.silenceLocalAudio(id, plan.ranges);
 
       // Puis le document. Mis en file (voir RedactDeps.writeDoc) : la file est
       // FIFO et l'audio est deja silencieux, donc le pire etat atteignable est
@@ -386,34 +386,38 @@ export class Redactor {
    * intact est exactement le demi-nettoyage silencieux que cette fonctionnalite
    * existe pour empecher.
    */
-  private async silenceStoredAudio(id: string, objectName: string, ranges: readonly RedactionRange[]): Promise<void> {
-    const dir = this.deps.workDir();
-    const local = path.join(dir, `${id}${REDACT_SUFFIX}.src.wav`);
+  /**
+   * FAIRE TAIRE LES PLAGES DANS LE .WAV LOCAL.
+   *
+   * L'ORDRE EST LE MEME QU'AVANT, ET C'EST TOUT CE QUI COMPTE : la copie
+   * nettoyee est ecrite a cote, verifiee, puis elle REMPLACE l'originale d'un
+   * seul renommage. Un renommage sur le meme volume est atomique, donc a aucun
+   * instant le fichier de la reunion ne contient une copie a moitie nettoyee -
+   * c'est la propriete que l'aller-retour avec Storage achetait en trois requetes.
+   *
+   * `silenceAudio` (le module pur, plus bas dans ce fichier) fait le travail
+   * d'octets et rend le chemin de la copie ; il balaie aussi ses propres fichiers
+   * de travail laisses par une tentative precedente.
+   */
+  private async silenceLocalAudio(id: string, ranges: readonly RedactionRange[]): Promise<void> {
+    const file = this.deps.audioFile(id);
     let scrubbed = "";
     try {
-      await fs.promises.mkdir(dir, { recursive: true });
-      const got = await this.deps.fetchAudio(objectName, local);
-      if (!got.ok) {
-        throw new RedactFailure(
-          "Flow could not fetch this recording's audio, so nothing was changed.",
-          `could not fetch ${objectName}: ${got.error}`,
-        );
-      }
-      scrubbed = await silenceAudio(local, ranges, this.deps.log);
-      const put = await this.deps.replaceAudio(objectName, scrubbed);
-      if (!put.ok) {
-        throw new RedactFailure(
-          "Flow could not replace this recording's audio, so nothing was changed.",
-          `could not replace ${objectName}: ${put.error}`,
-        );
-      }
+      scrubbed = await silenceAudio(file, ranges, this.deps.log);
+      await fs.promises.rename(scrubbed, file);
+      scrubbed = ""; // il n'est plus a nettoyer : il EST le fichier de la reunion
+    } catch (err) {
+      if (err instanceof RedactFailure) throw err;
+      throw new RedactFailure(
+        "Flow could not rewrite this recording's audio, so nothing was changed.",
+        `could not silence ${id}: ${err}`,
+      );
     } finally {
-      for (const p of [local, scrubbed]) {
-        if (!p) continue;
+      if (scrubbed) {
         try {
-          await fs.promises.rm(p, { force: true });
+          await fs.promises.rm(scrubbed, { force: true });
         } catch (err) {
-          this.deps.log?.(`[redact] could not remove the work file ${p}: ${err}`);
+          this.deps.log?.(`[redact] could not remove the work file ${scrubbed}: ${err}`);
         }
       }
     }

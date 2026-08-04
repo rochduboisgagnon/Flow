@@ -372,18 +372,19 @@ function TabEngine({ s, patch }: { s: UiStatePayload; patch: Patch }) {
  * juste pour dire que tout est stocke dans le cloud. That's it, garde ca
  * simple. »
  *
- * C'est fait, avec UNE reserve qui n'est pas une desobeissance : « tout est dans
- * le cloud » n'est pas exact, et cette page est la seule qui puisse le corriger.
- * Deux choses restent sur la machine :
+ * Puis, le meme jour et apres la mesure du plafond de 50 Mio : « garder l'audio
+ * local, ne synchroniser que le document ». Les deux consignes ne se contredisent
+ * pas, elles se completent - et cette page est la seule qui puisse dire ou est
+ * quoi sans mentir dans un sens ou dans l'autre. Trois faits, donc :
  *
- *  - l'historique des DICTEES (le texte, un mois, liste sur Home) ;
- *  - un .wav en transit, le temps qu'il monte - et pour toujours quand le compte
- *    l'a refuse pour sa taille (vu en vrai le 2026-08-04).
+ *  - le document, les reglages, le dictionnaire et les notes sont dans le compte ;
+ *  - l'AUDIO des reunions reste ici, et ne part jamais ;
+ *  - l'historique des DICTEES (le texte, un mois) reste ici aussi.
  *
- * Une page « vie privee » qui aurait dit « tout est dans le cloud » aurait donc
- * ete rassurante et fausse, exactement comme le « rien de ce que vous dictez
- * n'est conserve » que cette meme page a deja du corriger une fois. Les deux
- * exceptions tiennent en une phrase chacune, ce qui reste simple.
+ * Et parce que rien n'enleve l'audio tout seul, cette page DIT ce qu'il pese.
+ * 115 Mo par heure sans jamais le mentionner serait la mauvaise version de « vos
+ * donnees restent chez vous », de la meme famille que le « rien de ce que vous
+ * dictez n'est conserve » que cette page a deja du corriger une fois.
  *
  * B3d : et il n'y a plus de chemin de dossier d'enregistrements, ni de regle de
  * nettoyage a 90 jours. Un bouton « Reprendre le nettoyage » qui ne nettoie plus
@@ -391,17 +392,41 @@ function TabEngine({ s, patch }: { s: UiStatePayload; patch: Patch }) {
  */
 function TabStorage({ s }: { s: UiStatePayload }) {
   const legacy = s.legacyHistory;
+  // TIRE a l'ouverture de l'onglet, jamais pousse : compter des fichiers est du
+  // vrai travail disque, et le processus qui le ferait porte le crochet clavier
+  // (voir UI_AUDIO_USAGE). `null` = pas encore mesure, ce qui se dit.
+  const [usage, setUsage] = useState<{ files: number; bytes: number } | null>(null);
+  useEffect(() => {
+    void window.flowui.audioUsage().then(setUsage);
+  }, []);
   return (
     <div className="rows">
       <Row
-        label="Everything is in your account"
-        help="Your settings, your dictionary, your meetings and their audio live in your Flow account, not on this computer. Sign in on another machine and they follow you. Nothing is kept here to be lost with the disk."
+        label="What follows you between computers"
+        help="Your settings, your dictionary, and every meeting's transcript and notes live in your Flow account. Sign in on another machine and they are there."
       >
         <span className="mono">{s.account?.email || "your account"}</span>
       </Row>
       <Row
-        label="What stays on this computer"
-        help="Two things, both on purpose: a rolling month of DICTATION text (listed on Home, erasable there - its audio is never written anywhere), and a recording's audio file for as long as it takes to upload."
+        label="Recorded audio stays on this computer"
+        help="A meeting's audio file is never uploaded anywhere. It is playable and downloadable on the machine that recorded it, and a meeting opened on another computer shows its transcript and notes without the audio. Nothing removes these files on its own: deleting a meeting in Notes deletes its audio too."
+      >
+        {usage === null ? (
+          <span className="sub" style={{ margin: 0 }}>Measuring...</span>
+        ) : usage.files === 0 ? (
+          <span className="sub" style={{ margin: 0 }}>No recorded audio yet</span>
+        ) : (
+          <span className="num">
+            {usage.files} file{usage.files === 1 ? "" : "s"} &#183; {formatMb(usage.bytes)}
+          </span>
+        )}
+        <button className="btn" onClick={() => void window.flowui.openPath("pending-audio")}>
+          Open the audio folder
+        </button>
+      </Row>
+      <Row
+        label="Dictation text stays here too"
+        help="A rolling month of what you dictated, listed on Home and erasable there. The AUDIO of a dictation is never written anywhere, on this machine or in your account."
       >
         <span />
       </Row>
@@ -413,26 +438,12 @@ function TabStorage({ s }: { s: UiStatePayload }) {
           dossier (voir shared/selfCheck.ts). */}
       <Row
         label="Flow's folder on this computer"
-        help="Holds the engine log, your session, and an audio file only while it is on its way up. Nothing you dictate is kept here."
+        help="Holds the engine log, your session, and the audio folder above. Nothing you dictate is kept here."
       >
         <button className="btn" onClick={() => void window.flowui.openPath("data")}>
           Open Flow&apos;s folder
         </button>
       </Row>
-      {/* Montre UNIQUEMENT quand il y a vraiment un fichier en attente. Un compte
-          qui refuse un audio pour sa taille laisse le .wav ici, et c'est alors la
-          seule copie qui existe : le dire est le minimum. */}
-      {s.audioRefusedForSize.length > 0 ? (
-        <Row
-          label="Audio your account refused"
-          help="One or more recordings were too large for your account's per-file limit, so their audio could not be uploaded. Nothing was deleted: the files are still on this computer. Open a recording in Notes to see which one."
-        >
-          <span className="num">{s.audioRefusedForSize.length}</span>
-          <button className="btn" onClick={() => void window.flowui.openPath("pending-audio")}>
-            Open the folder
-          </button>
-        </Row>
-      ) : null}
       {/* Montre UNIQUEMENT quand un dossier porte encore des enregistrements
           d'avant la refonte. Les faire disparaitre de l'ecran sans un mot ferait
           croire qu'ils ont ete supprimes, alors qu'ils sont intacts sur le
@@ -520,3 +531,14 @@ function updateHelp(s: UiStatePayload, msg: string | null): string {
 }
 
 
+
+/** Des megaoctets, ou des gigaoctets quand ca le merite.
+ *
+ * Une fonction a part plutot qu'un calcul en ligne : ce chiffre est la moitie de
+ * la decision « l'audio reste chez vous », et il doit se lire d'un coup d'oeil.
+ * « 1 234 Mo » demande de compter les chiffres ; « 1,2 Go » non. */
+function formatMb(bytes: number): string {
+  const mb = bytes / (1024 * 1024);
+  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
+  return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
+}

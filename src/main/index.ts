@@ -29,13 +29,11 @@ import { Auth } from "./data/auth";
 import { Repo } from "./data/repo";
 import { WorkingCopy } from "./data/workingCopy";
 import { WorkingCopyCaptureStore } from "./data/captureStore";
-import { TusUpload } from "./data/tusUpload";
-import { AudioUploadQueue } from "./audioUpload";
-import { supabaseUrl, supabaseAnonKey } from "../shared/supabaseConfig";
+import { AudioLocal, audioDirIn, migrateAudioDir } from "./audioLocal";
 import { LocalApi } from "./api";
 import { LongRecorder } from "./longform";
 import { historyDownloadStem } from "../shared/downloadName";
-import { MAX_DOC_DISPLAY_BYTES } from "../shared/recordings";
+import { MAX_DOC_DISPLAY_BYTES, type RecordingSummary } from "../shared/recordings";
 import { LiveNotesStore } from "./liveNotes";
 import { AudioDecodeWindow } from "./audioDecode";
 import { ImportQueue } from "./audioImport";
@@ -308,6 +306,14 @@ if (!app.requestSingleInstanceLock()) {
     // B2 : history.start() a disparu avec son minuteur de vidage - il n'y a plus
     // de fichier a vider, la copie de travail tient la file.
     noticeRetiredHistoryFolder(); // B3d : signaler <dataDir>/history s'il porte encore des reunions
+    // 2026-08-04 : `pending-audio` devient `audio`. Ici, et pas plus tard : le
+    // balayage et le recorder lisent tous les deux le nouveau nom, et une fenetre
+    // ou les deux dossiers sont vivants ferait passer un audio pour absent.
+    migrateAudioDir(dataDir(), flowLog);
+    // 2026-08-04 : `pending-audio` devient `audio`. Ici, et pas plus tard : le
+    // balayage et le recorder lisent tous les deux le nouveau nom, et une fenetre
+    // ou les deux dossiers sont vivants ferait passer un audio pour absent.
+    migrateAudioDir(dataDir(), flowLog);
     logLegacyHistoryState(); // et dire ou elles sont, une fois par lancement
     // B3d : plus rien a balayer ni a purger au demarrage du moteur.
     //
@@ -387,10 +393,19 @@ if (!app.requestSingleInstanceLock()) {
     // document a la lecture ferait qu'une annotation le reecrirait tronque, ce
     // qui detruirait la fin du transcript de quelqu'un. L'affichage borne, le
     // depot rend tout.
+    /**
+     * LA LISTE, PLUS UN FAIT QUE SEULE CETTE MACHINE CONNAIT.
+     *
+     * 2026-08-04 : le depot dit qu'une reunion a garde son audio ; il ne peut pas
+     * dire si le fichier est ICI. Un seul `readdir` repond pour toute la liste -
+     * jamais un `existsSync` par ligne, parce que ce processus porte le crochet
+     * clavier et qu'une liste peut compter deux mille reunions.
+     */
     const listRecordingsDep = async () => {
       const r = await repo.listRecordings();
       if (!r.ok) flowLog(`[data] la liste des reunions n'a pas pu etre lue : ${r.error}`);
-      return r.data;
+      const here = await audioLocal.present();
+      return r.data.map((item) => ({ ...item, audioLocal: here.has(item.id) }));
     };
     const readRecordingDocDep = async (id: string) => {
       const r = await captureStore.read(id);
@@ -409,9 +424,17 @@ if (!app.requestSingleInstanceLock()) {
       const row = await captureStore.read(id);
       const gone = await repo.deleteRecording(id);
       if (!gone.ok) flowLog(`[data] la reunion n'a pas pu etre supprimee : ${gone.error}`);
-      if (gone.ok && row?.audioPath) {
-        const wiped = await repo.deleteAudio(row.audioPath);
-        if (!wiped.ok) flowLog(`[data] l'audio de la reunion supprimee est reste : ${wiped.error}`);
+      if (gone.ok) {
+        // 2026-08-04 : LE FICHIER LOCAL AUSSI, et c'est le cas normal maintenant.
+        // Sans cette ligne, supprimer une reunion laisserait 101 Mo que plus rien
+        // ne peut nommer - le pire genre de fuite, parce qu'elle est invisible.
+        await audioLocal.remove(id);
+        // Et l'objet du seau quand la reunion vient d'une version 2.0.x et que le
+        // balayage n'est pas encore passe.
+        if (row?.audioPath) {
+          const wiped = await repo.deleteAudio(row.audioPath);
+          if (!wiped.ok) flowLog(`[data] l'audio de la reunion supprimee est reste : ${wiped.error}`);
+        }
       }
       return listRecordingsDep();
     };
@@ -462,9 +485,14 @@ if (!app.requestSingleInstanceLock()) {
       longGap: (seconds) => longRec.gap(seconds),
       longTranscript: longTranscriptDep,
       // B3e : les deux consts ci-dessus, partagees octet pour octet avec
-      // UiBridge. `resolveHistoryEntry` a disparu avec le dossier : la route
-      // /long/history/audio ne peut plus diffuser un fichier local, et elle rend
-      // desormais une URL signee - voir api.ts.
+      // UiBridge. `resolveHistoryEntry` a disparu avec le dossier.
+      //
+      // 2026-08-04 : la route /long/history/audio diffuse a nouveau un FICHIER
+      // local - c'est la seule chose qu'elle puisse faire depuis que l'audio ne
+      // monte plus. Le chemin est resolu ICI, jamais recu d'un client, donc cette
+      // route ne peut pas devenir une primitive de lecture arbitraire. L'URL
+      // signee reste derriere, pour les reunions faites par une version 2.0.x.
+      localAudioPath: localAudioPathDep,
       listHistory: listRecordingsDep,
       readHistoryDoc: readRecordingDocDep,
       signAudio: (id) => signAudioDep(id),
@@ -534,7 +562,8 @@ if (!app.requestSingleInstanceLock()) {
           const info = legacyHistoryForUi();
           return info && info.exists ? info.dir : null;
         },
-        pendingAudioDir: () => pendingAudioDir,
+        pendingAudioDir: () => audioLocal.dir(),
+        audioUsage: () => audioLocal.totalBytes(),
         log: flowLog,
         logPath: () => path.join(dataDir(), "flow.log"),
         dataDirPath: () => dataDir(),
@@ -699,11 +728,10 @@ function getUiState(): UiStatePayload {
     // Ce qui n'est pas encore monte dans le compte, toutes files confondues. Pour
     // le DIRE : une reunion en cours hors ligne est en securite, mais quelqu'un
     // doit pouvoir le savoir plutot que de l'esperer.
-    unsent: workingCopy.pending() + audioUploads.pending(),
-    // Et ce qui ne montera JAMAIS tel quel : un .wav plus gros que la taille
-    // maximale d'un objet du compte. La page Notes s'en sert pour dire ou est
-    // l'audio au lieu d'offrir un telechargement qui rendrait 404.
-    audioRefusedForSize: audioUploads.refusedForSize(),
+    // 2026-08-04 : l'audio ne fait plus partie de ce compte. Il n'y a plus qu'une
+    // file - celle du document - et « unsent » redit exactement ce qu'il dit :
+    // ce qui n'est pas encore monte dans le compte.
+    unsent: workingCopy.pending(),
     // F1: derived on every snapshot from the live settings AND the live process,
     // never remembered here - the Settings row that reads it must not be able to
     // outlive the fact it describes.
@@ -1109,30 +1137,32 @@ const captureStore = new WorkingCopyCaptureStore({ workingCopy, repo });
 
 /** Ou les .wav en transit attendent leur televersement. `dataDir()` est appele
  * ici - main/index.ts en a le droit, longform.ts non. */
-const pendingAudioDir = path.join(dataDir(), "pending-audio");
+/**
+ * OU VIVENT LES .WAV DES REUNIONS, ET LE MODULE QUI EN REPOND.
+ *
+ * 2026-08-04, decision de Roch : l'audio reste sur la machine, seul le document
+ * se synchronise. Ce qui vivait ici - une file de televersement TUS, son client
+ * HTTP, ses reprises et ses tranches de 6 Mo - a ete supprime, pas desactive.
+ *
+ * `dataDir()` est appele ICI : main/index.ts a le droit de resoudre un chemin,
+ * longform.ts et audioImport.ts non.
+ */
+const audioDir = audioDirIn(dataDir());
+const audioLocal = new AudioLocal({ dir: () => audioDir, log: flowLog });
 
-// B3c : la file de televersement de l'audio.
-//
-// LE JETON PASSE PAR UNE FONCTION, et il n'est garde nulle part. Le RLS de
-// storage.objects est reevalue a chaque requete non-HEAD, donc chaque tranche le
-// porte ; la sixieme des sept regressions du plan est une fuite de jeton dans le
-// journal, et c'est pourquoi il n'est jamais range dans un champ.
-const audioUploads = new AudioUploadQueue({
-  tus: new TusUpload({
-    projectUrl: () => supabaseUrl(),
-    anonKey: () => supabaseAnonKey(),
-    accessToken: async () => (await supabase.auth.getSession()).data.session?.access_token ?? "",
-    log: flowLog,
-  }),
-  userId: () => repo.userId(),
-  readRow: (id) => captureStore.read(id),
-  writeRow: (row) => captureStore.write(row),
-  pendingDir: () => pendingAudioDir,
-  // La reunion en cours ecrit encore dans son .wav : ni le televerser, ni le
-  // supprimer. Lu paresseusement plutot que capture, parce que ca change.
-  recordingNow: () => (longRec.isBusy ? longRec.state().recordingId : ""),
-  log: flowLog,
-});
+/** La liste des reunions, pour le BALAYAGE de l'audio.
+ *
+ * Une fonction de module et non la fermeture `listRecordingsDep` : celle-la vit
+ * dans `whenReady`, et le balayage part de `loadAccountData`. Ce qu'elle rend est
+ * la meme chose, calculee de la meme facon - le depot, puis ce que ce disque a -
+ * et le balayage n'a besoin de rien de plus.
+ */
+async function listRecordingsForSweep(): Promise<RecordingSummary[]> {
+  const r = await repo.listRecordings();
+  if (!r.ok) throw new Error(r.error);
+  const here = await audioLocal.present();
+  return r.data.map((item) => ({ ...item, audioLocal: here.has(item.id) }));
+}
 
 /** Charge le compte, puis reveille ce qui en depend.
  *
@@ -1170,10 +1200,27 @@ async function loadAccountData(): Promise<void> {
     },
     (err) => flowLog(`[long] le sauvetage des reunions interrompues a echoue : ${err}`),
   );
-  // B3c : et les televersements d'audio laisses en route. Meme discipline - en
-  // arriere-plan, rejouable, et le balayage part du DISQUE parce qu'un .wav en
-  // transit est la seule chose qui puisse encore etre envoyee.
-  void audioUploads.resumePending().catch((err) => flowLog(`[audio] la reprise a echoue : ${err}`));
+  // 2026-08-04 : LE BALAYAGE DE L'AUDIO. Il ne televerse plus rien ; il RAMENE
+  // l'audio des reunions faites par une version 2.0.x, pour que la decision de
+  // Roch soit vraie des reunions deja enregistrees et pas seulement des
+  // prochaines. Meme discipline que le sauvetage juste au-dessus : en
+  // arriere-plan, rejouable, et destructeur uniquement sur un fait certain.
+  void audioLocal
+    .sweep({
+      list: listRecordingsForSweep,
+      read: (id) => captureStore.read(id),
+      write: (row) => captureStore.write(row),
+      fetch: (objectName, destPath) => repo.downloadAudioTo(objectName, destPath),
+      releaseObject: async (objectName) => {
+        const wiped = await repo.deleteAudio(objectName);
+        // Pas une erreur bloquante : l'objet peut deja ne pas exister (c'est le
+        // cas d'une reunion dont l'audio avait ete refuse pour sa taille), et
+        // l'audio est en securite sur le disque de toute facon.
+        if (!wiped.ok) flowLog(`[audio] l'objet du compte n'a pas pu etre lache : ${wiped.error}`);
+      },
+      recordingNow: () => (longRec.isBusy ? longRec.state().recordingId : ""),
+    })
+    .catch((err) => flowLog(`[audio] le balayage a echoue : ${err}`));
 }
 
 /** Le dernier etat de compte connu, rafraichi par la poussee a 1 Hz.
@@ -1533,14 +1580,10 @@ const longRec = new LongRecorder({
   // B3a : le document part ICI, et nulle part ailleurs. Le recorder ne sait pas
   // que Supabase existe.
   store: captureStore,
-  // B3a : le .wav en transit. `dataDir()` est appele ici - main/index.ts a le
-  // droit, longform.ts non - pour que le recorder n'ait plus aucune idee de
-  // l'endroit ou vivent les donnees de cette machine.
-  pendingAudioDir,
-  // B3c : le chemin de l'objet audio est `<uid>/<recording>.wav`, et ce prefixe
-  // EST la frontiere que les politiques de Storage verifient.
-  accountId: () => repo.userId(),
-  uploadAudio: (id) => audioUploads.enqueue(id),
+  // B3a : le .wav de la reunion. `dataDir()` est appele dans audioLocal, jamais
+  // ici ni dans longform.ts, pour que le recorder n'ait aucune idee de l'endroit
+  // ou vivent les donnees de cette machine.
+  audioDir,
   // D7: the recorder opens the slot at start() and folds it into the document on
   // both of its end paths (normal finalize, quit rescue). Narrowed to those three
   // methods on purpose: the recorder has no business listing or editing notes,
@@ -1595,6 +1638,23 @@ function downloadStemFor(title: string, startedIso: string): string {
   return historyDownloadStem(`${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`, title);
 }
 
+/**
+ * LE .WAV DE CETTE REUNION SUR CETTE MACHINE, OU "".
+ *
+ * SYNCHRONE, et c'est ce qui la rend utilisable par la route HTTP sans la faire
+ * attendre : un `existsSync` sur un chemin compose, rien d'autre. Il n'y a pas de
+ * lecture de ligne ici - le nom du fichier EST l'identifiant de la reunion, donc
+ * la question « ce disque a-t-il cet audio » se repond sans le compte.
+ *
+ * Le chemin ne vient jamais d'un appelant : la route ne peut donc pas devenir une
+ * primitive de lecture arbitraire, exactement comme avant.
+ */
+function localAudioPathDep(id: string): string {
+  if (!id) return "";
+  const p = audioLocal.pathFor(id);
+  return fs.existsSync(p) ? p : "";
+}
+
 /** Une URL signee, courte, pour que la page PWA puisse ecouter l'audio d'une
  * reunion. Signee et non publique : le seau est prive, et il doit le rester -
  * l'audio d'une reunion en dit autant que son transcript. */
@@ -1634,9 +1694,12 @@ const redactor = new Redactor({
       if (row) captureStore.write({ ...row, doc });
     });
   },
-  fetchAudio: (objectName, destPath) => repo.downloadAudioTo(objectName, destPath),
-  replaceAudio: (objectName, srcPath) => audioUploads.uploadFile(objectName, srcPath),
-  workDir: () => pendingAudioDir,
+  // 2026-08-04 : LE SILENCE S'ECRIT SUR PLACE. Le trajet « descendre, reecrire,
+  // remonter » a disparu avec le televersement : le fichier est ici, et c'est
+  // celui-la qu'on nettoie. Trois etapes reseau de moins, et le pire etat
+  // atteignable est meilleur - il n'existe plus d'instant ou une copie nettoyee
+  // attend de remplacer un objet distant.
+  audioFile: (id) => audioLocal.pathFor(id),
   log: flowLog,
 });
 
@@ -1673,9 +1736,7 @@ const importQueue = new ImportQueue({
   // implementation, et exactement ce que le §5.1.4 promet - un import interrompu
   // est visible comme interrompu, jamais disparu.
   store: captureStore,
-  accountId: () => repo.userId(),
-  uploadAudio: (id) => audioUploads.enqueue(id),
-  pendingAudioDir: () => pendingAudioDir,
+  audioDir: () => audioLocal.ensure(),
   summaryModel: () => settings.summaryModel,
   ollamaModels: () => listOllamaModels(),
   summarize: (_model, prompt) => llmProvider.long(prompt),

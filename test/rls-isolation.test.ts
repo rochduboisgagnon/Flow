@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { createFlowClient } from "../src/main/data/client";
-import { audioObjectName } from "../src/shared/tus";
+import { audioObjectName } from "../src/shared/recordings";
 
 // ---------------------------------------------------------------------------
 // A1, la preuve : un compte A ne lit AUCUNE ligne d'un compte B.

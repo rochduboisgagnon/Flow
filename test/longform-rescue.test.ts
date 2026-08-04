@@ -221,7 +221,7 @@ test("B3a: quitter en cours de reunion ferme la ligne avec son avertissement, sa
   } as unknown as WhisperSidecar;
   const { rec, store } = make({
     transcribeSegment: (wav) => wedged.transcribe(wav),
-    pendingAudioDir: path.join(work, "pending"),
+    audioDir: path.join(work, "pending"),
   });
 
   const started = rec.start({ title: "Interrupted client call", keepAudio: true });

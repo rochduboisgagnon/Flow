@@ -63,6 +63,13 @@ export interface ApiDeps {
   // le crochet clavier pour aller d'un disque a un telephone.
   listHistory(): Promise<RecordingSummary[]>;
   readHistoryDoc(id: string): Promise<RecordingDocPayload | null>;
+  /** Le chemin du .wav de cette reunion SUR CETTE MACHINE, ou "" si elle ne l'a
+   * pas. Resolu dans main - le client ne passe jamais un chemin, et cette route
+   * ne peut donc pas devenir une primitive de lecture arbitraire.
+   *
+   * C'est le cas normal depuis le 2026-08-04. `signAudio` juste en dessous ne
+   * sert plus qu'aux reunions faites par une version 2.0.x. */
+  localAudioPath?(id: string): string;
   signAudio(id: string): Promise<{ url: string; bytes: number } | null>;
   // Settings surface (plan v2 chantier A): AGR Flow is headless; AGR Manager's
   // AGR Flow view is the ONLY user-facing settings UI and drives it through
@@ -554,6 +561,15 @@ export class LocalApi {
       }
       if (req.method === "GET" && url.pathname === "/long/history/audio") {
         const id = url.searchParams.get("id") || "";
+        // 2026-08-04 : LE FICHIER LOCAL D'ABORD, et c'est le cas normal depuis que
+        // l'audio ne quitte plus la machine (decision de Roch). La redirection
+        // signee juste en dessous ne sert plus qu'aux reunions faites par une
+        // version 2.0.x, le temps que le balayage de demarrage ramene leur objet.
+        const local = this.deps.localAudioPath?.(id) ?? "";
+        if (local) {
+          this.streamAudioFile(local, req, res);
+          return;
+        }
         const signed = await this.deps.signAudio(id);
         if (!signed) return json(404, { error: "not found" });
         // UNE REDIRECTION, plus un flux d'octets.
@@ -596,11 +612,73 @@ export class LocalApi {
       json(500, { error: String(err) });
     }
   }
-  // B3e : `streamAudioFile` est parti avec les fichiers qu'il diffusait. Il
-  // portait une implementation de Range HTTP - parse de l'en-tete, 206 partiel,
-  // 416 sur une plage impossible - qui existait pour qu'un lecteur audio puisse
-  // sauter dans une reunion de trois heures. Storage sait faire tout ca, et il le
-  // fait SANS passer par le processus qui porte le crochet clavier.
+  /**
+   * DIFFUSER UN .WAV LOCAL, AVEC LES REQUETES DE PLAGE.
+   *
+   * ---------------------------------------------------------------------------
+   * CETTE METHODE A ETE SUPPRIMEE PUIS RESTAUREE, ET LES DEUX FOIS POUR UNE
+   * BONNE RAISON
+   * ---------------------------------------------------------------------------
+   *
+   * B3e l'avait retiree avec les fichiers qu'elle diffusait : Storage servait les
+   * octets lui-meme, avec ses propres requetes de plage, sans faire relire un
+   * fichier de 115 Mo au processus qui porte le crochet clavier. L'argument etait
+   * juste.
+   *
+   * 2026-08-04 : l'audio ne monte plus dans Storage, donc ce processus est
+   * redevenu le seul qui puisse servir ces octets. Le cout que B3e nommait est
+   * donc REVENU, et il faut le dire plutot que le decouvrir : chaque saut dans le
+   * lecteur emet une requete de plage, et chaque requete ouvre un flux de lecture
+   * dans le processus principal.
+   *
+   * Ce qui le rend acceptable, mesure plutot que suppose : `createReadStream`
+   * avec `start`/`end` ne lit QUE la plage demandee - il ne charge pas le fichier
+   * - et il est asynchrone, donc il ne bloque pas la boucle d'evenements sur
+   * laquelle le crochet clavier rend son verdict. C'est exactement le code qui a
+   * tourne pendant toutes les versions 1.x, sur les memes fichiers.
+   *
+   * LES TROIS REPONSES, ET POURQUOI CHACUNE : 206 avec `Content-Range` pour une
+   * plage valide (sans quoi un lecteur ne peut pas chercher), 416 pour une plage
+   * impossible (plutot que de servir autre chose que ce qui est demande), et 200
+   * complet quand il n'y a pas d'en-tete `Range` - ce que la spec autorise.
+   */
+  private streamAudioFile(file: string, req: http.IncomingMessage, res: http.ServerResponse): void {
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(file);
+    } catch {
+      const body = JSON.stringify({ error: "not found" });
+      res.writeHead(404, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) });
+      res.end(body);
+      return;
+    }
+    const total = stat.size;
+    const range = req.headers.range;
+    const m = typeof range === "string" ? /^bytes=(\d*)-(\d*)$/.exec(range) : null;
+    if (m) {
+      const start = m[1] ? parseInt(m[1], 10) : 0;
+      const end = m[2] ? parseInt(m[2], 10) : total - 1;
+      if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start < 0 || end >= total) {
+        res.writeHead(416, { "Content-Range": `bytes */${total}` });
+        res.end();
+        return;
+      }
+      res.writeHead(206, {
+        "Content-Type": "audio/wav",
+        "Accept-Ranges": "bytes",
+        "Content-Range": `bytes ${start}-${end}/${total}`,
+        "Content-Length": end - start + 1,
+      });
+      const stream = fs.createReadStream(file, { start, end });
+      stream.on("error", () => res.end());
+      stream.pipe(res);
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "audio/wav", "Accept-Ranges": "bytes", "Content-Length": total });
+    const stream = fs.createReadStream(file);
+    stream.on("error", () => res.end());
+    stream.pipe(res);
+  }
 
 
   stop() {

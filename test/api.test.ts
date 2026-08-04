@@ -320,6 +320,9 @@ test("U5a: /long/history returns listHistory()'s items wrapped as { items }", as
     audioBytes: 12,
     audioUploaded: 12,
     hasAudio: true,
+        // 2026-08-04 : l'audio est sur CETTE machine, pas dans le compte.
+        audioLocal: true,
+        audioInAccount: false,
     staged: true,
     endedIso: "2026-07-27T14:00:00.000Z",
   };

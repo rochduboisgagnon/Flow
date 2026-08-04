@@ -36,6 +36,7 @@ import {
   UI_SIGN_IN,
   UI_SIGN_OUT,
   UI_OPEN_PATH,
+  UI_AUDIO_USAGE,
   UI_GET_LOGIN_ITEM,
   UI_SET_LOGIN_ITEM,
   UI_CHECK_UPDATES,
@@ -213,6 +214,9 @@ const ui = {
     which: "log" | "data" | "history" | "legacy-history" | "pending-audio" | "repo" | "downloaded-file",
   ): Promise<void> =>
     ipcRenderer.invoke(UI_OPEN_PATH, which),
+  /** Ce que l'audio des reunions pese sur ce disque. TIRE : voir UI_AUDIO_USAGE
+   * sur pourquoi ce chiffre ne voyage pas dans la poussee a 1 Hz. */
+  audioUsage: (): Promise<{ files: number; bytes: number }> => ipcRenderer.invoke(UI_AUDIO_USAGE),
   getLoginItem: (): Promise<boolean> => ipcRenderer.invoke(UI_GET_LOGIN_ITEM),
   setLoginItem: (on: boolean): Promise<boolean> => ipcRenderer.invoke(UI_SET_LOGIN_ITEM, on),
   checkUpdates: (): Promise<UpdateCheckResult> => ipcRenderer.invoke(UI_CHECK_UPDATES),

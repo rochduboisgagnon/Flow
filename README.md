@@ -35,15 +35,29 @@ What makes it different from the tools it is inspired by:
 
   - **Your data lives in a Supabase project in Canada** (`ca-central-1`), under
     an account that is yours: settings, dictionary, statistics, dictation
-    history, meeting documents, and meeting audio.
+    history, and meeting documents.
+  - **A meeting's AUDIO is the one thing that does not travel.** It stays on the
+    machine that recorded it, and it is never uploaded anywhere. Open that
+    meeting on another computer and you get its transcript and its notes, with a
+    line saying where the recording is.
+
+    *Why, since the audio did upload in 2.0.x:* the project refuses any object
+    over 50 MiB - measured, 52 428 800 bytes accepted and 52 428 801 refused -
+    and a `.wav` of dictation-grade audio reaches that in 27 minutes. Roch's
+    decision, on 2026-08-04, was to keep the audio local rather than pay for a
+    larger ceiling or build an Opus encoder. Settings > Storage & Privacy says
+    what the audio folder weighs, because nothing removes those files on its
+    own.
   - **One account cannot see another's data.** Every table and the audio bucket
     are closed by row-level security, and that is not a claim read off a policy
     file - a test signs in to two real accounts, writes with one, and tries to
     read, write, modify and delete with the other. It runs against the real
     project.
-  - **The audio bucket is private.** A request without a session token gets
-    nothing, which the same test checks. Audio of a meeting says as much as its
-    transcript.
+  - **The audio bucket is private**, and since 2.1.0 it is also EMPTY by
+    design: nothing is written to it any more, and a start-up sweep brings down
+    whatever 2.0.x left there. The policies and their isolation test stay - a
+    bucket that exists and is not closed would be a hole, whether or not
+    anything is in it.
   - **There is no sign-up.** Accounts are created deliberately, not by anyone
     who downloads the installer, and the project refuses sign-ups server-side -
     the publishable key ships inside the app, so a door closed only in the
@@ -56,10 +70,14 @@ What makes it different from the tools it is inspired by:
 
 - **What is left on the disk of this machine** is the application, your session
   token (encrypted by the OS keychain), the window's position, `flow.log`,
-  `api.json`, and - while it is being uploaded - the `.wav` of a meeting whose
+  `api.json`, and the `audio/` folder holding the `.wav` of every meeting whose
   audio you asked to keep. Nothing else. The five local stores Flow used to keep
   (`settings.json`, `dictionary.json`, `stats.json`, `history.json`,
   `live-notes.json`) and the `history/` folder of recordings are gone.
+
+  The `audio/` folder is the one thing here that GROWS: 115 MB per hour of
+  recording, and nothing deletes it on its own. Deleting a meeting in Notes
+  deletes its audio with it, and Settings > Storage & Privacy shows the total.
 
 - **Your dictations, as text, for a rolling month.** Listed on the Home page,
   and anything older than 31 days is deleted from the database itself - not
@@ -144,8 +162,9 @@ release       ──> energy VAD (silence never reaches the model)
 
 Settings live in Flow's own window: shortcut (recorded through the low-level hook,
 modifier-only combos welcome), microphone, language, model (tiny through
-large-v3-turbo, the French-friendly default), a soft start/stop sound cue (off by
-default), insertion mode (clipboard paste, or typed keystrokes for paste-hostile
+large-v3-turbo, the French-friendly default), a soft start/stop sound cue (on by
+default since 2.1.0: you dictate into another app, so the pill is out of sight
+and the sound is the only confirmation that reaches you), insertion mode (clipboard paste, or typed keystrokes for paste-hostile
 apps), and an optional local-LLM pass (Ollama) for dictation cleanup and meeting
 summaries.
 
@@ -161,7 +180,7 @@ start (Record page)                       the row exists from the first instant,
    ──> notes you type during the meeting are saved as you type them
 stop
    ──> local LLM notes, spliced into the SAME document
-   ──> the row is closed; the audio (if kept) uploads in resumable 6 MB chunks
+   ──> the row is closed; the audio (if kept) stays in Flow's audio folder
 ```
 
 Three things that only matter when something goes wrong, which is when they
@@ -177,9 +196,11 @@ matter most:
   and it covers a meeting cut short on your *other* computer, which nothing
   could see before. A meeting still being recorded elsewhere is left alone: the
   row's heartbeat says the difference.
-- **An interrupted audio upload resumes.** A one-hour `.wav` is 115 MB. The
-  upload address is kept with the meeting, so closing Flow halfway does not mean
-  starting over - only an address that has expired (24 h) costs a fresh start.
+- **The audio is never in flight, so it can never be half-arrived.** A one-hour
+  `.wav` is 115 MB and it does not move: it is written where it will live, and
+  the meeting's row records its real size. This replaced a resumable upload in
+  2.1.0, and the trade is stated rather than hidden - a meeting recorded on one
+  computer cannot be listened to on another, and its transcript and notes can.
 
 ## Known limits on Windows
 

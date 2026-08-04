@@ -4,6 +4,38 @@
 // UN SEUL type, partage par le moteur, le depot et les pages. La forme SQL ne
 // remonte nulle part (les conversions vivent dans main/data/repo.ts, comme pour
 // le dictionnaire et les statistiques).
+//
+// ---------------------------------------------------------------------------
+// 2026-08-04 : L'AUDIO RESTE SUR LA MACHINE. SEUL LE DOCUMENT SE SYNCHRONISE.
+// ---------------------------------------------------------------------------
+//
+// Decision de Roch, prise apres la mesure du 2026-08-04 : le projet Supabase
+// refuse tout objet de plus de 50 Mio, donc l'audio d'une reunion de plus de
+// 27 minutes ne pouvait pas monter. Trois chemins etaient possibles - payer,
+// compresser en Opus, ou garder l'audio local. Il a choisi le troisieme.
+//
+// CE QUE CA CHANGE DANS CE FICHIER, ET DANS TOUT LE RESTE :
+//
+//  - `audioBytes > 0` veut dire « cette reunion a garde son audio ». C'est le
+//    seul champ de la LIGNE qui parle encore de l'audio, et il est vrai sur
+//    n'importe quelle machine.
+//  - « l'audio est ici » n'est PAS un champ de la ligne : c'est un fait local,
+//    constate en regardant le dossier (main/audioLocal.ts). Une colonne qui
+//    aurait dit « la machine X l'a » aurait pu mentir - la machine X peut avoir
+//    ete reinstallee - alors qu'un fichier qu'on vient de voir ne ment pas.
+//  - `audioPath` (le nom de l'objet dans le seau) est desormais un champ de
+//    TRANSITION. Il reste rempli sur les reunions faites par les versions 2.0.x,
+//    le temps que le balayage de demarrage ramene leur audio et vide la colonne.
+//    Une ligne neuve ne le remplit jamais.
+//  - `audioUploaded`, `audioUploadUrl` et `audioUploadExpires` ne sont plus
+//    ecrits par personne. Les colonnes SQL restent : les supprimer serait une
+//    migration destructive pour zero gain, et elles disent encore quelque chose
+//    de vrai sur les lignes d'avant.
+//
+// CE QUE CETTE DECISION COUTE, ECRIT ICI PLUTOT QUE DECOUVERT : une reunion
+// enregistree sur l'ordinateur A n'est PAS ecoutable sur l'ordinateur B. Son
+// transcript et ses notes, oui - c'est ce que « ne synchroniser que le
+// document » veut dire.
 // ---------------------------------------------------------------------------
 
 /**
@@ -51,20 +83,6 @@ export interface RecordingRow {
   endedIso: string;
 }
 
-/** Ce qui monte en ce moment, pour l'AFFICHER.
- *
- * `totalBytes` vient du fichier reel et non d'un calcul sur la duree : afficher
- * « 42 sur 115 Mo » demande la vraie taille, et un .wav a une entete plus des
- * trous de capture que l'arithmetique ne connait pas. */
-export interface AudioUploadProgress {
-  recordingId: string;
-  sentBytes: number;
-  totalBytes: number;
-  /** Combien de tranches le fichier demande. Sert a dire « tranche 7 sur 19 »
-   * plutot qu'un pourcentage qui bouge par sauts de 6 Mo sans explication. */
-  chunks: number;
-}
-
 /** Ce que la page Notes affiche : tout sauf le document.
  *
  * Le document en est EXCLU volontairement. Une liste de deux mille reunions qui
@@ -79,7 +97,19 @@ export interface RecordingSummary {
   docBytes: number;
   audioBytes: number;
   audioUploaded: number;
+  /** Cette reunion a-t-elle garde un audio ? Vrai sur n'importe quelle machine :
+   * c'est un fait sur la reunion, pas sur ce disque-ci. */
   hasAudio: boolean;
+  /** Le fichier est-il sur CETTE machine ? Constate en regardant le dossier au
+   * moment de la liste, jamais lu dans une colonne - voir le bandeau du fichier.
+   *
+   * C'est ce qui separe « ecoutable ici » de « enregistre sur l'autre
+   * ordinateur », et la page Notes ne peut pas dire l'un pour l'autre. */
+  audioLocal: boolean;
+  /** Reste-t-il un objet dans le seau ? Vrai seulement sur les reunions faites
+   * par une version 2.0.x, jusqu'a ce que le balayage de demarrage ramene leur
+   * audio. La page s'en sert pour pouvoir jouer l'audio pendant cette fenetre. */
+  audioInAccount: boolean;
   staged: boolean;
   endedIso: string;
 }
@@ -156,3 +186,23 @@ export const MAX_DOC_DISPLAY_BYTES = 5 * 1024 * 1024;
  * la liste s'arrete la - une troncature silencieuse se lit comme « voila tout ce
  * que vous avez ».  */
 export const MAX_RECORDINGS_LISTED = 2000;
+
+/**
+ * LE SEAU PRIVE, ET LE NOM D'UN OBJET DEDANS.
+ *
+ * 2026-08-04 : ces deux-la sont tout ce qui reste de shared/tus.ts, supprime avec
+ * le televersement qu'il servait. Ils ne servent plus qu'a DEUX choses, et
+ * aucune n'ecrit un nouvel objet :
+ *
+ *  - lire, puis lacher, l'objet d'une reunion faite par une version 2.0.x, le
+ *    temps que le balayage de demarrage ramene son audio (main/audioLocal.ts) ;
+ *  - prouver que le RLS du seau isole bien deux comptes (test/rls-isolation).
+ *
+ * Le prefixe EST la frontiere : les politiques de la premiere migration
+ * n'autorisent que `(storage.foldername(name))[1] = auth.uid()`.
+ */
+export const AUDIO_BUCKET = "recordings";
+
+export function audioObjectName(userId: string, recordingId: string): string {
+  return `${userId}/${recordingId}.wav`;
+}

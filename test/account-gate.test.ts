@@ -241,7 +241,11 @@ test("2026-08-04 : aucune phrase d'explication sous les champs ni sous Sign out"
 test("ce qui n'est pas monte est DIT, pas attendu", () => {
   // La troisieme des sept regressions par la porte de derriere : un compteur
   // affiche ne doit jamais devenir un compteur attendu.
-  assert.match(INDEX, /unsent: workingCopy\.pending\(\) \+ audioUploads\.pending\(\)/);
+  // 2026-08-04 : il n'y a plus qu'UNE file. Celle de l'audio a disparu avec le
+  // televersement (l'audio reste sur la machine), donc `unsent` ne compte plus
+  // que le document. Ce que ce test defend n'a pas bouge : le compteur est
+  // AFFICHE, jamais attendu.
+  assert.match(INDEX, /unsent: workingCopy\.pending\(\)/);
   assert.match(SETTINGS, /s\.unsent > 0 \?/, "Reglages le montre quand il y a quelque chose a montrer");
   assert.ok(!/await .*\.pending\(\)/.test(INDEX), "et personne ne l'attend");
 });

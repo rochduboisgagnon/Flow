@@ -6,7 +6,7 @@ import type { DictEntry, DictKind } from "../../shared/ipcContracts";
 import type { StatsDay } from "../../shared/stats";
 import { retentionCutoff, type HistoryEntry } from "../../shared/dictationHistory";
 import type { OpenRecording, RecordingRow, RecordingSummary } from "../../shared/recordings";
-import { AUDIO_BUCKET } from "../../shared/tus";
+import { AUDIO_BUCKET } from "../../shared/recordings";
 import { MAX_RECORDINGS_LISTED } from "../../shared/recordings";
 
 // ---------------------------------------------------------------------------
@@ -624,11 +624,24 @@ function rowToSummary(r: SummaryRow): RecordingSummary {
     docBytes: r.doc_bytes ?? 0,
     audioBytes: r.audio_bytes ?? 0,
     audioUploaded: r.audio_uploaded ?? 0,
-    // « il y a un audio » se lit sur le CHEMIN et non sur les octets : une
-    // reunion dont le televersement est encore en cours a un chemin et zero
-    // octet arrive, et la page doit pouvoir montrer sa progression plutot que
-    // pretendre qu'il n'y a pas d'audio.
-    hasAudio: audioPath !== "",
+    // 2026-08-04 : « CETTE REUNION A GARDE SON AUDIO » SE LIT SUR LES OCTETS.
+    //
+    // Ca se lisait sur le CHEMIN de l'objet, ce qui etait juste tant que l'audio
+    // montait dans le seau. Il n'y monte plus (decision de Roch : l'audio reste
+    // sur la machine), donc une reunion neuve n'a pas de chemin du tout et la
+    // taille est le seul fait qui traverse.
+    //
+    // C'est aussi le seul des deux qui soit vrai SUR N'IMPORTE QUELLE MACHINE :
+    // l'ordinateur B sait que la reunion a 101 Mo d'audio, et sait qu'il ne les a
+    // pas. `audioLocal` est ajoute par le moteur juste apres, en regardant le
+    // dossier - jamais lu dans une colonne.
+    hasAudio: (r.audio_bytes ?? 0) > 0,
+    // Rempli par le moteur (main/index.ts, historyList) : le depot ne connait
+    // pas ce disque-ci. `false` par defaut est le bon defaut - il ne promet rien.
+    audioLocal: false,
+    // Reste-t-il un objet dans le seau ? Vrai uniquement sur les reunions faites
+    // par une version 2.0.x, jusqu'a ce que le balayage de demarrage les ramene.
+    audioInAccount: audioPath !== "",
     staged: r.staged === true,
     endedIso: r.ended_at ?? "",
   };
