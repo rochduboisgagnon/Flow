@@ -129,6 +129,14 @@ function get(url, headers) {
     }
   }
   if (!fs.existsSync(EXE)) throw new Error(`${path.basename(EXE)} absent apres extraction`);
+  // L'arborescence de l'archive n'a plus rien a porter : les binaires et les
+  // bibliotheques ont ete remontes a plat juste au-dessus. La retirer ici plutot
+  // que de la laisser a l'elagage, qui ne touche qu'a des fichiers.
+  for (const e of fs.readdirSync(OUT_DIR, { withFileTypes: true })) {
+    if (e.isDirectory() && /^llama-/.test(e.name)) {
+      fs.rmSync(path.join(OUT_DIR, e.name), { recursive: true, force: true });
+    }
+  }
   // Une archive ne porte pas toujours le bit d'execution, et un binaire non
   // executable echoue au `spawn` avec EACCES - une panne qui ressemble a un
   // fichier manquant. Sans effet sur Windows.
@@ -161,7 +169,14 @@ function get(url, headers) {
   let removedBytes = 0;
   const drop = (name) => {
     const p = path.join(OUT_DIR, name);
-    removedBytes += fs.statSync(p).size;
+    const st = fs.statSync(p);
+    // 2026-08-04, TROUVE PAR LE PREMIER BUILD macOS : ne toucher qu'a des
+    // FICHIERS. L'archive Mac se deballe dans un dossier « llama-b10234/ », dont
+    // le nom satisfait le motif des outils a elaguer - `unlink` sur un dossier
+    // rend EPERM, et le script mourait apres avoir verifie l'empreinte et extrait
+    // les binaires. Le dossier vide, lui, est retire juste apres la mise a plat.
+    if (st.isDirectory()) return;
+    removedBytes += st.size;
     fs.unlinkSync(p);
     removed++;
   };
