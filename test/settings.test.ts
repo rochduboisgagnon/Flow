@@ -68,7 +68,14 @@ test("defaults are Ctrl+Shift, large-v3-turbo, French forced, and the press is a
   // deux couts de Ctrl+Shift lui ont ete mesures et dits avant qu'il tranche (la
   // bascule de disposition de clavier de Windows, et les raccourcis Ctrl+Shift+X
   // des applications) ; ils sont ecrits au-dessus de `defaultComboFor`.
-  assert.deepEqual(SETTINGS_DEFAULTS.combo, ["CTRL", "SHIFT"]);
+  // MON ERREUR DU 2026-08-04, trouvee par le premier build macOS : cette ligne
+  // affirmait Ctrl+Shift quelle que soit la machine, alors que le defaut est
+  // DERIVE de la plateforme depuis ce matin. Sur un runner Mac, le defaut vaut
+  // Fn+Shift et le test tombait - a juste titre.
+  //
+  // L'invariant qui vaut sur les deux : le defaut effectif est celui de CETTE
+  // plateforme. Les deux valeurs explicites restent verifiees juste apres.
+  assert.deepEqual(SETTINGS_DEFAULTS.combo, defaultComboFor(process.platform));
   assert.deepEqual(defaultComboFor("win32"), ["CTRL", "SHIFT"]);
   assert.deepEqual(defaultComboFor("darwin"), ["FN", "SHIFT"], "le clavier Mac a son propre defaut");
   assert.match(SETTINGS_DEFAULTS.model, /^ggml-large-v3-turbo/);

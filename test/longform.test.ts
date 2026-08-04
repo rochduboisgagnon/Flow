@@ -438,7 +438,16 @@ test("F1: an ordinary local folder is still accepted - the fix must not remove t
     assert.equal(refuseUnsafeDestination(work), null, "a real local folder is a normal destination");
     // The point of NOT confining to the home directory: saving to another
     // volume is a thing a person does, and must not be called suspicious.
-    assert.equal(refuseUnsafeDestination("D:\\Recordings"), null);
+    //
+    // 2026-08-04 : « UN AUTRE VOLUME » NE S'ECRIT PAS PAREIL SUR LES DEUX
+    // PLATEFORMES. « D:\Recordings » est un chemin absolu sur Windows et un nom de
+    // fichier relatif bizarre sur macOS, ou le refus est donc CORRECT. Trouve par
+    // le premier build sur un runner Mac, pas en relisant. L'equivalent Mac d'un
+    // second disque est /Volumes/<nom>.
+    assert.equal(
+      refuseUnsafeDestination(process.platform === "win32" ? "D:\\Recordings" : "/Volumes/Backup/Recordings"),
+      null,
+    );
   } finally {
     fs.rmSync(work, { recursive: true, force: true });
   }
