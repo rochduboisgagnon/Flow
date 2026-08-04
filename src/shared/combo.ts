@@ -78,7 +78,40 @@ const GENERIC: Record<string, string> = {
   "RIGHT ALT": "ALT",
   "LEFT META": "WIN", // keyspy calls the Windows/Cmd key META
   "RIGHT META": "WIN",
+  // 2026-08-04, portage macOS : la touche Fn, qui est le raccourci par defaut sur
+  // Mac (Fn+Shift, decision de Roch).
+  //
+  // DEUX NOMS, parce que celui que le serveur de touches emploie n'a pas pu etre
+  // verifie depuis une machine Windows. Les deux mappent vers le meme nom
+  // generique, donc quel que soit celui qui arrive, le combo stocke le reconnait.
+  // Si aucun des deux n'arrive, Fn est muette pour Flow - c'est l'inconnue
+  // assumee du bandeau de defaultComboFor - et le raccourci se change en un clic.
+  //
+  // « FN » n'a pas d'entree : `genericOf` rend la touche elle-meme par defaut, donc
+  // FN -> FN sans rien ecrire. Ce qui manquait etait ailleurs, et c'est le defaut
+  // que ce commit corrige : voir MODIFIERS juste en dessous.
+  FUNCTION: "FN",
 };
+
+/**
+ * QUELLES TOUCHES SONT DES MODIFICATEURS - dit, plutot que devine.
+ *
+ * `normalizeCombo` deduisait cette qualite du fait que `genericOf` CHANGEAIT le
+ * nom : « LEFT CTRL » devient « CTRL », donc c'est un modificateur. La deduction
+ * marchait par accident, parce que tous les modificateurs connus avaient un cote
+ * gauche et un cote droit.
+ *
+ * Fn n'en a qu'un. Elle etait donc classee comme une touche ordinaire, et un
+ * combo Fn+Shift se rangeait « SHIFT, FN » - l'ordre des touches nommees a
+ * l'envers, et un caractere de plus au compteur des non-modificateurs, qui est
+ * borne a un. Trouve par le test qui verifiait l'ordre, pas en lisant.
+ */
+const MODIFIERS = new Set(["CTRL", "SHIFT", "ALT", "WIN", "FN"]);
+
+/** Vrai pour un modificateur, sous son nom physique ou generique. */
+export function isModifier(key: string): boolean {
+  return MODIFIERS.has(genericOf(key));
+}
 
 /** "LEFT META" -> "WIN"; non-modifiers map to themselves. */
 export function genericOf(key: string): string {
@@ -109,13 +142,17 @@ export function normalizeCombo(physicalKeys: string[]): string[] {
   const others: string[] = [];
   for (const k of physicalKeys) {
     const g = genericOf(k);
-    if (g !== k) {
+    // `isModifier` et non `g !== k` : voir MODIFIERS. La seconde forme classait Fn
+    // parmi les touches ordinaires, parce qu'elle n'a pas de cote gauche et droit.
+    if (isModifier(k)) {
       if (!mods.includes(g)) mods.push(g);
     } else if (!others.includes(k)) {
       others.push(k);
     }
   }
-  const ORDER = ["CTRL", "SHIFT", "ALT", "WIN"];
+  // Fn en tete : sur un clavier Mac elle est physiquement la plus a gauche, et
+  // « Fn + Shift » est l'ordre dans lequel on la nomme.
+  const ORDER = ["FN", "CTRL", "SHIFT", "ALT", "WIN"];
   mods.sort((a, b) => ORDER.indexOf(a) - ORDER.indexOf(b));
   return [...mods, ...others.slice(0, 1)];
 }

@@ -2,7 +2,69 @@
 // chosen by design (plan 5.8). A modifiers-only combination - which is exactly
 // why the hotkey path is a low-level monitor (keyspy) with our own matcher
 // (src/shared/combo.ts) instead of any OS hotkey registration API.
-export const DEFAULT_COMBO = ["CTRL", "WIN"];
+/**
+ * LE RACCOURCI PAR DEFAUT, PAR PLATEFORME (2026-08-04, decision de Roch).
+ *
+ * Windows : Ctrl+Shift. macOS : Fn+Shift.
+ *
+ * ---------------------------------------------------------------------------
+ * CTRL+SHIFT A DEUX COUTS SUR WINDOWS, MESURES ET SIGNALES AVANT D'ETRE ACCEPTES
+ * ---------------------------------------------------------------------------
+ *
+ * Roch a tranche en connaissance de cause, apres que les deux lui ont ete dits.
+ * Ils sont ecrits ici pour que personne ne les redecouvre comme des bogues :
+ *
+ *  1. WINDOWS S'EN SERT DEJA. « Changer de disposition du clavier » vaut
+ *     Ctrl+Shift par defaut. Mesure sur la machine de Roch le 2026-08-04 : quatre
+ *     langues installees (en-US, en-CA, fr-FR, fr-CA) et les trois clefs de
+ *     bascule de `HKCU\Keyboard Layout\Toggle` NON DEFINIES, donc les defauts
+ *     de Windows s'appliquent. Le remede est cote Windows, pas cote Flow :
+ *     Parametres > Clavier avance > touches d'acces rapide > Non attribue.
+ *  2. C'EST UN PREFIXE DE RACCOURCI TRES REPANDU (Ctrl+Shift+T, Ctrl+Shift+N,
+ *     Ctrl+Shift+Esc). Chacun ouvre une capture que la regle de touche etrangere
+ *     annule ensuite - le raccourci de l'application fonctionne donc toujours -
+ *     mais on entend le signal de depart et le silence tombe une fraction de
+ *     seconde. Ctrl+Win n'avait pas ce cout, Win n'etant presque jamais un
+ *     prefixe d'application. Le raisonnement de `preArmed()` dans ce meme dossier
+ *     nommait deja Ctrl+Shift comme « l'un des prefixes les plus repandus qui
+ *     existent ».
+ *
+ * ---------------------------------------------------------------------------
+ * SHIFT N'EST PAS AVALEE, ET C'EST UNE DECISION
+ * ---------------------------------------------------------------------------
+ *
+ * Seule la touche WIN est avalee quand elle complete le combo (le piege du menu
+ * Demarrer, voir le bandeau de combo.ts). Avaler Shift ferait arriver Ctrl+T dans
+ * l'application a la place de Ctrl+Shift+T : Flow casserait les raccourcis qu'il
+ * ne fait que cotoyer. Et Shift n'ouvre aucun menu, donc il n'y a rien a cacher.
+ *
+ * ---------------------------------------------------------------------------
+ * FN SUR MACOS : UNE INCONNUE ASSUMEE
+ * ---------------------------------------------------------------------------
+ *
+ * Fn n'est pas une touche ordinaire : macOS la rapporte comme un changement de
+ * drapeaux plutot que comme une frappe, et rien ne garantit que le serveur de
+ * touches de keyspy la fasse remonter. Ca ne peut pas se verifier depuis une
+ * machine Windows ; le premier lancement sur le MacBook repondra. Le raccourci est
+ * changeable dans les reglages, donc une Fn muette coute un reglage, pas une
+ * fonctionnalite.
+ *
+ * ---------------------------------------------------------------------------
+ * CE DEFAUT NE CHANGE PAS UN RACCOURCI DEJA CHOISI
+ * ---------------------------------------------------------------------------
+ *
+ * Il ne s'applique qu'a un compte qui n'en a jamais enregistre. Reecrire le
+ * raccourci de quelqu'un parce que le defaut a change serait exactement le genre
+ * de decision silencieuse que ce depot refuse : Roch devra donc l'enregistrer une
+ * fois dans les reglages sur sa machine, et c'est dit dans les notes de version.
+ */
+export function defaultComboFor(platform: string): string[] {
+  return platform === "darwin" ? ["FN", "SHIFT"] : ["CTRL", "SHIFT"];
+}
+
+/** Le defaut de CETTE machine. Garde comme constante parce que la plupart des
+ * appelants n'ont aucune raison de connaitre la notion de plateforme. */
+export const DEFAULT_COMBO = defaultComboFor(process.platform);
 
 // A press shorter than this is treated as an accidental tap and cancelled:
 // no capture reaches the ASR, nothing is inserted.

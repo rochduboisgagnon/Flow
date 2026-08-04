@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { sanitizeSettings, SETTINGS_DEFAULTS } from "../src/main/settings";
+import { defaultComboFor } from "../src/shared/constants";
 
 test("null / garbage input falls back to full defaults", () => {
   assert.deepEqual(sanitizeSettings(null), SETTINGS_DEFAULTS);
@@ -28,7 +29,7 @@ test("valid fields are kept, unknown fields dropped", () => {
   assert.equal("evil" in s, false);
 });
 
-test("invalid combo shapes fall back to the Ctrl+Win default", () => {
+test("invalid combo shapes fall back to the platform default", () => {
   assert.deepEqual(sanitizeSettings({ combo: [] }).combo, SETTINGS_DEFAULTS.combo);
   assert.deepEqual(sanitizeSettings({ combo: ["a", "b", "c", "d"] }).combo, SETTINGS_DEFAULTS.combo);
   assert.deepEqual(sanitizeSettings({ combo: [1, 2] }).combo, SETTINGS_DEFAULTS.combo);
@@ -62,8 +63,14 @@ test("insertMode and summaryModel: valid values kept, junk falls back to default
   assert.equal(SETTINGS_DEFAULTS.summaryModel, "");
 });
 
-test("defaults are Ctrl+Win, large-v3-turbo, French forced, and the press is audible", () => {
-  assert.deepEqual(SETTINGS_DEFAULTS.combo, ["CTRL", "WIN"]);
+test("defaults are Ctrl+Shift, large-v3-turbo, French forced, and the press is audible", () => {
+  // 2026-08-04, decision de Roch : Ctrl+Shift sur Windows, Fn+Shift sur macOS. Les
+  // deux couts de Ctrl+Shift lui ont ete mesures et dits avant qu'il tranche (la
+  // bascule de disposition de clavier de Windows, et les raccourcis Ctrl+Shift+X
+  // des applications) ; ils sont ecrits au-dessus de `defaultComboFor`.
+  assert.deepEqual(SETTINGS_DEFAULTS.combo, ["CTRL", "SHIFT"]);
+  assert.deepEqual(defaultComboFor("win32"), ["CTRL", "SHIFT"]);
+  assert.deepEqual(defaultComboFor("darwin"), ["FN", "SHIFT"], "le clavier Mac a son propre defaut");
   assert.match(SETTINGS_DEFAULTS.model, /^ggml-large-v3-turbo/);
   assert.equal(SETTINGS_DEFAULTS.language, "fr");
   // 2026-08-04, a la demande de Roch. Le raisonnement du renversement est ecrit

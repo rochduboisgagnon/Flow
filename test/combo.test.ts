@@ -569,3 +569,59 @@ test("hands-free is untouched: in toggle mode a stray key does nothing at all", 
   const d = m.handle({ key: "A", state: "DOWN" }, 5_000);
   assert.equal(d.action, "none");
 });
+
+// ---------------------------------------------------------------------------
+// 2026-08-04, PORTAGE macOS : Fn+Shift, le raccourci par defaut sur Mac.
+//
+// Ce que ces tests peuvent prouver : que le matcher RECONNAIT Fn, sous les deux
+// noms plausibles, et qu'un combo Fn+Shift se comporte comme n'importe quel autre.
+// Ce qu'ils ne peuvent PAS prouver : que le serveur de touches de keyspy fasse
+// remonter Fn sur macOS - elle est rapportee comme un changement de drapeaux
+// plutot que comme une frappe. C'est l'inconnue assumee du bandeau de
+// `defaultComboFor`, et elle se repondra au premier lancement sur le MacBook.
+// ---------------------------------------------------------------------------
+
+test("Fn est reconnue sous ses deux noms plausibles", () => {
+  // Le nom exact que le serveur de touches emploie n'a pas pu etre verifie depuis
+  // une machine Windows. Les deux candidats mappent vers le meme nom generique,
+  // donc quel que soit celui qui arrive, un combo stocke ["FN","SHIFT"] le
+  // reconnait. C'est moins cher qu'un pari sur un seul nom.
+  assert.equal(genericOf("FN"), "FN");
+  assert.equal(genericOf("FUNCTION"), "FN");
+});
+
+test("Fn+Shift : un combo de deux modificateurs comme les autres", () => {
+  const m = createComboMatcher(["FN", "SHIFT"], OPTS);
+  m.handle({ key: "FN", state: "DOWN" }, 1000);
+  assert.equal(m.capturing(), false, "une seule des deux ne demarre rien");
+  assert.equal(m.handle({ key: "LEFT SHIFT", state: "DOWN" }, 1010).action, "start");
+  assert.equal(m.capturing(), true);
+  // Et la relache livre, apres un maintien suffisant.
+  assert.equal(m.handle({ key: "LEFT SHIFT", state: "UP" }, 1400).action, "stop");
+  assert.equal(m.capturing(), false);
+});
+
+test("Fn+Shift : Fn n'est PAS avalee - rien a cacher, contrairement a la touche Windows", () => {
+  // Seule WIN est avalee, et pour une raison precise : Windows ouvre le menu
+  // Demarrer sur une relache isolee. Fn n'ouvre pas de menu, et Shift non plus -
+  // avaler Shift ferait d'ailleurs arriver Ctrl+T dans l'application a la place de
+  // Ctrl+Shift+T, c'est-a-dire que Flow casserait les raccourcis qu'il cotoie.
+  const m = createComboMatcher(["FN", "SHIFT"], OPTS);
+  assert.equal(m.handle({ key: "FN", state: "DOWN" }, 1000).swallow, false);
+  assert.equal(m.handle({ key: "LEFT SHIFT", state: "DOWN" }, 1010).swallow, false);
+  assert.equal(m.handle({ key: "LEFT SHIFT", state: "UP" }, 1400).swallow, false);
+});
+
+test("Ctrl+Shift, le nouveau defaut Windows : Shift n'est pas avalee non plus", () => {
+  const m = createComboMatcher(["CTRL", "SHIFT"], OPTS);
+  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1000);
+  const start = m.handle({ key: "LEFT SHIFT", state: "DOWN" }, 1010);
+  assert.equal(start.action, "start");
+  assert.equal(start.swallow, false, "l'application doit voir Shift : Ctrl+Shift+T doit rester Ctrl+Shift+T");
+});
+
+test("normalizeCombo met Fn en tete, comme on la nomme", () => {
+  assert.deepEqual(normalizeCombo(["LEFT SHIFT", "FN"]), ["FN", "SHIFT"]);
+  assert.equal(comboLabel(["FN", "SHIFT"]), "Fn + Shift");
+  assert.equal(comboLabel(["CTRL", "SHIFT"]), "Ctrl + Shift");
+});
