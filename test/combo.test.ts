@@ -87,7 +87,7 @@ test("quick tap cancels: nothing reaches the ASR", () => {
   assert.equal(m.capturing(), false);
 });
 
-test("double-tap enters hands-free toggle; a new double-tap stops it", () => {
+test("double-tap enters hands-free; UNE SEULE pression en sort (2026-08-04)", () => {
   const m = ctrlWin();
   // Tap 1: start then cancel.
   m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1000);
@@ -100,15 +100,68 @@ test("double-tap enters hands-free toggle; a new double-tap stops it", () => {
   // Ctrl can be released too: still hands-free.
   assert.equal(m.handle({ key: "LEFT CTRL", state: "UP" }, 1300).action, "none");
   assert.equal(m.capturing(), true);
-  // Other keys do NOT cancel in toggle mode.
+  // Other keys, with NOTHING held, do not cancel in toggle mode.
   assert.equal(m.handle({ key: "A", state: "DOWN" }, 2000).action, "none");
   assert.equal(m.handle({ key: "A", state: "UP" }, 2050).action, "none");
-  // Stop double-tap: two quick full presses.
+
+  // ENTRER demande deux taps ; SORTIR n'en demande qu'un. Roch, le 2026-08-04 :
+  // « j'aime ca, mais ca s'annule quand la personne clique une fois sur le
+  // raccourci ». Ce test exigeait deux pressions ici, et c'est ce qu'il defend
+  // qui a change - pas la facon de le verifier.
   m.handle({ key: "LEFT CTRL", state: "DOWN" }, 5000);
   m.handle({ key: "LEFT META", state: "DOWN" }, 5005);
-  assert.equal(m.handle({ key: "LEFT META", state: "UP" }, 5080).action, "none");
-  m.handle({ key: "LEFT META", state: "DOWN" }, 5200);
-  assert.equal(m.handle({ key: "LEFT META", state: "UP" }, 5280).action, "stop");
+  assert.equal(m.handle({ key: "LEFT META", state: "UP" }, 5080).action, "stop", "une pression suffit");
+  assert.equal(m.capturing(), false);
+});
+
+test("mains libres : une pression LONGUE arrete aussi, et livre - elle n'annule jamais", () => {
+  // Le point qui compte : la duree de l'appui ne decide plus de rien en mode
+  // mains libres. Jeter les mots de quelqu'un est le seul resultat qu'il ne peut
+  // pas defaire, et un doigt qui traine n'est pas une raison de le faire.
+  const m = ctrlWin();
+  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1000);
+  m.handle({ key: "LEFT META", state: "DOWN" }, 1005);
+  m.handle({ key: "LEFT META", state: "UP" }, 1080); // cancel
+  m.handle({ key: "LEFT META", state: "DOWN" }, 1200);
+  m.handle({ key: "LEFT META", state: "UP" }, 1280); // mains libres
+  assert.equal(m.capturing(), true);
+
+  m.handle({ key: "LEFT CTRL", state: "UP" }, 1300);
+  // Une pression bien plus longue que minHoldMs (200 ms) : 900 ms.
+  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 9000);
+  m.handle({ key: "LEFT META", state: "DOWN" }, 9010);
+  assert.equal(m.handle({ key: "LEFT META", state: "UP" }, 9900).action, "stop");
+  assert.equal(m.capturing(), false);
+});
+
+test("mains libres : Ctrl+Win+fleche change de bureau et NE termine PAS la dictee", () => {
+  // La consequence de « une pression suffit » qu'il fallait garder. Ctrl+Win est
+  // le raccourci de Flow, et Ctrl+Win+fleche est un raccourci de Windows : vus du
+  // relachement seul, les deux sont identiques. Sans le souvenir de la touche
+  // etrangere, changer de bureau pendant une dictee mains libres l'arreterait et
+  // collerait le texte dans la fenetre d'arrivee.
+  const m = ctrlWin();
+  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 1000);
+  m.handle({ key: "LEFT META", state: "DOWN" }, 1005);
+  m.handle({ key: "LEFT META", state: "UP" }, 1080); // cancel
+  m.handle({ key: "LEFT META", state: "DOWN" }, 1200);
+  m.handle({ key: "LEFT META", state: "UP" }, 1280); // mains libres
+  m.handle({ key: "LEFT CTRL", state: "UP" }, 1300);
+  assert.equal(m.capturing(), true);
+
+  // Ctrl+Win maintenus, puis une fleche : le geste de Windows.
+  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 4000);
+  m.handle({ key: "LEFT META", state: "DOWN" }, 4010);
+  assert.equal(m.handle({ key: "RIGHT ARROW", state: "DOWN" }, 4100).action, "none");
+  m.handle({ key: "RIGHT ARROW", state: "UP" }, 4150);
+  assert.equal(m.handle({ key: "LEFT META", state: "UP" }, 4200).action, "none", "la dictee continue");
+  m.handle({ key: "LEFT CTRL", state: "UP" }, 4210);
+  assert.equal(m.capturing(), true, "et elle est TOUJOURS en cours");
+
+  // Et la pression suivante, propre, l'arrete normalement.
+  m.handle({ key: "LEFT CTRL", state: "DOWN" }, 6000);
+  m.handle({ key: "LEFT META", state: "DOWN" }, 6010);
+  assert.equal(m.handle({ key: "LEFT META", state: "UP" }, 6080).action, "stop");
   assert.equal(m.capturing(), false);
 });
 

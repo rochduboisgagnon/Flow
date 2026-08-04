@@ -21,8 +21,14 @@
 //   may (re)evaluate the combo.
 // - A press shorter than minHoldMs is an accidental tap -> cancel, nothing
 //   reaches the ASR. But TWO quick taps within doubleTapMs = hands-free
-//   toggle (plan 5.8): capture keeps running after the second tap's release,
-//   and a new double-tap stops it.
+//   toggle (plan 5.8): capture keeps running after the second tap's release.
+// - LEAVING hands-free takes ONE press, not a second double-tap (2026-08-04, at
+//   Roch's request: « j'aime ca, mais ca s'annule quand la personne clique une
+//   fois sur le raccourci »). Entering is a deliberate gesture and deserves a
+//   deliberate one; LEAVING is what you do when you have finished speaking, and
+//   asking for two taps there made people double-tap, wait, and check whether it
+//   had worked. One press stops the capture and DELIVERS what was said - never
+//   discards it, whatever the press lasted.
 // - While holding to talk, a keydown OUTSIDE the combo ends the capture - but
 //   HOW depends on when it arrives. Within STRAY_KEY_STOPS_AFTER_MS it is
 //   cancelled (the user is invoking an OS shortcut like Ctrl+Win+arrow, and
@@ -30,6 +36,13 @@
 //   already said is delivered, because by then the user was dictating and
 //   discarding their words is the only unrecoverable outcome. In toggle mode
 //   other keys are ignored entirely - being hands-free is the point.
+//   ONE consequence of the one-press rule above had to be kept: Ctrl+Win+Arrow
+//   switches virtual desktops, and its Ctrl+Win half is Flow's shortcut. Seen
+//   from the release alone it is indistinguishable from "stop", so the matcher
+//   remembers whether a key outside the combo was pressed during the hold and
+//   refuses to read that press as a stop. Without it, changing desktop during a
+//   hands-free dictation would end it and paste the text into whatever window
+//   the switch landed on.
 // - THE STALE-HOLD NET (see dropStaleKeys): key state is only as good as the
 //   events that built it, and Windows can take events away without telling
 //   anyone. shared/systemResilience.ts covers the transitions Electron reports
@@ -301,7 +314,16 @@ export function createComboMatcher(
     capturing = false;
     toggledOn = false;
     lastTapUpAt = null;
+    strayDuringPress = false;
   }
+
+  /** Une touche HORS du combo a-t-elle ete pressee pendant la pression en cours ?
+   *
+   * Sert a UNE chose : distinguer « j'ai fini de parler » de « je change de
+   * bureau avec Ctrl+Win+fleche » en mode mains libres. Les deux se terminent par
+   * la meme rupture de combo, et depuis le relachement seul ils sont identiques.
+   * Remis a zero a chaque nouvelle pression complete. */
+  let strayDuringPress = false;
 
   function handleDown(key: string, now: number): ComboDecision {
     if (down.has(key)) {
@@ -315,6 +337,7 @@ export function createComboMatcher(
     if (!wasFull && nowFull) {
       // The combo just became fully pressed.
       pressedAt = now;
+      strayDuringPress = false; // une pression neuve se juge sur elle-meme
       // Swallow a WIN keydown that COMPLETES the combo (see Start-menu trap).
       const swallow = genericOf(key) === "WIN" && isComboKey(key);
       if (swallow) swallowed.add(key);
@@ -325,6 +348,15 @@ export function createComboMatcher(
       // Already capturing hands-free: this press is a potential stop-tap;
       // the decision happens at its release.
       return { action: "none", swallow };
+    }
+
+    if (capturing && toggledOn && !isComboKey(key) && comboFullyDown()) {
+      // Mains libres, et le combo est tenu pendant qu'une autre touche arrive :
+      // c'est un raccourci de l'OS, pas une demande d'arret. Le noter est ce qui
+      // permet a la regle « une pression suffit » de ne pas casser
+      // Ctrl+Win+fleche. Rien n'est decide ici : le capture continue.
+      strayDuringPress = true;
+      return { action: "none", swallow: false };
     }
 
     if (capturing && !toggledOn && !isComboKey(key)) {
@@ -380,19 +412,30 @@ export function createComboMatcher(
     }
 
     if (capturing && toggledOn) {
-      // Hands-free: only a new double-tap stops (plan 5.8).
-      if (heldMs < minHoldMs) {
-        if (lastTapUpAt !== null && now - lastTapUpAt <= doubleTapMs) {
-          capturing = false;
-          toggledOn = false;
-          lastTapUpAt = null;
-          return { action: "stop", swallow };
-        }
-        lastTapUpAt = now;
-      } else {
-        lastTapUpAt = null; // a long press is not part of a tap chain
+      // 2026-08-04 : UNE SEULE PRESSION SORT DU MODE MAINS LIBRES.
+      //
+      // Il en fallait deux (un nouveau double-tap). Roch : « j'aime ca, mais ca
+      // s'annule quand la personne clique une fois sur le raccourci ». Entrer
+      // dans le mode est un geste delibere et garde son double-tap ; en SORTIR
+      // est ce qu'on fait quand on a fini de parler, et exiger deux taps a cet
+      // endroit-la faisait double-taper, attendre, puis verifier si ca avait
+      // marche.
+      //
+      // « stop » et jamais « cancel », quelle que soit la duree de la pression :
+      // ce qui a ete dit est livre. Jeter les mots de quelqu'un est le seul
+      // resultat qu'il ne peut pas defaire, et la duree d'un appui n'est pas une
+      // raison de le faire.
+      if (strayDuringPress) {
+        // Ctrl+Win+fleche : un raccourci de Windows, pas une fin de dictee. Voir
+        // `strayDuringPress`. Le mode continue, comme avant ce changement.
+        strayDuringPress = false;
+        lastTapUpAt = null;
+        return { action: "none", swallow };
       }
-      return { action: "none", swallow };
+      capturing = false;
+      toggledOn = false;
+      lastTapUpAt = null;
+      return { action: "stop", swallow };
     }
     return { action: "none", swallow };
   }

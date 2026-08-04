@@ -513,12 +513,20 @@ test("Settings still names the COST of the buffer, now that there is no option t
   // its benefit. The modes are gone, but the reason those sentences existed is
   // not: a privacy trade the user cannot read is a trade they did not make -
   // and it matters MORE now, because they can no longer decline it.
-  // 2026-08-04 : la rangee s'appelle « Microphone readiness ». Elle a ete
-  // renommee en fondant les onglets Dictation et Audio dans General : « Microphone »
-  // y designait DEJA le selecteur de peripherique, et deux rangees du meme nom
-  // dans le meme onglet - dont une qui ne se regle pas - etaient illisibles.
-  // L'ancre suit le libelle ; ce que le test exige du texte n'a pas bouge.
-  const help = slice(SETTINGS_PAGE, 'label="Microphone readiness"', "</Row>");
+  // 2026-08-04, DEUXIEME DEPLACEMENT DE LA JOURNEE, ET C'EST LE SUJET DE CE TEST.
+  //
+  // La rangee a d'abord ete renommee (« Microphone » designait deja le selecteur
+  // de peripherique dans le meme onglet), puis Roch l'a fait retirer : « enleve
+  // microphone readiness, ca ne sert absolument a rien de le mettre ». Il avait
+  // raison sur la rangee - elle ne reglait rien.
+  //
+  // CE TEST N'A PAS ETE SUPPRIME AVEC ELLE, et c'est deliberé. Ce qu'il exige
+  // n'est pas qu'une rangee existe dans un onglet donne : c'est que le COUT du
+  // prechauffage du micro soit ECRIT quelque part que l'utilisateur lit. La
+  // phrase a donc demenage dans Storage & Privacy, dont c'est le sujet, et
+  // l'ancre suit. Supprimer le test parce que son ancre a bouge aurait transforme
+  // un deplacement d'interface en perte de divulgation.
+  const help = slice(SETTINGS_PAGE, 'label="The microphone stays ready between dictations"', "</Row>");
   assert.match(help, /microphone indicator/i, "Windows' indicator is the visible cost, and it is stated");
   assert.match(help, /(never|nothing)[^.]*disk/i, "and where the buffer does NOT go");
   assert.match(help, /erased/i, "and that it does not outlive the dictation it feeds");

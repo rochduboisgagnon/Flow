@@ -191,7 +191,7 @@ function TabGeneral({ s, patch }: { s: UiStatePayload; patch: Patch }) {
         <span className="kbd">{s.comboLabel}</span>
         <button className="btn" disabled={rec} onClick={() => void record()}>{rec ? "Press your keys..." : "Change"}</button>
       </Row>
-      <Row label="Hands-free mode" help="Double-tap the shortcut to keep the microphone open; double-tap again to stop. Built in - nothing to configure.">
+      <Row label="Hands-free mode" help="Double-tap the shortcut to keep the microphone open, then press it once to stop and insert what you said. Built in - nothing to configure.">
         <span />
       </Row>
       <Row label="Insertion mode" help="Paste inserts through the clipboard and restores it after. Type presses each key instead - for apps that block pasting - and never touches the clipboard.">
@@ -203,27 +203,18 @@ function TabGeneral({ s, patch }: { s: UiStatePayload; patch: Patch }) {
       <Row label="Start/stop sound" help="A soft synthesized cue on press and release. No third-party audio, fully generated on your machine.">
         <Toggle label="Start/stop sound" on={s.settings.sounds} onChange={(v) => void patch({ sounds: v })} />
       </Row>
-      {/* B2: the honest version of the trade. The help text names the cost
-          (Windows' microphone indicator), the bound (half a second, in memory,
-          never on disk) and the benefit, per option - because the whole reason
-          this setting exists is that the answer is genuinely personal. */}
-      {/* 2026-07-30: the pre-warm SELECTOR is gone. One behaviour, no choice.
-          "always" was the mode that failed the human check - it left the Windows
-          microphone indicator lit through a session lock, the app holding the
-          mic open through a gesture that means "stop listening". "off" clipped
-          the first word and only existed as an escape hatch from "always".
-          What is left is the middle option, which was always the right one. The
-          row stays so that someone who used to set this finds the answer where
-          the control was, rather than wondering what happened to their choice. */}
-      {/* 2026-08-04 : renommee. Elle s'appelait « Microphone », comme le
-          selecteur de peripherique juste en dessous - deux rangees du meme nom
-          dans le meme onglet, dont une qui ne se regle pas. */}
-      <Row
-        label="Microphone readiness"
-        help="Stays ready a few seconds after each dictation so your first word is never clipped. Windows shows its microphone indicator meanwhile. Nothing reaches the disk, the buffer is erased after use, and locking the session releases it."
-      >
-        <span className="pinned">Always ready &#183; nothing to configure</span>
-      </Row>
+      {/* 2026-08-04, Roch : « enleve microphone readiness, ca ne sert absolument a
+          rien de le mettre ». Il a raison sur la RANGEE : elle ne se reglait pas,
+          et « nothing to configure » dans une page de reglages est une ligne qui
+          occupe l'ecran pour dire qu'elle n'a rien a offrir.
+
+          MAIS SA PHRASE, ELLE, N'A PAS DISPARU. Elle nommait le cout du
+          prechauffage du micro - le temoin de microphone de Windows qui reste
+          allume quelques secondes - et une garde de ce depot dit qu'un compromis
+          de vie privee que l'utilisateur ne peut pas lire est un compromis qu'il
+          n'a pas accepte (surtout depuis que le selecteur a disparu : il ne peut
+          meme plus le refuser). Elle est donc passee dans Storage & Privacy, qui
+          est l'onglet dont c'est le sujet, et le test qui la garde a suivi. */}
       <Row label="Microphone" help="Which microphone dictation and recordings use. If your pick is unplugged, Flow falls back to the system default.">
         {mics === null ? <span className="sub" style={{ margin: 0 }}>Looking for microphones...</span> : (
           <select value={s.settings.micDeviceId} onChange={(e) => void patch({ micDeviceId: e.target.value })} aria-label="Microphone">
@@ -232,11 +223,11 @@ function TabGeneral({ s, patch }: { s: UiStatePayload; patch: Patch }) {
           </select>
         )}
       </Row>
-      <Row label="System-audio capture" help={s.canLoopback
-        ? "Available. Long recordings can mix what the PC plays (a meeting call) with your microphone - no picker, no bot."
-        : "Not available on this OS."}>
-        <span />
-      </Row>
+      {/* 2026-08-04, Roch : « System Audio Capture aussi, enleve-le ». Elle ne
+          reglait rien non plus - elle annoncait une capacite de la machine. La
+          CASE qui allume vraiment la capture du son du PC est sur la page Record,
+          au moment ou on demarre un enregistrement, et c'est le seul endroit ou
+          elle sert a quelque chose. */}
     </div>
   );
 }
@@ -427,6 +418,19 @@ function TabStorage({ s }: { s: UiStatePayload }) {
       <Row
         label="Dictation text stays here too"
         help="A rolling month of what you dictated, listed on Home and erasable there. The AUDIO of a dictation is never written anywhere, on this machine or in your account."
+      >
+        <span />
+      </Row>
+      {/* 2026-08-04 : ARRIVEE DE GENERAL, ou Roch a fait retirer sa rangee - elle
+          ne se reglait pas, et une rangee qui ne regle rien n'a rien a faire dans
+          une page de reglages. Ce qu'elle disait, en revanche, appartient a cet
+          onglet-ci : le microphone reste pret quelques secondes apres chaque
+          dictee, Windows le montre, et personne ne peut plus le refuser depuis que
+          le selecteur a disparu. Un compromis de vie privee que l'utilisateur ne
+          peut pas lire est un compromis qu'il n'a pas accepte. */}
+      <Row
+        label="The microphone stays ready between dictations"
+        help="For a few seconds after each dictation, so your first word is never clipped. Windows shows its microphone indicator meanwhile. Nothing reaches the disk, the buffer is erased after use, and locking the session releases it."
       >
         <span />
       </Row>

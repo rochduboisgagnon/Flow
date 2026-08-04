@@ -29,7 +29,9 @@ export const MIN_HOLD_MS = 200;
 export const STRAY_KEY_STOPS_AFTER_MS = 1_500;
 
 // Two quick taps of the shortcut within this window toggle hands-free capture
-// (plan 5.8): dictate without holding the keys; double-tap again to stop.
+// (plan 5.8): dictate without holding the keys. 2026-08-04 : SORTIR n'en demande
+// plus qu'une seule (voir le bandeau de shared/combo.ts) ; cette fenetre ne sert
+// donc plus qu'a ENTRER dans le mode.
 export const DOUBLE_TAP_MS = 400;
 
 // THE single source of truth for the titlebar's height. U1 feeds this (in DIP)

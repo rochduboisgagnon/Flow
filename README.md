@@ -6,7 +6,8 @@ by AGR Labs
 
 1. **Quick dictation.** Hold `Ctrl+Win` anywhere, speak, release: the transcribed
    text lands at your cursor. If no text field has focus, it goes to the
-   clipboard instead. Double-tap the shortcut for hands-free dictation.
+   clipboard instead. Double-tap the shortcut for hands-free dictation, and
+   press it once to stop.
 2. **Long recording** (Plaud-style). Record a meeting for hours: it is
    transcribed locally as it goes, and lands in your account as one document
    (timestamped transcript + AI meeting notes).

@@ -90,7 +90,8 @@ export function Home({ s, go }: { s: UiStatePayload; go: (sec: Section) => void 
             {dictationLabel(s)}
           </div>
           <p className="sub" style={{ margin: "6px 0 0" }}>
-            Hold <span className="kbd">{s.comboLabel}</span> anywhere and speak. Double-tap for hands-free.
+            Hold <span className="kbd">{s.comboLabel}</span> anywhere and speak. Double-tap for hands-free,
+            press once to stop.
           </p>
           {healed ? (
             <p className="sub" style={{ margin: "6px 0 0" }}>
