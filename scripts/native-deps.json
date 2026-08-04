@@ -19,14 +19,21 @@
     "TO UPDATE ONE OF THESE: change the version, run scripts/verify-native-deps.cjs",
     "--print to get the new hashes, and commit them in the SAME change. A hash bump",
     "without a version bump, or the reverse, is what this file exists to make visible",
-    "in a diff."
+    "in a diff.",
+    "",
+    "2026-08-04, PORTAGE macOS : deux assets de plus, au MEME tag epingle que leurs",
+    "equivalents Windows (whisper 0.0.8, llama b10234). Leurs empreintes ont ete",
+    "calculees en telechargeant les fichiers depuis ces tags-la, pas recopiees d'une",
+    "page : le raisonnement du bandeau ci-dessus s'applique identiquement a macOS, et",
+    "un binaire Mac non verifie serait la meme porte ouverte sous un autre nom."
   ],
   "whisper": {
     "repo": "OpenWhispr/whisper.cpp",
     "version": "0.0.8",
     "assets": {
       "whisper-server-win32-x64-vulkan.zip": "d5f6188bb6561e66a9b7886ca0448d5927cb9713a02d311b87a20e33eb038222",
-      "whisper-server-win32-x64-cpu.zip": "ce1b83352c848c7cdc717abd2ac1eb1024d8475c60f8418e106799b3af615ed0"
+      "whisper-server-win32-x64-cpu.zip": "ce1b83352c848c7cdc717abd2ac1eb1024d8475c60f8418e106799b3af615ed0",
+      "whisper-server-darwin-arm64.zip": "a9273b102120c1e7d8f8ead65ffe691309f95b8b71b95a970e417b8dc416009c"
     }
   },
   "llama": {
@@ -45,7 +52,8 @@
     "repo": "ggml-org/llama.cpp",
     "version": "b10234",
     "assets": {
-      "llama-b10234-bin-win-vulkan-x64.zip": "32cd77784f7a8ff052a0ac7e8d53cf295c43e89de3a5c47c8b22fa9aeaf1c7f6"
+      "llama-b10234-bin-win-vulkan-x64.zip": "32cd77784f7a8ff052a0ac7e8d53cf295c43e89de3a5c47c8b22fa9aeaf1c7f6",
+      "llama-b10234-bin-macos-arm64.tar.gz": "ac8ab49d20f4f918a4a38aa0bf1fec73f257f1f11e333bd12d5425524ec98aeb"
     },
     "_extracted_why": [
       "D1 (2026-08-03). PAS d empreinte d executable extrait ici, contrairement a",

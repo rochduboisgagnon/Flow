@@ -32,6 +32,7 @@ import { WorkingCopyCaptureStore } from "./data/captureStore";
 import { AudioLocal, audioDirIn, migrateAudioDir } from "./audioLocal";
 import { AudioDuck } from "./audioDuck";
 import { capabilitiesFor, MISSING_ON_THIS_PLATFORM } from "../shared/platform";
+import { whisperServerNames, llamaServerName } from "../shared/engineBinaries";
 import { LocalApi } from "./api";
 import { LongRecorder } from "./longform";
 import { historyDownloadStem } from "../shared/downloadName";
@@ -853,12 +854,17 @@ let sidecar: WhisperSidecar | null = null;
 // build is the universal fallback. The sidecar freezes the first that starts.
 function serverBinaryPaths(): string[] {
   const dir = resourcePath("bin");
-  const vulkan = path.join(dir, "whisper-server-win32-x64-vulkan.exe");
-  const cpu = path.join(dir, "whisper-server-win32-x64-cpu.exe");
   // R1: escape hatch for a capricious GPU. FLOW_FORCE_CPU (env) or the forceCpu
   // setting drops the Vulkan build entirely and runs CPU only.
+  //
+  // 2026-08-04 : les NOMS viennent de shared/engineBinaries.ts, un seul endroit
+  // partage avec le script qui les telecharge et le garde-fou du zip de release.
+  // Les avoir ecrits ici en dur est exactement ce qui rendait une plateforme de
+  // plus invisible a trois fichiers sur quatre. Sur macOS il n'y a qu'une
+  // construction (Metal fait partie du systeme), donc `forceCpu` n'y designe rien
+  // et la fonction le dit plutot que de faire semblant de l'appliquer.
   const forceCpu = /^(1|true|yes|on)$/i.test(process.env.FLOW_FORCE_CPU ?? "") || settings.forceCpu === true;
-  return forceCpu ? [cpu] : [vulkan, cpu];
+  return whisperServerNames(process.platform, forceCpu).map((n) => path.join(dir, n));
 }
 
 // R1: a resources-bundled known-speech WAV; the sidecar requires a backend to
@@ -1016,7 +1022,7 @@ const ollamaProvider = new OllamaProvider({
 // MESURE du 2026-08-03, sur cette machine : llama-server demarre en 2,5 s et
 // Qwen2.5-3B produit de vraies notes de reunion en 10,7 s, sans Ollama.
 const llamaServer = new LlamaServer({
-  binPath: () => path.join(resourcePath("bin"), "llama-server.exe"),
+  binPath: () => path.join(resourcePath("bin"), llamaServerName(process.platform)),
   modelPath: () => notesModelPath(),
   log: flowLog,
 });
