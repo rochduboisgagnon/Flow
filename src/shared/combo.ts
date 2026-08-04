@@ -78,19 +78,27 @@ const GENERIC: Record<string, string> = {
   "RIGHT ALT": "ALT",
   "LEFT META": "WIN", // keyspy calls the Windows/Cmd key META
   "RIGHT META": "WIN",
-  // 2026-08-04, portage macOS : la touche Fn, qui est le raccourci par defaut sur
-  // Mac (Fn+Shift, decision de Roch).
+  // 2026-08-04, portage macOS : la touche Fn n'a PAS besoin d'entree ici, et c'est
+  // un fait verifie plutot qu'une supposition.
   //
-  // DEUX NOMS, parce que celui que le serveur de touches emploie n'a pas pu etre
-  // verifie depuis une machine Windows. Les deux mappent vers le meme nom
-  // generique, donc quel que soit celui qui arrive, le combo stocke le reconnait.
-  // Si aucun des deux n'arrive, Fn est muette pour Flow - c'est l'inconnue
-  // assumee du bandeau de defaultComboFor - et le raccourci se change en un clic.
+  // Ce que j'avais annonce comme une inconnue - « rien ne garantit que le serveur
+  // de touches fasse remonter Fn » - se lisait dans la librairie deja installee :
   //
-  // « FN » n'a pas d'entree : `genericOf` rend la touche elle-meme par defaut, donc
-  // FN -> FN sans rien ecrire. Ce qui manquait etait ailleurs, et c'est le defaut
-  // que ce commit corrige : voir MODIFIERS juste en dessous.
-  FUNCTION: "FN",
+  //   node_modules/keyspy/dist/platforms/mac/keymap.js
+  //     0x3f: { _nameRaw: "kVK_Function", name: "Function", standardName: "FN" }
+  //
+  //   node_modules/keyspy/dist/platforms/{mac,windows}/index.js
+  //     name: resolvedKey.standardName
+  //
+  // L'evenement porte donc le `standardName`, sur les DEUX plateformes, et celui
+  // de Fn est « FN ». `genericOf` rend la touche elle-meme par defaut, donc
+  // FN -> FN sans qu'on ecrive quoi que ce soit. Ce qui manquait etait ailleurs :
+  // voir MODIFIERS juste en dessous.
+  //
+  // Le piege evite au passage : les DEUX tables de touches ont un champ `name`
+  // different (« LCONTROL » sur Windows, « Control » sur mac), et c'est le champ
+  // `standardName` - identique des deux cotes - que keyspy expose. Se fier a `name`
+  // aurait produit un raccourci silencieux sur Mac. Un test epingle ce fait.
 };
 
 /**

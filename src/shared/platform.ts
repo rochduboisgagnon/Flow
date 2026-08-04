@@ -37,17 +37,21 @@
 // CE QUI MANQUE SUR MACOS, NOMME UN PAR UN
 // ---------------------------------------------------------------------------
 //
-//  - `dictation` : keyspy embarque un `MacKeyServer` a cote de son
-//    `WinKeyServer.exe`, donc le crochet EXISTE. Ce qui n'est pas verifie est
-//    l'essentiel : est-ce que la version macOS honore le verdict d'AVALEMENT ?
-//    Flow renvoie ce verdict a chaque touche pour empecher le raccourci de fuir
-//    dans l'application ou l'on tape. Sans lui, `Ctrl+Win` (ou son equivalent)
-//    arriverait dans le document en meme temps que la dictee. Il faut aussi la
-//    permission Accessibilite de macOS, et un raccourci par defaut qui ait un sens
-//    sur un clavier Mac.
-//  - `localEngines` : whisper-server et llama-server sont recuperes en
-//    `win32-x64` en dur (scripts/fetch-whisper.cjs). Il faut des versions macOS
-//    Metal, et verifier qu'elles existent chez la source utilisee.
+//  - `dictation` : DEUX inconnues levees le 2026-08-04, en LISANT la librairie
+//    plutot qu'en attendant un Mac. keyspy embarque un `MacKeyServer` a cote de
+//    son `WinKeyServer.exe`, son backend macOS RENVOIE le verdict d'avalement au
+//    serveur (`stopPropagation ? "1" : "0"`, platforms/mac/index.js), et la touche
+//    Fn est rapportee sous le nom « FN » (platforms/mac/keymap.js). Les deux faits
+//    sont epingles par des tests, parce qu'une mise a jour de keyspy qui les
+//    changerait produirait une panne SILENCIEUSE.
+//    Ce qui reste a faire : la permission Accessibilite (demandee au premier
+//    lancement), et le cablage lui-meme.
+//  - `localEngines` : RESOLU le 2026-08-04. Les deux moteurs ont des versions
+//    macOS officielles aux MEMES tags que ceux deja epingles
+//    (whisper-server-darwin-arm64, llama-b10234-bin-macos-arm64), leurs empreintes
+//    sont dans scripts/native-deps.json, et les scripts de recuperation les
+//    choisissent par plateforme. Il n'y a rien a compiler. Ce qui reste est de
+//    basculer ce drapeau quand un build Mac aura ete essaye.
 //  - `systemAudio` : sur Windows, la capture du son du PC est du WASAPI loopback
 //    que Chromium expose gratuitement. macOS n'a pas d'equivalent : il faut
 //    ScreenCaptureKit (permission Enregistrement d'ecran) ou un pilote audio

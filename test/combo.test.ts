@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import {
   createComboMatcher,
   normalizeCombo,
@@ -581,13 +583,42 @@ test("hands-free is untouched: in toggle mode a stray key does nothing at all", 
 // `defaultComboFor`, et elle se repondra au premier lancement sur le MacBook.
 // ---------------------------------------------------------------------------
 
-test("Fn est reconnue sous ses deux noms plausibles", () => {
-  // Le nom exact que le serveur de touches emploie n'a pas pu etre verifie depuis
-  // une machine Windows. Les deux candidats mappent vers le meme nom generique,
-  // donc quel que soit celui qui arrive, un combo stocke ["FN","SHIFT"] le
-  // reconnait. C'est moins cher qu'un pari sur un seul nom.
+test("Fn : le nom que keyspy emet VRAIMENT, epingle contre une mise a jour", () => {
+  // J'avais annonce a Roch que « rien ne garantit que le serveur de touches fasse
+  // remonter Fn sur macOS » et que ca demanderait son MacBook. C'etait faux : la
+  // reponse etait dans la librairie deja installee, et la voici epinglee.
+  //
+  // POURQUOI CE TEST LIT node_modules : parce que Flow lit `e.name`, et que ce
+  // champ vient de `standardName` cote keyspy. Une mise a jour de keyspy qui
+  // renommerait ce champ, ou qui exposerait `name` a la place, rendrait le
+  // raccourci du Mac SILENCIEUX - il ne planterait pas, il ne repondrait plus.
+  // C'est exactement le genre de panne qui ne se voit qu'en essayant, sur une
+  // machine que je n'ai pas.
+  const keymap = fs.readFileSync(
+    path.join(__dirname, "..", "node_modules", "keyspy", "dist", "platforms", "mac", "keymap.js"),
+    "utf8",
+  );
+  assert.match(keymap, /standardName:\s*"FN"/, "le keymap macOS de keyspy doit nommer Fn « FN »");
+  for (const plat of ["mac", "windows"]) {
+    const backend = fs.readFileSync(
+      path.join(__dirname, "..", "node_modules", "keyspy", "dist", "platforms", plat, "index.js"),
+      "utf8",
+    );
+    assert.match(backend, /name:\s*resolvedKey\.standardName/, `${plat} doit exposer standardName comme nom`);
+  }
+  // Et le fait qui compte pour Flow : « FN » est reconnu tel quel.
   assert.equal(genericOf("FN"), "FN");
-  assert.equal(genericOf("FUNCTION"), "FN");
+});
+
+test("l'avalement EXISTE sur macOS - la vraie inconnue du portage, levee", () => {
+  // C'etait la question qui portait tout : sans avalement, le raccourci de Flow
+  // arriverait dans le document en meme temps que la dictee. Le backend macOS de
+  // keyspy renvoie le verdict au serveur de touches, evenement par evenement.
+  const mac = fs.readFileSync(
+    path.join(__dirname, "..", "node_modules", "keyspy", "dist", "platforms", "mac", "index.js"),
+    "utf8",
+  );
+  assert.match(mac, /stopPropagation \? "1" : "0"/, "le verdict d'avalement doit repartir vers le serveur");
 });
 
 test("Fn+Shift : un combo de deux modificateurs comme les autres", () => {

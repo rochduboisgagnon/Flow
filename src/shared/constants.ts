@@ -39,15 +39,24 @@
  * ne fait que cotoyer. Et Shift n'ouvre aucun menu, donc il n'y a rien a cacher.
  *
  * ---------------------------------------------------------------------------
- * FN SUR MACOS : UNE INCONNUE ASSUMEE
+ * FN SUR MACOS : VERIFIE, PAS SUPPOSE
  * ---------------------------------------------------------------------------
  *
- * Fn n'est pas une touche ordinaire : macOS la rapporte comme un changement de
- * drapeaux plutot que comme une frappe, et rien ne garantit que le serveur de
- * touches de keyspy la fasse remonter. Ca ne peut pas se verifier depuis une
- * machine Windows ; le premier lancement sur le MacBook repondra. Le raccourci est
- * changeable dans les reglages, donc une Fn muette coute un reglage, pas une
- * fonctionnalite.
+ * J'ai d'abord annonce a Roch que Fn etait une inconnue qui demanderait son
+ * MacBook - macOS la rapporte comme un changement de drapeaux plutot que comme une
+ * frappe, et rien ne garantissait que le serveur de touches la fasse remonter.
+ * C'ETAIT FAUX, et la reponse etait dans la librairie deja installee :
+ *
+ *   keyspy/dist/platforms/mac/keymap.js
+ *     0x3f: { _nameRaw: "kVK_Function", name: "Function", standardName: "FN" }
+ *
+ * Fn est donc rapportee, sous le nom « FN ». Un test l'epingle contre une mise a
+ * jour de keyspy, parce que la panne qu'un renommage produirait serait SILENCIEUSE :
+ * le raccourci ne repondrait plus, sans planter et sans rien ecrire.
+ *
+ * La lecon de methode : « je ne peux pas le verifier depuis Windows » etait vrai de
+ * l'EXECUTION et faux de la QUESTION. Le code de la librairie etait la, sur le
+ * disque, tout du long.
  *
  * ---------------------------------------------------------------------------
  * CE DEFAUT NE CHANGE PAS UN RACCOURCI DEJA CHOISI
