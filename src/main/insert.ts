@@ -128,9 +128,22 @@ function armRestore(prior: PriorClip): void {
   pending = { prior, timer };
 }
 
+/**
+ * LA FRAPPE QUI COLLE, ET ELLE N'EST PAS LA MEME PARTOUT.
+ *
+ * 2026-08-04, portage macOS : Cmd+V sur Mac, Ctrl+V ailleurs. C'etait la SEULE
+ * ligne specifique a une plateforme dans tout le chemin d'insertion - le reste
+ * (l'instantane du presse-papiers, sa restauration apres un delai, le refus de
+ * restaurer ce qui ne l'est pas) est identique, parce que le presse-papiers
+ * d'Electron l'est.
+ *
+ * `Key.LeftSuper` est le nom de nut-js pour Cmd sur macOS et pour la touche
+ * Windows ailleurs ; on ne l'emploie donc QUE sur mac, ou il designe bien Cmd.
+ */
 async function pasteKeystroke(): Promise<void> {
-  await keyboard.pressKey(Key.LeftControl, Key.V);
-  await keyboard.releaseKey(Key.LeftControl, Key.V);
+  const mod = process.platform === "darwin" ? Key.LeftSuper : Key.LeftControl;
+  await keyboard.pressKey(mod, Key.V);
+  await keyboard.releaseKey(mod, Key.V);
 }
 
 /** Insert at the cursor via clipboard paste, restoring the old clipboard. */

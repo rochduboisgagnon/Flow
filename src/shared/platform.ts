@@ -90,10 +90,30 @@ export function capabilitiesFor(platform: string): PlatformCapabilities {
   if (platform === "win32") {
     return { dictation: true, localEngines: true, systemAudio: true, muteOthers: true, focusProbe: true };
   }
-  // macOS et tout le reste. Le defaut est FAUX pour chaque capacite, et c'est
-  // deliberement l'inverse de la prudence habituelle : une capacite qu'on croit
-  // presente et qui ne l'est pas produit une application qui a l'air de
-  // fonctionner - ce qui est exactement le mode de panne que ce depot chasse.
+  if (platform === "darwin") {
+    return {
+      // 2026-08-04 : le crochet est cable (keyspy expose un backend macOS qui
+      // remonte Fn et honore l'avalement, les deux verifies et epingles), et
+      // l'insertion colle avec Cmd+V. La permission Accessibilite est demandee par
+      // macOS au premier lancement, au nom de « Flow ».
+      dictation: true,
+      // Les binaires existent en amont aux memes tags, sont epingles par empreinte,
+      // et les scripts de recuperation les choisissent par plateforme.
+      localEngines: true,
+      // ScreenCaptureKit : demande par Roch, pas encore construit. Le WASAPI
+      // loopback de Windows n'a pas d'equivalent gratuit ici.
+      systemAudio: false,
+      // macOS n'a AUCUNE API publique de volume par application. Celle-la ne
+      // traversera pas, et ce n'est pas un « pas encore ».
+      muteOthers: false,
+      // Elle lance powershell.exe.
+      focusProbe: false,
+    };
+  }
+  // Tout le reste. Le defaut est FAUX pour chaque capacite, et c'est deliberement
+  // l'inverse de la prudence habituelle : une capacite qu'on croit presente et qui
+  // ne l'est pas produit une application qui a l'air de fonctionner - ce qui est
+  // exactement le mode de panne que ce depot chasse.
   return { dictation: false, localEngines: false, systemAudio: false, muteOthers: false, focusProbe: false };
 }
 
@@ -103,10 +123,11 @@ export function capabilitiesFor(platform: string): PlatformCapabilities {
  * page Record et les Reglages, et trois copies divergeraient. */
 export const MISSING_ON_THIS_PLATFORM: Record<keyof PlatformCapabilities, string> = {
   dictation:
-    "Dictation is Windows-only for now. Its keyboard shortcut needs a system-wide hook that has not been built for this platform yet.",
+    "Dictation needs a system-wide keyboard hook, which Flow does not have on this platform.",
   localEngines:
-    "Flow's speech and notes engines are Windows-only builds for now, so nothing can be transcribed on this machine.",
-  systemAudio: "Capturing what this computer plays is Windows-only.",
+    "Flow's speech and notes engines have no build for this platform, so nothing can be transcribed on this machine.",
+  systemAudio:
+    "Capturing what this computer plays is Windows-only for now. On macOS it needs ScreenCaptureKit and the Screen Recording permission, which is being built.",
   muteOthers: "Muting other applications during a dictation is Windows-only: macOS has no per-application volume.",
   focusProbe: "Identifying the front window is Windows-only.",
 };

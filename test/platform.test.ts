@@ -33,10 +33,33 @@ test("Windows a tout ; une plateforme inconnue n'a rien - et le defaut est FAUX"
   // Le defaut FAUX est deliberement l'inverse de la prudence habituelle : une
   // capacite qu'on croit presente et qui ne l'est pas produit une application qui
   // a l'air de fonctionner, ce qui est le mode de panne que ce depot chasse.
-  for (const p of ["darwin", "linux", "aix", ""]) {
+  //
+  // macOS n'est plus dans cette liste depuis le 2026-08-04 : deux de ses capacites
+  // sont cablees, et le test qui les nomme est juste en dessous. Une plateforme
+  // INCONNUE, elle, n'affirme toujours rien.
+  for (const p of ["linux", "aix", ""]) {
     const caps = capabilitiesFor(p);
     assert.deepEqual(Object.values(caps).filter(Boolean), [], `${p} ne doit rien affirmer`);
   }
+});
+
+test("macOS : ce qui est CABLE est vrai, ce qui manque est faux, un par un", () => {
+  // L'inverse d'une liste vague. Chaque ligne est une affirmation verifiable, et
+  // c'est ce qui fait qu'une page peut dire la verite sans deviner.
+  const mac = capabilitiesFor("darwin");
+  // Cable le 2026-08-04 : le backend macOS de keyspy remonte Fn et honore
+  // l'avalement (les deux epingles dans test/combo.test.ts), et l'insertion colle
+  // avec Cmd+V.
+  assert.equal(mac.dictation, true);
+  // Les binaires existent en amont aux memes tags, epingles par empreinte.
+  assert.equal(mac.localEngines, true);
+  // Demande par Roch, pas encore construit.
+  assert.equal(mac.systemAudio, false);
+  // Aucune API publique de volume par application sur macOS : celle-la ne
+  // traversera pas, et ce n'est pas un « pas encore ».
+  assert.equal(mac.muteOthers, false);
+  // Elle lance powershell.exe.
+  assert.equal(mac.focusProbe, false);
 });
 
 test("chaque capacite a une phrase qui NOMME ce qui manque", () => {
@@ -45,14 +68,18 @@ test("chaque capacite a une phrase qui NOMME ce qui manque", () => {
     const said = MISSING_ON_THIS_PLATFORM[k];
     assert.ok(said && said.length > 20, `${k} doit avoir une phrase, pas un drapeau muet`);
     // Une phrase qui dit « pas encore » sans dire QUOI est un TODO deguise en
-    // interface. Chacune doit nommer la plateforme ou la raison technique.
-    assert.match(said, /Windows-only|macOS/, `${k} doit nommer la plateforme`);
+    // interface : chacune doit nommer soit la plateforme, soit la raison technique
+    // (un crochet clavier absent, un binaire qui n'existe pas, une API qui n'existe
+    // pas). « Windows-only » n'est plus exige : deux capacites ont traverse.
+    assert.match(said, /Windows-only|macOS|this platform|no build/, `${k} doit nommer ce qui manque`);
   }
 });
 
 test("isReadOnlyPlatform : la machine qui ne sait que lire le compte", () => {
   assert.equal(isReadOnlyPlatform(capabilitiesFor("win32")), false);
-  assert.equal(isReadOnlyPlatform(capabilitiesFor("darwin")), true);
+  // macOS n'est plus en lecture seule depuis que la dictee y est cablee.
+  assert.equal(isReadOnlyPlatform(capabilitiesFor("darwin")), false);
+  assert.equal(isReadOnlyPlatform(capabilitiesFor("linux")), true);
   // Une machine avec un moteur mais sans crochet n'est PAS en lecture seule : elle
   // peut encore importer un fichier et le transcrire. La distinction compte pour la
   // phrase que Home affiche.

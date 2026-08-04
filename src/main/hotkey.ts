@@ -207,11 +207,32 @@ export class HotkeyAdapter {
     this.matcher.reset();
     const inst: HookInstance = {
       listener: this.createListener({
+        // 2026-08-04, portage macOS : le nom que la boite de dialogue de permission
+        // Accessibilite affiche. Sans lui, macOS demande l'autorisation au nom de
+        // « KeySpy », que personne n'a installe et que personne ne reconnaitra -
+        // et une permission qu'on n'ose pas accorder est une dictee morte.
+        appName: "Flow",
         windows: {
           // THE fix. Without this callback keyspy installs no "close" handler
           // at all, and the death of WinKeyServer.exe is unobservable.
           onError: (code: number) => this.onServerClosed(inst, code),
           onInfo: (data: string) => this.onServerInfo(data),
+        },
+        // Le MEME gestionnaire de mort, parce que c'est le meme evenement : le
+        // serveur de touches - MacKeyServer ici - a ferme. Tout le watchdog de B4
+        // (compte des morts, redemarrages, abandon apres trop d'echecs) s'applique
+        // sans une ligne de plus.
+        //
+        // PAS de `onInfo` : le backend macOS de keyspy n'en expose pas. Ce n'est
+        // pas un oubli, c'est ce que la librairie offre - et ca coute la seule
+        // chose que `onServerInfo` apportait, les lignes de stderr du serveur dans
+        // flow.log.
+        mac: {
+          // `number | null` et non `number` : la signature macOS de keyspy admet
+          // null, et `onServerClosed` sait deja le traiter (`exitDetail` le nomme
+          // « code inconnu »). Le typer trop etroitement ici aurait cache la
+          // difference plutot que de la porter.
+          onError: (code: number | null) => this.onServerClosed(inst, code),
         },
       }),
       live: false,
