@@ -152,6 +152,15 @@ jobs:
       - name: Build installers
         run: npx electron-builder --win --publish never
 
+      # 2026-08-04 : le seul morceau natif que ce depot compile lui-meme. `npm run
+      # build` l'appelle deja, mais il AVERTIT au lieu d'echouer quand aucun
+      # compilateur n'est present - ce qui est juste sur une machine de
+      # developpement et inacceptable pour une release. Ici, il doit reussir.
+      - name: Build the mute helper (hard gate)
+        run: |
+          node scripts/build-mute.cjs
+          test -f resources/bin/flow-mute.exe || { echo "MISSING flow-mute.exe (no silence during a dictation)"; exit 1; }
+
       # The zip is the ground truth of what is about to ship. An installer with
       # no hook binary or no speech engine passes every gate above EXCEPT this.
       - name: Inspect the artifact BEFORE publishing
@@ -167,6 +176,11 @@ jobs:
           # incomplet. Elle a deja ete livree une fois, en 1.22.0.
           grep -q "llama-server.exe" ziplist.txt || { echo "MISSING llama-server.exe (no meeting notes)"; exit 1; }
           grep -q "ggml-vulkan.dll" ziplist.txt || { echo "MISSING ggml backend for llama-server"; exit 1; }
+          # 2026-08-04 : le silence pendant une dictee. Absent, la dictee
+          # fonctionne et le son des autres applications continue - une
+          # fonctionnalite qui manque sans que rien ne le dise. C'est la panne de
+          # la 1.22.0 sous une troisieme forme, et elle se ferme ici.
+          grep -q "flow-mute.exe" ziplist.txt || { echo "MISSING flow-mute.exe (no silence during a dictation)"; exit 1; }
           # Et l'inverse : les vingt-deux outils que fetch-llama.cjs elague. S'ils
           # reapparaissent, c'est que l'elagage a saute, et ggml-rpc-server.exe -
           # un backend de calcul reseau - serait signe et installe avec Flow.

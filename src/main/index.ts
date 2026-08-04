@@ -30,6 +30,7 @@ import { Repo } from "./data/repo";
 import { WorkingCopy } from "./data/workingCopy";
 import { WorkingCopyCaptureStore } from "./data/captureStore";
 import { AudioLocal, audioDirIn, migrateAudioDir } from "./audioLocal";
+import { AudioDuck } from "./audioDuck";
 import { LocalApi } from "./api";
 import { LongRecorder } from "./longform";
 import { historyDownloadStem } from "../shared/downloadName";
@@ -1150,6 +1151,24 @@ const captureStore = new WorkingCopyCaptureStore({ workingCopy, repo });
 const audioDir = audioDirIn(dataDir());
 const audioLocal = new AudioLocal({ dir: () => audioDir, log: flowLog });
 
+/**
+ * LE SILENCE PENDANT UNE DICTEE (2026-08-04, demande de Roch).
+ *
+ * Pose au niveau du module, a cote du reste de l'infrastructure : il n'a besoin
+ * de rien d'autre que de deux chemins, et il ne parle a personne avant la
+ * premiere dictee (voir main/audioDuck.ts, regle 2).
+ *
+ * `app.getPath("exe")` et non `process.execPath` : les deux se valent dans un
+ * paquet, mais en developpement `process.execPath` est l'electron du
+ * node_modules - ce qui est justement le fichier depuis lequel le son de Flow est
+ * joue. Se tromper ici couperait le son de Flow avec les autres.
+ */
+const audioDuck = new AudioDuck({
+  helperPath: () => resourcePath("bin/flow-mute.exe"),
+  selfExePath: () => app.getPath("exe"),
+  log: flowLog,
+});
+
 /** La liste des reunions, pour le BALAYAGE de l'audio.
  *
  * Une fonction de module et non la fermeture `listRecordingsDep` : celle-la vit
@@ -1946,16 +1965,29 @@ const hotkey = new HotkeyAdapter(settings.combo, {
     pressStartedAt = Date.now(); // B9: see noteCaptureContinuity
     hotpath.mark("captureStartDecided");
     overlay.startCapture({ sounds: settings.sounds, micDeviceId: settings.micDeviceId });
+    // 2026-08-04 : le son des AUTRES applications se coupe ici, et Flow garde le
+    // sien - c'est pourquoi cette ligne vient APRES `startCapture`, qui joue la
+    // pastille et son signal sonore. Une ecriture dans un tuyau : elle ne peut
+    // pas retenir la dictee (main/audioDuck.ts, regle 1).
+    audioDuck.mute();
   },
   onStop() {
     markActivity();
     listening = false;
     pressEndedAt = Date.now(); // B9: see noteCaptureContinuity
+    // AVANT `stopCapture`, pour que le signal sonore de fin s'entende dans un
+    // ordinateur redevenu normal plutot qu'au milieu d'un silence force.
+    audioDuck.unmute();
     overlay.stopCapture(); // marks "overlayStopSent"
   },
   onCancel(reason) {
     markActivity();
     listening = false;
+    // LES TROIS FINS D'UNE DICTEE retablissent le son, et c'est la seule facon de
+    // s'en assurer : une pression annulee (trop courte, touche etrangere, cas de
+    // l'ecran verrouille) ne passe pas par `onStop`. Le filet de derniere ligne
+    // reste la fermeture du tuyau, cote helper.
+    audioDuck.unmute();
     overlay.cancelCapture(); // marks "overlayCancelSent" on the still-open trace
     hotpath.abandon(reason);
   },
@@ -2471,6 +2503,11 @@ app.on("before-quit", () => {
   // is lost forever otherwise, and up to a minute of counters is exactly what
   // the 60 s timer trades away for keeping the disk off the dictation path.
   stats.stop();
+  // 2026-08-04 : le helper qui coupe le son des autres applications. Fermer son
+  // tuyau suffit - il retablit sur la fin de fichier, et c'est justement le filet
+  // qui survit a un plantage - mais le dire ici rend l'intention lisible et evite
+  // de laisser un processus derriere une fermeture propre.
+  audioDuck.stop();
   // B2 : rien a arreter, et surtout rien a attendre - before-quit est
   // synchrone (voir workingCopy.pending()).
   // B4b: LAST, on purpose. Every line the shutdown above just wrote (the

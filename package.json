@@ -1,6 +1,6 @@
 {
   "name": "flow",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "Local, on-device voice dictation for any app. Hold a key, speak, release: the text lands at your cursor. Nothing ever leaves your machine, nothing is ever stored.",
   "license": "MIT",
   "author": "AGR Labs",
@@ -12,7 +12,8 @@
   "scripts": {
     "dev": "concurrently -k \"vite\" \"tsc -p tsconfig.main.json -w --preserveWatchOutput\" \"npm:dev:electron\"",
     "dev:electron": "tsc -p tsconfig.main.json && cross-env AGRFLOW_DEV=1 electron .",
-    "build": "node scripts/check-icon.cjs && tsc -p tsconfig.main.json && vite build",
+    "build": "node scripts/check-icon.cjs && node scripts/build-mute.cjs && tsc -p tsconfig.main.json && vite build",
+    "build:mute": "node scripts/build-mute.cjs",
     "lint": "eslint .",
     "test": "tsx --test --test-concurrency=1 test/*.test.ts",
     "bench:hotpath": "tsx scripts/bench-hotpath.ts",
