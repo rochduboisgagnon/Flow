@@ -62,26 +62,55 @@ export function App() {
   }
 
   const coming = COMING[section];
+
+  // ---------------------------------------------------------------------------
+  // LA PORTE : l'ecran de connexion remplace TOUT, rail compris.
+  //
+  // La premiere version gardait le rail visible a cote du formulaire, en se
+  // disant qu'il « dit ce que Flow est pendant qu'on se connecte ». Roch a
+  // installe la 2.0.0 et a tranche en une phrase : on ne devrait meme pas voir
+  // les menus. Il avait raison, et pas seulement sur l'esthetique - un rail dont
+  // AUCUNE section ne repond est exactement ce que cette campagne appelle un
+  // controle mort, et c'est la faute qu'elle a passe six vagues a retirer
+  // ailleurs (le bouton « Reprendre le nettoyage a 90 jours » qui ne nettoyait
+  // plus rien, les pages « Coming soon » supprimees plutot que grisees).
+  //
+  // Rien d'autre n'est donc atteignable : ni le rail, ni les sections, ni les
+  // Reglages. La barre de titre reste - elle porte les boutons de fenetre de
+  // Windows, et sans elle on ne pourrait pas fermer l'application.
+  // ---------------------------------------------------------------------------
+  if (s === null) {
+    return (
+      <div className="app">
+        <Titlebar s={s} />
+        <div className="body">
+          <main className="content gate">
+            <p className="sub">Connecting to the engine...</p>
+          </main>
+        </div>
+      </div>
+    );
+  }
+  if (!s.accountDataReady) {
+    return (
+      <div className="app">
+        <Titlebar s={s} />
+        <div className="body">
+          <main className="content gate">
+            <SignInScreen s={s} />
+          </main>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="app">
       <Titlebar s={s} />
       <div className="body">
         <Rail section={section} go={setSection} />
         <main className="content">
-          {s === null ? (
-            <p className="sub">Connecting to the engine...</p>
-          ) : !s.accountDataReady ? (
-            // B4 : LA PORTE. Tant que le compte n'est pas charge, il n'y a rien
-            // d'utile a montrer - le dictionnaire, les reglages et les reunions
-            // vivent dedans. Montrer l'application quand meme laisserait quelqu'un
-            // demarrer une reunion qui n'aurait nulle part ou aller, ce qui est
-            // exactement le defaut que le lancement d'apres-B3 a revele.
-            //
-            // Le rail reste VISIBLE a cote, delibere : il dit ce que Flow est,
-            // pendant qu'on se connecte. Ses sections repondront quand le compte
-            // sera la.
-            <SignInScreen s={s} />
-          ) : (
+          {(
             // key remounts the section wrapper so the pagein animation plays
             // on every navigation (reduced-motion disables it in CSS).
             <section className="page" key={section}>

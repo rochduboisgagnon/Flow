@@ -86,25 +86,31 @@ function TabAccount({ s }: { s: UiStatePayload }) {
   }
 
   if (a.signedIn) {
+    // 2026-08-04, Roch : « rien d'ecrit, c'est un Sign Out normal, pas besoin de
+    // plein d'informations ». Les trois paragraphes d'explication qui etaient ici
+    // repondaient a des questions que personne ne se pose devant un bouton
+    // « Sign out » - ou qui sont deja repondues par l'ecran de connexion, une
+    // fois, au bon moment.
+    //
+    // Ce qui RESTE conditionnel n'est pas de la decoration : les deux lignes
+    // ci-dessous n'apparaissent que quand elles disent quelque chose de vrai a cet
+    // instant, et leur absence est l'etat normal.
     return (
       <div className="rows">
-        <Row label="Signed in as" help="Your settings, dictionary, dictations and meetings live in this account, not on this computer. Sign in on another machine and they follow you.">
+        <Row label="Signed in as" help="">
           <span className="pinned">{a.email}</span>
         </Row>
-        {/* B4 : dire quand le compte est connecte mais pas CHARGE. Sans cette
-            ligne, « connecte » s'afficherait au-dessus d'une application qui
-            refuse d'enregistrer, sans expliquer pourquoi. */}
         {!s.accountDataReady ? (
-          <Row label="Your data" help="Flow has a session but has not been able to load your dictionary and settings yet - usually the network. Dictation and recording wait until it has, rather than writing somewhere you could not read back.">
+          <Row label="Your data" help="Flow has a session but has not loaded your dictionary and settings yet.">
             <span className="sub">Loading...</span>
           </Row>
         ) : null}
         {s.unsent > 0 ? (
-          <Row label="Waiting to upload" help="Changes made while offline. They are held in memory and go up as soon as the network is back; nothing is lost, and nothing waits on them.">
+          <Row label="Waiting to upload" help="Changes made offline. They go up as soon as the network is back.">
             <span className="pinned">{s.unsent}</span>
           </Row>
         ) : null}
-        <Row label="Sign out" help="Signs out THIS computer only. Other machines you are signed in on keep working - a recording in progress elsewhere is not interrupted.">
+        <Row label="Sign out" help="">
           <button className="btn" disabled={busy} onClick={() => void signOut()}>
             {busy ? "Signing out..." : "Sign out"}
           </button>

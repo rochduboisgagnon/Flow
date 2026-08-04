@@ -33,6 +33,7 @@ test("B2: sans magasin, enregistrer ne fait rien et ne LANCE rien", () => {
 test("B2: avec un magasin, l'aller-retour conserve les reglages", () => {
   const held: Array<Record<string, unknown>> = [];
   useSettingsBacking({
+    isReady: () => true,
     readSettings: () => held[held.length - 1] ?? {},
     writeSettings: (n) => void held.push(n),
   });
@@ -52,6 +53,7 @@ test("B2: la combinaison de touches est COPIEE, jamais partagee", () => {
   // du plan : « un reglage qui revient en arriere entre deux machines ».
   let stored: Record<string, unknown> = {};
   useSettingsBacking({
+    isReady: () => true,
     readSettings: () => stored,
     writeSettings: (n) => void (stored = n),
   });
@@ -67,6 +69,7 @@ test("B2: ce qui vient du compte passe TOUJOURS par sanitizeSettings", () => {
   // ecrite : Supabase rend du JSON arbitraire. Un champ inconnu doit tomber, un
   // mauvais type revenir au defaut.
   useSettingsBacking({
+    isReady: () => true,
     readSettings: () => ({ language: 42, jeNexistePas: true, sounds: "oui" }),
     writeSettings: () => {},
   });
@@ -83,4 +86,38 @@ test("B2: settings.json n'est plus jamais ecrit par ce module", () => {
   const src = fs.readFileSync(path.join(__dirname, "..", "src", "main", "settings.ts"), "utf8");
   assert.ok(!/writeFileSync|renameSync|mkdirSync/.test(src), "settings.ts n'ecrit plus rien sur le disque");
   assert.ok(!/from "node:fs"/.test(src), "et n'a plus de raison d'importer fs");
+});
+
+test("2026-08-04 : rien n'est ecrit avant que le compte soit charge", () => {
+  // TROUVE DANS LE JOURNAL DE ROCH, une seconde apres le lancement de la 2.0.0 :
+  // « [data] envoi impossible : les changements attendent en memoire », a chaque
+  // demarrage a froid.
+  //
+  // Le magasin etait installe au chargement du module, donc il existait AVANT
+  // toute connexion - et `applySettings({})` au demarrage lui envoyait les
+  // reglages par defaut, qui echouaient sur « personne n'est connecte » et
+  // restaient en tete de file. Le commentaire de `useSettingsBacking` decrivait
+  // deja la bonne regle (« ecrire les reglages de personne quelque part serait
+  // pire que de ne pas les ecrire ») et le cablage la contredisait.
+  //
+  // Rien n'etait PERDU - le travail en file ne porte pas de charge, il relit
+  // l'etat courant a l'envoi - mais une file bloquee des le boot rend le compteur
+  // « en attente » faux et la ligne de journal alarmante pour rien.
+  const writes: Array<Record<string, unknown>> = [];
+  let ready = false;
+  useSettingsBacking({
+    isReady: () => ready,
+    readSettings: () => ({}),
+    writeSettings: (next) => void writes.push(next),
+  });
+
+  saveSettings({ ...SETTINGS_DEFAULTS, combo: [...SETTINGS_DEFAULTS.combo] });
+  assert.deepEqual(writes, [], "compte pas charge : aucun envoi, donc aucune file bloquee");
+
+  ready = true;
+  saveSettings({ ...SETTINGS_DEFAULTS, combo: [...SETTINGS_DEFAULTS.combo], language: "fr" });
+  assert.equal(writes.length, 1, "compte charge : l'ecriture part normalement");
+  assert.equal((writes[0] as Record<string, unknown>).language, "fr");
+
+  useSettingsBacking(null);
 });

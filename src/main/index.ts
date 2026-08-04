@@ -364,32 +364,6 @@ if (!app.requestSingleInstanceLock()) {
       );
       return started;
     };
-    /**
-     * B4 : POURQUOI UN ENREGISTREMENT PEUT ETRE REFUSE.
-     *
-     * Trouve en LANCANT l'application apres B3, et par aucun test : Flow demarre,
-     * arme le raccourci, chauffe le moteur et ecoute sur son API locale SANS que
-     * personne soit connecte. Avant B3 ca ne coutait rien - tout allait sur le
-     * disque. Maintenant, une reunion demarree hors compte n'a nulle part ou
-     * aller : sa ligne echoue a l'envoi (« personne n'est connecte »), reste en
-     * tete de file, et meurt avec le processus. Une seule ligne de journal.
-     *
-     * Refuser AVANT est donc la seule reponse honnete. Refuser APRES une heure de
-     * reunion serait exactement la panne que toute cette vague existe pour
-     * empecher.
-     *
-     * `isReady()` et non `signedIn` : etre connecte ne suffit pas. La copie de
-     * travail peut avoir echoue a charger - hors ligne au lancement, par exemple -
-     * et un enregistrement demarre sur une copie non prete ecrirait ses tranches
-     * dans une file qui ne sait pas encore a quel compte elle appartient.
-     */
-    const refuseIfNoAccount = (): string => {
-      if (workingCopy.isReady()) return "";
-      return accountSnapshot.signedIn
-        ? "Flow n'a pas encore charge votre compte. Attendez un instant, ou verifiez votre connexion : une reunion enregistree maintenant n'aurait nulle part ou aller."
-        : "Connectez-vous d'abord. Les reunions sont enregistrees dans votre compte, et sans compte celle-ci serait perdue a la fermeture.";
-    };
-
     const longStopDep = (): LongStopResult => {
       // C2: native mode finalizes the recorder AFTER the renderer flushes its tail
       // (nativeCapture.stop's callback), so the last ~1 s is not lost. Report success
@@ -463,7 +437,14 @@ if (!app.requestSingleInstanceLock()) {
       selfCheck: selfCheckDep,
       // B1: the HTTP /transcribe endpoint (AGR Pilot's phone mic) is
       // deliberately UNTRACED - see processUtterance's module note.
-      transcribe: (wav) => processUtterance(wav),
+      // Le micro d'un telephone qui dicte a travers l'API locale. MEME porte que
+      // le raccourci : sans compte, le dictionnaire ne s'appliquerait pas, et le
+      // texte rendu aurait l'air juste sans l'etre.
+      transcribe: (wav) => {
+        const refusal = refuseIfNoAccount();
+        if (refusal) return Promise.resolve({ text: "", ms: 0, error: refusal });
+        return processUtterance(wav);
+      },
       longState: longStateDep,
       longStart: (opts) => {
         const refusal = refuseIfNoAccount();
@@ -604,7 +585,18 @@ if (!app.requestSingleInstanceLock()) {
         // naming files on this machine. The queue itself refuses anything that
         // is not an existing regular file with a supported audio extension.
         importState: () => importQueue.snapshot(),
-        importStart: (req) => importQueue.start(req),
+        // Un fichier importe produit une reunion, exactement comme une capture :
+        // sans compte, elle n'aurait nulle part ou aller. Le refus arrive AVANT que
+        // le fichier soit decode - decouvrir le probleme apres vingt minutes de
+        // transcription serait la meme faute, en plus long.
+        importStart: (req) => {
+          const refusal = refuseIfNoAccount();
+          // La forme complete d'un refus, et non un objet abrege : la page lit
+          // `rejected` pour dire QUELS fichiers ont ete refuses, et un tableau
+          // absent lui ferait afficher un refus sans nommer ce qui a ete refuse.
+          if (refusal) return { ok: false, accepted: [], rejected: [], error: refusal };
+          return importQueue.start(req);
+        },
         importCancel: (id) => importQueue.cancel(id),
         importPick: () => pickAudioFiles(),
         // B1: identical closure to LocalApi's above (hotpathSnapshotDep,
@@ -1154,6 +1146,7 @@ async function loadAccountData(): Promise<void> {
   refreshDictionaryCache();
   primeDictionary(flowLog);
   history.adopt();
+  noAccountSaid = false; // le compte est la : un futur refus devra se dire a nouveau
   applySettings({}); // reapplique ce qui vient d'arriver : raccourci, langue, theme
   // B3b : LE SAUVETAGE DES REUNIONS INTERROMPUES.
   //
@@ -1709,9 +1702,112 @@ const history = new DictationHistoryStore({
 // which coupled it to AGR Flow - disabling Flow killed the shortcut. It now belongs entirely to
 // AGR Manager (its always-on LL hook), which owns Pilot and runs whether or not Flow does. This
 // adapter only handles the dictation combo.
+/**
+ * POURQUOI FLOW PEUT REFUSER DE PRODUIRE QUELQUE CHOSE.
+ *
+ * ---------------------------------------------------------------------------
+ * QUATRE CHEMINS, UNE SEULE FONCTION - ET C'EST TOUT LE SUJET
+ * ---------------------------------------------------------------------------
+ *
+ * B4 avait ferme DEUX chemins sur quatre : le bouton d'enregistrement et
+ * l'enregistrement pilote par l'API. Roch a installe la 2.0.0 le 2026-08-04 et a
+ * trouve le troisieme en trente secondes - le raccourci de dictee fonctionnait
+ * sans compte. Le quatrieme (l'import d'un fichier audio) n'etait pas ferme non
+ * plus.
+ *
+ * Une porte fermee sur deux entrees d'une maison qui en a quatre n'est pas une
+ * porte a moitie fermee : c'est une maison ouverte. La fonction est donc UNE,
+ * nommee, au niveau du module, et chaque entree l'appelle - plutot que quatre
+ * verifications qui se ressemblent et dont on decouvre la quatrieme en
+ * l'installant.
+ *
+ * ---------------------------------------------------------------------------
+ * CE QUE PRODUISAIT L'OUBLI DE LA DICTEE, et pourquoi c'est le pire des quatre
+ * ---------------------------------------------------------------------------
+ *
+ * Le texte partait BIEN au curseur : le moteur de parole est local, il n'a besoin
+ * de personne. Mais le dictionnaire vient de la copie de travail, qui etait VIDE.
+ * Les termes appris ne s'appliquaient donc pas, sans un mot - et le resultat
+ * avait l'air juste. C'est exactement la deuxieme des sept regressions que le
+ * plan demande de chercher (« un terme de dictionnaire sans effet »), sous sa
+ * forme la plus vicieuse. L'historique et les statistiques, eux, tombaient dans
+ * une file qui echoue et mouraient avec le processus.
+ *
+ * ---------------------------------------------------------------------------
+ * `isReady()` ET NON `signedIn`
+ * ---------------------------------------------------------------------------
+ *
+ * Etre connecte ne suffit pas : la copie de travail peut avoir echoue a charger -
+ * hors ligne au lancement - et c'est ELLE qui porte le dictionnaire. Les deux cas
+ * ont deux messages, parce que « connectez-vous » et « ca charge » ne veulent pas
+ * dire la meme chose : les confondre ferait retaper un mot de passe pour un
+ * probleme de reseau.
+ *
+ * Rend "" quand tout va bien, et la phrase a montrer sinon.
+ */
+function refuseIfNoAccount(): string {
+  if (workingCopy.isReady()) return "";
+  return accountSnapshot.signedIn
+    ? "Flow n'a pas encore charge votre compte. Attendez un instant, ou verifiez votre connexion : ce qui serait produit maintenant n'aurait nulle part ou aller, et votre dictionnaire ne s'appliquerait pas."
+    : "Connectez-vous d'abord. Vos reglages, votre dictionnaire et vos reunions vivent dans votre compte - sans lui, votre dictionnaire ne s'appliquerait pas et ce qui serait produit serait perdu a la fermeture.";
+}
+
+/** Le refus « pas de compte » a-t-il deja ete dit ? Remis a zero des que le
+ * compte charge, pour que la prochaine session hors compte le dise a nouveau. */
+let noAccountSaid = false;
+
 const hotkey = new HotkeyAdapter(settings.combo, {
   onStart() {
     markActivity();
+    // ---------------------------------------------------------------------
+    // LA DICTEE AUSSI A BESOIN DU COMPTE, et l'oublier etait un vrai defaut.
+    //
+    // Signale par Roch le 2026-08-04, en installant la 2.0.0 : le raccourci
+    // fonctionnait sans etre connecte. B4 avait ferme la porte pour
+    // l'enregistrement et n'avait pas pose la meme question a la dictee.
+    //
+    // CE QUE CA PRODUISAIT, et pourquoi c'est pire qu'un simple oubli : le
+    // texte partait BIEN au curseur - le moteur de parole est local, il n'a
+    // besoin de personne - mais le dictionnaire vient de la copie de travail,
+    // qui etait VIDE. Donc les termes appris ne s'appliquaient pas, sans un
+    // mot. C'est exactement la deuxieme des sept regressions que le plan
+    // demande de chercher (« un terme de dictionnaire sans effet »), et sa
+    // forme la plus vicieuse : le resultat a l'air juste.
+    //
+    // L'historique de dictee et les statistiques, eux, tombaient dans une file
+    // qui echoue et mouraient avec le processus.
+    //
+    // LE REFUS EST RESSENTI, jamais silencieux : meme `startAndRefuse` que le
+    // refus « une reunion tient le moteur » - son, pastille, et la session
+    // demontee un instant plus tard. Quelqu'un qui appuie doit toujours sentir
+    // qu'il a appuye, y compris quand la reponse est non (voir le commentaire
+    // de startAndRefuse dans overlay.ts).
+    if (!workingCopy.isReady()) {
+      // La pression est RESSENTIE - son et pastille, comme tout refus.
+      overlay.startAndRefuse({ sounds: settings.sounds, micDeviceId: settings.micDeviceId });
+      hotpath.abandon(HOTPATH_ABANDON_REASON.noAccount);
+      // ET LA FENETRE SE MONTRE, ce qui est la vraie reponse.
+      //
+      // Roch, le 2026-08-04 : « l'application ne peut pas fonctionner s'il n'y a
+      // aucun compte connecte ». Si c'est vrai - et ca l'est - alors un eclair de
+      // 260 ms sur la pastille est un mystere, pas une reponse : quelqu'un appuie,
+      // entend un son, et rien n'arrive. La seule chose qui AIDE est de montrer
+      // l'ecran qui explique et qui repare, c'est-a-dire la connexion.
+      //
+      // UNE FOIS PAR SERIE DE REFUS, jamais a chaque pression : dix pressions ne
+      // doivent pas voler le focus dix fois a quelqu'un qui est en train de taper
+      // ailleurs. Le drapeau se remet a zero quand le compte charge.
+      if (!noAccountSaid) {
+        noAccountSaid = true;
+        mainWindow.show(DEV);
+        flowLog(
+          accountSnapshot.signedIn
+            ? "[hotkey] dictee refusee : le compte n'est pas encore charge, donc votre dictionnaire ne s'appliquerait pas"
+            : "[hotkey] dictee refusee : personne n'est connecte, donc votre dictionnaire ne s'appliquerait pas",
+        );
+      }
+      return;
+    }
     if (longRec.isBusy) {
       // The transcript belongs to the long recording; a dictation mid-meeting
       // would fight it for the warm engine.

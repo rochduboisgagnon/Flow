@@ -52,9 +52,15 @@ export function SignInForm({ onDone }: { onDone?: () => void }) {
     }
   }
 
+  // 2026-08-04, Roch : « rien d'ecrit ». Les deux phrases qui expliquaient sous
+  // chaque champ qu'il n'y a pas d'inscription et que le mot de passe ne survit
+  // pas repondaient a des questions que personne ne pose devant un formulaire de
+  // connexion. Les DECISIONS, elles, sont intactes - elles vivent dans le bandeau
+  // de ce fichier, ou elles servent a celui qui modifie le code plutot qu'a celui
+  // qui tape son mot de passe.
   return (
     <form className="rows" onSubmit={(e) => void signIn(e)}>
-      <Row label="Email" help="Accounts are created for you. There is no sign-up here, and none on the server either.">
+      <Row label="Email" help="">
         <input
           type="email"
           value={email}
@@ -63,7 +69,7 @@ export function SignInForm({ onDone }: { onDone?: () => void }) {
           aria-label="Email"
         />
       </Row>
-      <Row label="Password" help="Sent once to Flow's engine to open a session, and never stored by this page.">
+      <Row label="Password" help="">
         <input
           type="password"
           value={password}
@@ -115,25 +121,13 @@ export function SignInForm({ onDone }: { onDone?: () => void }) {
 export function SignInScreen({ s }: { s: UiStatePayload }) {
   const loading = s.account.signedIn && !s.accountDataReady;
   return (
-    <div className="page">
-      <div className="hero">
-        <h1>Flow</h1>
-        {loading ? (
-          <p className="sub">
-            Signed in as {s.account.email}. Loading your dictionary and settings from your account...
-          </p>
-        ) : (
-          <p className="sub">
-            Your settings, dictionary, dictations and meetings live in your Flow account, not on this computer. Sign in
-            to pick up where you left off - on any machine.
-          </p>
-        )}
-      </div>
+    <div className="gate-card">
+      <h1 className="gate-title">Flow</h1>
       {loading ? (
-        <p className="sub">
-          If this stays here, Flow cannot reach the network. Nothing is lost: dictation and recording wait until your
-          account is loaded, rather than writing somewhere you could not read them back from.
-        </p>
+        // Le seul cas ou une phrase est due : quelqu'un est connecte et l'ecran
+        // ne bouge pas. Sans elle, il ne saurait pas si Flow travaille ou s'il
+        // est bloque.
+        <p className="sub">Signed in as {s.account.email}. Loading your account...</p>
       ) : (
         <SignInForm />
       )}

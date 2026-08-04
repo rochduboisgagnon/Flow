@@ -146,6 +146,24 @@ export function dataDir(): string {
 export interface SettingsBacking {
   readSettings(): Record<string, unknown>;
   writeSettings(next: Record<string, unknown>): void;
+  /** Le compte est-il charge ?
+   *
+   * AJOUTE LE 2026-08-04, parce que le commentaire de `useSettingsBacking`
+   * ci-dessous decrivait deja la bonne regle et que le cablage la contredisait.
+   * Le magasin etait installe au chargement du module, donc il existait AVANT
+   * toute connexion - et `applySettings({})` au demarrage lui envoyait les
+   * reglages par defaut, qui echouaient sur « personne n'est connecte » et
+   * restaient en tete de file.
+   *
+   * Trouve dans le journal de Roch, une seconde apres le lancement de la 2.0.0 :
+   * « [data] envoi impossible : les changements attendent en memoire », a chaque
+   * demarrage a froid. Rien n'etait perdu - la ligne ne porte pas de charge, elle
+   * relit l'etat courant a l'envoi - mais une file bloquee des le boot rend
+   * `unsent` faux et la ligne de journal alarmante pour rien.
+   *
+   * `DictionaryBacking` portait deja exactement cette methode, pour exactement
+   * cette raison. Les deux magasins repondent maintenant a la meme question. */
+  isReady(): boolean;
 }
 
 let backing: SettingsBacking | null = null;
@@ -270,6 +288,11 @@ export function loadSettings(): FlowSettings {
  * rend la main tout de suite, et l'ancienne ecriture atomique (tmp + rename)
  * a disparu avec le fichier qu'elle protegeait. */
 export function saveSettings(s: FlowSettings): void {
-  backing?.writeSettings({ ...s, combo: [...s.combo] });
+  // `isReady()` et non seulement la presence du magasin : voir SettingsBacking.
+  // Ne rien ecrire ici ne perd rien - a la connexion, `load()` adopte les
+  // reglages du COMPTE, qui font autorite sur ceux que cette machine avait en
+  // memoire avant de savoir a qui elle parlait.
+  if (!backing?.isReady()) return;
+  backing.writeSettings({ ...s, combo: [...s.combo] });
 }
 

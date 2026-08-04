@@ -775,3 +775,43 @@ html.light .heat i.l2 { background: #cf9d55; }
   width: 0;
   height: 0;
 }
+
+/* ---------------------------------------------------------------------------
+   LA PORTE DU COMPTE (2026-08-04)
+   ---------------------------------------------------------------------------
+   Une carte centree, et RIEN d'autre a l'ecran : pas de rail, pas de sections.
+   Roch, en installant la 2.0.0 : « on ne devrait meme pas voir les menus ».
+   Un rail dont aucune section ne repond est un controle mort, et cette campagne
+   a passe six vagues a en retirer ailleurs.
+
+   `justify-content: center` sur l'axe vertical est volontairement ABSENT : le
+   formulaire grandit d'une ligne quand une erreur s'affiche, et un bloc centre
+   verticalement sauterait vers le haut a ce moment-la - sous les doigts de
+   quelqu'un qui vient de rater son mot de passe et va le retaper.
+   --------------------------------------------------------------------------- */
+.content.gate {
+  display: flex;
+  justify-content: center;
+  padding-top: 12vh;
+}
+.gate-card {
+  width: 100%;
+  max-width: 420px;
+}
+.gate-title {
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0 0 10px;
+}
+/* Les libelles du formulaire empilent au lieu de s'aligner sur une colonne de
+   droite : la carte fait 420 px, une grille a deux colonnes y serrerait les
+   champs a une largeur ou on ne lit plus ce qu'on tape. */
+.gate-card .row {
+  display: block;
+}
+.gate-card .row input {
+  width: 100%;
+  margin-top: 6px;
+}
+.gate-card .rows { margin-top: 18px; }

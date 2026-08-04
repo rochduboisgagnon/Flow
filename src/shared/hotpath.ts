@@ -90,6 +90,7 @@ export const HOTPATH_ABANDON_REASON = {
   comboChanged: "combo-changed", // the shortcut itself was changed mid-hold
   paused: "paused", // the tray's "pause dictation" pre-empted a live hold
   busyLongRecording: "busy-long-recording", // refused: a long recording owns the engine
+  noAccount: "no-account", // refused: le compte n'est pas charge, donc le dictionnaire non plus
   tooShortClip: "too-short-clip", // < 300 ms of audio, treated as release noise
   noSpeech: "gated-no-speech", // the energy VAD found nothing to send to the model
   hallucinationGate: "gated-hallucination", // the model answered, textGate rejected it
