@@ -359,9 +359,15 @@ test("main folds the two durations in through hotpath, never by comparing clocks
 
 test("the focus probe is pre-warmed at startup, off the dictation path", () => {
   assert.match(PROBE_SRC, /async warm\(\): Promise<void>/);
-  assert.match(INDEX_SRC, /void probe\.warm\(\);/);
+  // 2026-08-04 : `probe?.warm()` et non `probe.warm()`. La sonde lance
+  // powershell.exe, donc elle n'est pas construite sur une plateforme qui n'en a
+  // pas, et elle reste nulle PAR CONSTRUCTION plutot que par accident (voir la
+  // garde de plateforme dans index.ts). Ce que ce test defend est intact : elle est
+  // prechauffee la ou elle est construite, jamais paresseusement a la premiere
+  // pression.
+  assert.match(INDEX_SRC, /void probe\?\.warm\(\);/);
   const boot = slice(INDEX_SRC, "probe = new FocusProbe(", "logLegacyHistoryState()");
-  assert.match(boot, /void probe\.warm\(\);/, "warmed where it is built, not lazily on the first press");
+  assert.match(boot, /void probe\?\.warm\(\);/, "warmed where it is built, not lazily on the first press");
 });
 
 test("the pre-warm policy is derived in exactly ONE place", () => {

@@ -95,7 +95,10 @@ test("B11: the cadence is decided by the SAME 'busy' the updater's quiet window 
 
 test("B11: the sampler is actually started, right after the hook it measures for", () => {
   assert.match(INDEX_SRC, /loopLagSampler\.start\(\);/, "a sampler nobody starts measures nothing");
-  const startPttAt = INDEX_SRC.indexOf("\n    startPtt();");
+  // 2026-08-04 : l'ancre suit la garde de plateforme. `startPtt()` est desormais
+  // conditionne - une machine sans crochet clavier verifie n'en arme pas - donc la
+  // chaine exacte a change ; l'ORDRE que ce test defend, lui, n'a pas bouge.
+  const startPttAt = INDEX_SRC.indexOf("startPtt();");
   const samplerAt = INDEX_SRC.indexOf("loopLagSampler.start();");
   assert.ok(startPttAt > 0 && samplerAt > startPttAt, "start it after the hook exists");
 });

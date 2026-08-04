@@ -4,6 +4,7 @@
 import type { ThemePref, ResolvedTheme } from "./theme";
 import type { HookHealth } from "./hookWatchdog";
 import type { BatchEngineState } from "./asrRole";
+import type { PlatformCapabilities } from "./platform";
 
 // main -> overlay
 export const CAPTURE_START = "capture:start";
@@ -430,6 +431,15 @@ export interface UiStatePayload {
   /** Ce qui n'est pas encore monte dans le compte, toutes files confondues. Pour
    * le DIRE, jamais pour l'attendre. */
   unsent: number;
+  /** CE QUE CETTE MACHINE SAIT FAIRE (2026-08-04).
+   *
+   * Dans la poussee d'etat plutot que tire : cinq booleens qui ne changent JAMAIS
+   * pendant l'execution, et les avoir dans le meme instantane que le reste evite
+   * qu'une page affiche « Armed » une seconde avant d'apprendre qu'il n'y a pas de
+   * crochet clavier sur cette plateforme.
+   *
+   * La liste de ce qui manque, et pourquoi, est dans shared/platform.ts. */
+  caps: PlatformCapabilities;
   /** F1: what the SECOND (batch) engine is doing. Four scalars at most, derived
    * fresh in main from the live settings and the live process, so it rides the
    * 1 Hz push like modelState above rather than being pulled: Settings > Engine
@@ -567,6 +577,7 @@ export const UI_HISTORY_DOC = "ui:history-doc"; // takes an id, answers one entr
 // identifiant opaque encodant « <date>/<titre> », une taille de fichier, un
 // mtime) plutot qu'une reunion.
 export type { RecordingSummary, RecordingDocPayload } from "./recordings";
+export type { PlatformCapabilities } from "./platform";
 
 // ---- capture downloads (U5c, Roch's decision) ----
 // Browser-style: straight into the OS Downloads folder, no dialog. The

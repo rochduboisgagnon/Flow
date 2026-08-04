@@ -328,7 +328,7 @@ export function Notes({ s }: { s: UiStatePayload }) {
           `onFiled={refresh}` est ce qui remplace son ancien bouton « See it in
           Notes » : quand un import est classe, la liste ci-dessous se relit et la
           reunion importee apparait en tete. */}
-      <ImportPanel onFiled={() => void refresh()} />
+      <ImportPanel onFiled={() => void refresh()} canTranscribe={s.caps.localEngines} />
       {note ? (
         <p className="note-saved">
           <span className="mono">{note}</span>

@@ -31,6 +31,7 @@ import { WorkingCopy } from "./data/workingCopy";
 import { WorkingCopyCaptureStore } from "./data/captureStore";
 import { AudioLocal, audioDirIn, migrateAudioDir } from "./audioLocal";
 import { AudioDuck } from "./audioDuck";
+import { capabilitiesFor, MISSING_ON_THIS_PLATFORM } from "../shared/platform";
 import { LocalApi } from "./api";
 import { LongRecorder } from "./longform";
 import { historyDownloadStem } from "../shared/downloadName";
@@ -97,6 +98,19 @@ import {
 // STORED, neither on disk nor in a retained buffer.
 
 const DEV = process.env.AGRFLOW_DEV === "1";
+
+/**
+ * CE QUE CETTE MACHINE SAIT FAIRE (2026-08-04).
+ *
+ * Lu UNE fois, ici, et jamais re-derive ailleurs : un second appel a
+ * `process.platform` dans un autre module est exactement la facon dont deux
+ * reponses differentes finissent par cohabiter.
+ *
+ * Le raisonnement complet - et la liste nommee de ce qui manque sur macOS - est
+ * dans shared/platform.ts. Ce qui suit dans ce fichier ne fait que NE PAS lancer
+ * ce qui n'existe pas, en le disant une fois dans le journal.
+ */
+const CAPS = capabilitiesFor(process.platform);
 
 // Settings (shortcut, language, model, microphone) live in ~/.flow, outside the
 // install; mutated via the local API and the main window.
@@ -236,7 +250,15 @@ if (!app.requestSingleInstanceLock()) {
     });
     if (NativeCapture.available()) nativeCapture.create(DEV); // C2: Windows loopback window
     wireCapture();
-    startPtt();
+    // 2026-08-04 : LE CROCHET NE PART PAS SUR UNE PLATEFORME QUI N'EN A PAS.
+    //
+    // Sans cette garde, `startPtt()` lancerait le serveur de touches de keyspy,
+    // qui demanderait la permission Accessibilite sur macOS pour armer un
+    // raccourci dont rien ne peut ensuite honorer l'avalement - donc une dictee
+    // qui laisserait ses touches fuir dans le document. Mieux vaut ne rien armer
+    // et le DIRE (voir shared/platform.ts, et la phrase que la fenetre affiche).
+    if (CAPS.dictation) startPtt();
+    else flowLog("[platform] dictee non demarree : cette plateforme n'a pas de crochet clavier verifie");
     // B11: started right after the hook, because the hook is what it measures
     // for. From here on, every stretch where Flow is working is sampled at
     // 20 ms and every idle stretch at 500 ms (see shared/loopLag.ts).
@@ -285,7 +307,10 @@ if (!app.requestSingleInstanceLock()) {
     powerMonitor.on("unlock-screen", () => setMicWarmthSuspended(false));
     powerMonitor.on("resume", () => setMicWarmthSuspended(false));
     void warmAsr();
-    probe = new FocusProbe(focusProbeScript(), DEV ? (m) => console.log(m) : undefined);
+    // Elle lance powershell.exe : rien a lancer ailleurs. `probe` reste null, et
+    // tous ses appelants savent deja traiter son absence (`probe?.`), parce que
+    // c'est le meme etat qu'une sonde qui a echoue.
+    if (CAPS.focusProbe) probe = new FocusProbe(focusProbeScript(), DEV ? (m) => console.log(m) : undefined);
     // B2: the same treatment warmAsr() already gives the speech engine, applied
     // to the other lazily-started child process on the hot path. B1 measured the
     // first dictation of a session paying ~457 ms (and 535 ms on a second start)
@@ -294,7 +319,9 @@ if (!app.requestSingleInstanceLock()) {
     // exactly the press a user judges the product on. Fire-and-forget: a probe
     // that fails to warm is retried by probe() and falls back to the clipboard,
     // unchanged.
-    void probe.warm();
+    // `probe?.` et non `probe.` : sur une plateforme sans sonde, elle est nulle
+    // par construction (voir la garde a sa creation), pas par accident.
+    void probe?.warm();
     // B2: push the microphone pre-warm policy now that the overlay window
     // exists. The renderer replays it on load (see OverlayWindow), so this
     // arriving before the page is not a race - and this is what makes the FIRST
@@ -733,6 +760,9 @@ function getUiState(): UiStatePayload {
     // file - celle du document - et « unsent » redit exactement ce qu'il dit :
     // ce qui n'est pas encore monte dans le compte.
     unsent: workingCopy.pending(),
+    // Ce que cette machine sait faire. Constant pour toute la duree du processus :
+    // lu une fois au chargement du module (voir CAPS).
+    caps: CAPS,
     // F1: derived on every snapshot from the live settings AND the live process,
     // never remembered here - the Settings row that reads it must not be able to
     // outlive the fact it describes.
@@ -915,6 +945,18 @@ function newSidecar(modelPath: string): WhisperSidecar {
 }
 
 async function warmAsr() {
+  // 2026-08-04 : NE RIEN TELECHARGER SUR UNE PLATEFORME QUI N'A PAS DE MOTEUR.
+  //
+  // Sans cette garde, un lancement sur macOS irait chercher 550 Mo de modele pour
+  // un `whisper-server-win32-x64.exe` qui n'existe pas, puis echouerait a
+  // l'execution. `lastModelState` dit alors ce qui est vrai - il n'y a pas de
+  // moteur ici - au lieu de « erreur », qui suggererait une panne reparable.
+  if (!CAPS.localEngines) {
+    statusText = "no engine on this platform";
+    lastModelState = { status: "error", message: MISSING_ON_THIS_PLATFORM.localEngines };
+    flowLog("[platform] moteur de parole non demarre : pas de binaire pour cette plateforme");
+    return;
+  }
   // A10: a first-run download is up to 1.1 GB - an update swap killing it
   // mid-transfer wastes the whole thing. Counted as busy for its duration.
   modelTransfers++;

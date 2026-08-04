@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import type { HistoryEntry, UiStatePayload } from "../../../shared/ipcContracts";
 import type { Section } from "../Rail";
+import { MISSING_ON_THIS_PLATFORM, isReadOnlyPlatform } from "../../../shared/platform";
 
 // Home (wave U1): the mockup's hero + status cards, REAL data only. The
 // mockup's "Words today / This week" cards are deliberately absent - their
@@ -54,6 +55,8 @@ function dictationLabel(s: UiStatePayload): string {
 
 export function Home({ s, go }: { s: UiStatePayload; go: (sec: Section) => void }) {
   const hookDead = !s.hookOk;
+  const caps = s.caps;
+  const readOnly = isReadOnlyPlatform(caps);
   // B4: an incident that HEALED still has to leave a mark. Recovery restores
   // "Armed" within a second or two, and without this line the user would have
   // no way to connect "my shortcut did nothing just then" to anything real -
@@ -85,14 +88,41 @@ export function Home({ s, go }: { s: UiStatePayload; go: (sec: Section) => void 
       <div className="card hero-card">
         <div>
           <span className="lbl">Dictation</span>
-          <div className="big">
-            <span className={"dot " + (hookDead ? "err" : s.listening ? "on" : s.paused ? "off" : "on")} />
-            {dictationLabel(s)}
-          </div>
-          <p className="sub" style={{ margin: "6px 0 0" }}>
-            Hold <span className="kbd">{s.comboLabel}</span> anywhere and speak. Double-tap for hands-free,
-            press once to stop.
-          </p>
+          {/* 2026-08-04 : CETTE CARTE NE DIT « ARMED » QUE LA OU C'EST VRAI.
+              Sur une plateforme sans crochet clavier, le point vert et le mot
+              « Armed » seraient exactement le controle mort qui a l'air vivant que
+              ce depot refuse partout ailleurs. Ce qui s'affiche a la place nomme ce
+              qui manque, une fois, et dit ce qui FONCTIONNE quand meme - c'est la
+              vraie information pour quelqu'un qui vient de lancer Flow sur son
+              deuxieme ordinateur. */}
+          {caps.dictation ? (
+            <>
+              <div className="big">
+                <span className={"dot " + (hookDead ? "err" : s.listening ? "on" : s.paused ? "off" : "on")} />
+                {dictationLabel(s)}
+              </div>
+              <p className="sub" style={{ margin: "6px 0 0" }}>
+                Hold <span className="kbd">{s.comboLabel}</span> anywhere and speak. Double-tap for hands-free,
+                press once to stop.
+              </p>
+            </>
+          ) : (
+            <>
+              <div className="big">
+                <span className="dot off" />
+                Not on this computer
+              </div>
+              <p className="sub" style={{ margin: "6px 0 0", maxWidth: "62ch" }}>
+                {MISSING_ON_THIS_PLATFORM.dictation}
+                {readOnly ? " " + MISSING_ON_THIS_PLATFORM.localEngines : ""}
+              </p>
+              <p className="sub" style={{ margin: "6px 0 0", maxWidth: "62ch" }}>
+                What DOES work here is your account: your dictionary, your settings, and every meeting
+                recorded on another computer, with its transcript and its notes. Sign-in, Notes,
+                Dictionary and Settings are all live.
+              </p>
+            </>
+          )}
           {healed ? (
             <p className="sub" style={{ margin: "6px 0 0" }}>
               {/* La derniere phrase disait « See Diagnostics. » : cette page n'existe
@@ -111,11 +141,16 @@ export function Home({ s, go }: { s: UiStatePayload; go: (sec: Section) => void 
         </div>
         {/* Les deux gestes que cette carte offre. « Import audio » menait a une
             section du rail qui n'existe plus : il ouvre Notes, ou le depot de
-            fichiers vit maintenant. */}
-        <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-          <button className="btn amber" onClick={() => go("record")}>Start a recording</button>
-          <button className="btn ghost" onClick={() => go("notes")}>Import audio</button>
-        </div>
+            fichiers vit maintenant.
+            2026-08-04 : les deux demandent un moteur de parole. Sans lui, ils
+            ouvriraient des pages qui refuseraient - donc ils ne s'affichent pas,
+            et la phrase ci-dessus a deja dit pourquoi. */}
+        {caps.localEngines ? (
+          <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+            <button className="btn amber" onClick={() => go("record")}>Start a recording</button>
+            <button className="btn ghost" onClick={() => go("notes")}>Import audio</button>
+          </div>
+        ) : null}
       </div>
 
       <div className="card" style={{ marginTop: 14 }}>

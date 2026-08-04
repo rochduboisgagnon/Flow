@@ -38,7 +38,19 @@ const LIBRARY: Array<[Section, string, { d: string; d2?: string }]> = [
   ["dictionary", "Dictionary", { d: IC.dict }],
 ];
 
-export function Rail({ section, go }: { section: Section; go: (s: Section) => void }) {
+export function Rail({
+  section,
+  go,
+  /** 2026-08-04 : les capacites de CETTE machine. Le rail ne montre pas une
+   * section qui ne pourrait pas repondre - c'est la meme regle qui a fait
+   * supprimer les pages « Coming soon » plutot que de les griser, et qui a fait
+   * retirer le rail entier derriere l'ecran de connexion. */
+  canRecord,
+}: {
+  section: Section;
+  go: (s: Section) => void;
+  canRecord: boolean;
+}) {
   const nav = ([id, label, icon]: [Section, string, { d: string; d2?: string }]) => (
     <button key={id} aria-current={section === id ? "page" : undefined} onClick={() => go(id)}>
       <Icon d={icon.d} d2={icon.d2} />
@@ -47,7 +59,7 @@ export function Rail({ section, go }: { section: Section; go: (s: Section) => vo
   );
   return (
     <nav className="rail" aria-label="Sections">
-      {TOP.map(nav)}
+      {TOP.filter(([id]) => canRecord || id !== "record").map(nav)}
       <div className="grp">Library</div>
       {LIBRARY.map(nav)}
       <div className="spacer" />

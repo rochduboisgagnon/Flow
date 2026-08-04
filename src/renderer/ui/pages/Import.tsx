@@ -5,6 +5,7 @@ import {
   type ImportQueueSnapshot,
 } from "../../../shared/audioImport";
 import { hms } from "../../../shared/longform";
+import { MISSING_ON_THIS_PLATFORM } from "../../../shared/platform";
 
 // Import (V4 D3). Drop audio files, get the same document a live capture
 // produces: notes on top of a timestamped transcript, filed in the archive.
@@ -48,7 +49,16 @@ import { hms } from "../../../shared/longform";
 
 const POLL_MS = 700;
 
-export function ImportPanel({ onFiled }: { onFiled?: () => void }) {
+export function ImportPanel({
+  onFiled,
+  /** 2026-08-04 : y a-t-il un moteur de parole sur cette machine ? Sans lui, ce
+   * panneau accepterait un fichier et ne le transcrirait jamais - le depot de
+   * fichiers serait un controle mort avec une file d'attente. */
+  canTranscribe,
+}: {
+  onFiled?: () => void;
+  canTranscribe: boolean;
+}) {
   const [snap, setSnap] = useState<ImportQueueSnapshot | null>(null);
   const [over, setOver] = useState(false);
   // 2026-07-30: ON by default. It was off, on the reasoning that the source file
@@ -175,6 +185,15 @@ export function ImportPanel({ onFiled }: { onFiled?: () => void }) {
 
       {error ? <p className="note-err" style={{ margin: "10px 0 0" }}>{error}</p> : null}
 
+      {!canTranscribe ? (
+        <p className="sub" style={{ margin: "10px 0 0", maxWidth: "62ch" }}>
+          {MISSING_ON_THIS_PLATFORM.localEngines} Meetings recorded on another computer are listed
+          below, with their transcript and their notes.
+        </p>
+      ) : null}
+
+      {canTranscribe ? (
+      <>
       <div
         className={"drop" + (over ? " over" : "")}
         onDragOver={(e) => {
@@ -222,6 +241,8 @@ export function ImportPanel({ onFiled }: { onFiled?: () => void }) {
       <p className="sub" style={{ margin: "8px 0 0", fontSize: 12.4 }}>
         Both apply to what you add next, not to what is already in the queue.
       </p>
+      </>
+      ) : null}
 
       {refused.length > 0 ? (
         <div className="note-legacy" style={{ marginTop: 16 }}>

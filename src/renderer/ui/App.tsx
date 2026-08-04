@@ -106,7 +106,7 @@ export function App() {
     <div className="app">
       <Titlebar s={s} />
       <div className="body">
-        <Rail section={section} go={setSection} />
+        <Rail section={section} go={setSection} canRecord={s.caps.localEngines} />
         <main className="content">
           {(
             // key remounts the section wrapper so the pagein animation plays
