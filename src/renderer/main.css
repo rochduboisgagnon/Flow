@@ -675,20 +675,40 @@ textarea.snip-src:focus { outline: 2px solid var(--amber); outline-offset: 1px; 
   color: var(--ink2);
   margin-left: auto;
 }
-.star {
-  border: 0;
-  background: transparent;
+/* 2026-08-04 : l'etoile est devenue un bouton qui DIT son etat.
+   Elle portait deux sens sous un symbole - « actif » pour un terme de vocabulaire,
+   « aussi dit au moteur » pour un remplacement - et c'est ce que Roch a lu comme
+   « melangeant ». Le libelle suit maintenant le type (voir toggleLabel dans
+   pages/Dictionary.tsx), donc la forme doit porter du texte.
+
+   Une largeur MINIMALE, pas fixe : les libelles n'ont pas la meme longueur d'un
+   type a l'autre, et sans elle les boutons d'une liste ne s'alignent pas d'une
+   ligne a la suivante. */
+.dtoggle {
   font: inherit;
-  font-size: 16.2px;
+  font-size: 12.4px;
+  font-weight: 600;
   line-height: 1;
-  color: var(--amber);
+  min-width: 92px;
+  text-align: center;
+  color: var(--ink2);
+  background: transparent;
+  border: 1px solid var(--line2);
+  border-radius: 999px;
+  padding: 5px 11px;
   cursor: pointer;
-  padding: 2px 4px;
-  border-radius: 5px;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
 }
-.star.off { color: var(--ink2); }
-.star:hover { color: var(--amber); }
-.star:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
+.dtoggle:hover { border-color: var(--ink3); color: var(--ink); }
+/* L'etat ACTIF porte l'accent, et il est le seul a le porter : un etat neutre en
+   ambre ne dirait plus rien. */
+.dtoggle.on {
+  color: var(--amber-text);
+  background: var(--amber-soft);
+  border-color: var(--amber);
+}
+.dtoggle.on:hover { background: var(--amber); border-color: var(--amber); color: #171310; }
+.dtoggle:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
 
 /* ---- Statistics (wave U7) ---- */
 .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 14px; }
@@ -792,37 +812,33 @@ html.light .heat i.l2 { background: #cf9d55; }
 /* ---------------------------------------------------------------------------
    LA PORTE DU COMPTE
    ---------------------------------------------------------------------------
-   Un ecran, pas un formulaire pose dans du vide. Roch, le 2026-08-04 : « ce
-   n'est pas beau ».
+   Roch, le 2026-08-04, sur la premiere version : « le genre de card pour entrer
+   les emails, mais la, comme plus integre dans l'application, pis comme on dirait
+   que c'est gold. J'aime pas ca. »
 
-   CE QUI LE REND DIFFERENT, ET POURQUOI CHAQUE PIECE EST LA :
+   TROIS CHOSES CHANGENT, ET AUCUNE N'EST UN GOUT CONTRE UN AUTRE :
 
-   1. UNE SURFACE. Le formulaire flottait sur le fond brut de la fenetre, donc il
-      n'avait aucun poids : rien ne disait ou l'ecran commence. La carte reprend
-      `--hero-grad`, le meme degrade que la carte d'accueil - pas un degrade
-      invente pour l'occasion.
+   1. LA CARTE N'EST PLUS UNE CARTE. Bordure, degrade et ombre en faisaient une
+      boite posee au milieu d'une fenetre vide - visuellement une fenetre modale
+      dans une fenetre, ce qui est exactement le « pop-up » qu'il ne voulait pas.
+      C'est la FENETRE qui est la surface maintenant : le contenu est centre
+      dessus, sans chrome, et l'ecran se lit comme une partie de l'application
+      plutot que comme quelque chose posee par-dessus.
 
-   2. LE RUBAN AMBRE, AU REPOS. C'est la signature de Flow, la meme forme que
-      l'indicateur « je t'entends » de la pastille de dictee. Il est rendu avec
-      `active={false}`, donc il dessine UNE ligne au repos et ne demarre aucune
-      boucle d'animation : il dit « ceci est Flow, et Flow ecoute » sans pretendre
-      qu'une capture est en cours, et sans couter un cycle de GPU.
-      C'est la seule decoration de l'ecran, et c'est la seule qui communique
-      quelque chose.
+   2. L'AMBRE CESSE D'ETRE UNE PLAQUE. Un bouton pleine largeur rempli de
+      #c98a3a fait un bloc de brun de 290 par 42 pixels, et c'est ca qui se
+      lisait comme « gold » : ce n'etait pas la teinte, c'etait l'AIRE. L'accent
+      reste - c'est le seul de la marque et une action principale doit le porter -
+      mais il passe dans la BORDURE et le TEXTE, avec un fond a peine teinte. Le
+      bouton reste la chose la plus visible de l'ecran sans etre la plus lourde.
 
-   3. L'ACTION EST AMBRE. Le bouton portait `.btn` nu - le meme gris qu'un bouton
-      secondaire - sur un ecran qui n'offre qu'UNE action. `.btn.amber` existait
-      deja dans cette feuille ; c'etait la plus grande raison pour laquelle
-      l'ecran avait l'air inachve.
+   3. LE SOUS-TITRE EST PARTI. Il expliquait ou vivent les donnees. C'est vrai, et
+      ce n'est pas ce qu'on lit devant deux champs : le seul geste possible ici est
+      de se connecter.
 
-   4. AUCUN MOUVEMENT AU CHARGEMENT. Cet ecran s'affiche a chaque demarrage a
-      froid, et une animation qu'on subit trois cents fois devient un defaut.
-      Le seul mouvement est celui des etats de champ, qui repond a un geste.
-
-   CE QUI N'EST PAS LA, DELIBEREMENT : pas de degrade violet, pas de point de
-   statut decoratif, pas d'etiquette de version, pas de sur-titre numerote. Une
-   decoration qui ne communique rien est du bruit, et cet ecran est le premier
-   que quelqu'un voit.
+   CE QUI RESTE INTERDIT : degrade violet, point de statut decoratif, etiquette de
+   version, sur-titre numerote, animation au chargement. Cet ecran s'affiche a
+   chaque demarrage a froid.
    --------------------------------------------------------------------------- */
 .content.gate {
   display: flex;
@@ -834,53 +850,17 @@ html.light .heat i.l2 { background: #cf9d55; }
 
 .gate-card {
   width: 100%;
-  max-width: 372px;
-  background: var(--hero-grad);
-  border: 1px solid var(--line2);
-  /* Le rayon de la carte derive de --r plutot que d'etre un troisieme chiffre
-     libre : un controle a 8 px pose dans une carte se lit concentrique quand la
-     carte est plus ronde que lui, et une valeur derivee ne peut pas deriver
-     ailleurs le jour ou --r change. */
-  border-radius: calc(var(--r) + 4px);
-  padding: 30px 30px 26px;
-  /* Une ombre portee TRES basse : sur un fond presque noir, une ombre franche
-     ne se voit pas, elle salit. Celle-ci ne fait que decoller la carte du fond. */
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 18px 40px rgba(0, 0, 0, 0.28);
-}
-html.light .gate-card {
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.7) inset, 0 14px 34px rgba(90, 74, 48, 0.1);
+  max-width: 296px;
 }
 
-/* Le ruban est plus large que haut et se lit comme une signature, pas comme un
-   graphique : il est cale a gauche, au-dessus du titre, a la taille ou il reste
-   une forme et non un trait. */
-.gate-mark {
-  margin: 0 0 18px;
-  opacity: 0.9;
-}
-
-.gate-title {
-  font-size: 27px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  line-height: 1.1;
-  margin: 0 0 6px;
-}
-
-/* Une seule phrase, et elle dit la seule chose qu'un premier lancement doit
-   apprendre : ou vivent les donnees. `max-width` en ch pour que la ligne casse
-   sur une mesure lisible plutot que sur la largeur de la carte. */
-.gate-lead {
-  color: var(--ink2);
-  font-size: 13.5px;
-  line-height: 1.55;
+/* Le logo porte la marque, donc il a le droit d'etre le plus grand element de
+   l'ecran. Il est cale a gauche comme tout le reste : le centrer aurait mis trois
+   axes differents sur un ecran qui en a besoin d'un seul. */
+.gate-logo {
+  display: block;
   margin: 0 0 22px;
-  max-width: 34ch;
 }
 
-/* Les libelles empilent au-dessus des champs : la carte fait 372 px, et la
-   grille a deux colonnes de `.row` y serrerait les champs a une largeur ou on
-   ne lit plus ce qu'on tape. */
 .gate-card .row {
   display: block;
   padding: 0 0 14px;
@@ -901,32 +881,50 @@ html.light .gate-card {
   width: 100%;
   min-width: 0;
   padding: 9px 12px;
-  background: var(--panel);
-  border-color: var(--line2);
-  transition: border-color 0.12s, background 0.12s;
+  transition: border-color 0.12s;
 }
 .gate-card input:hover {
   border-color: var(--ink3);
 }
 
-/* L'action occupe la largeur de la carte : sur un ecran qui n'offre qu'un geste,
-   un bouton de la taille de son texte se cherche. Il ne passe PAS par `.row` -
-   un `.row` sans libelle laisserait un `<b>` vide dans le markup, et un element
-   vide est exactement le genre de detail qu'on ne voit pas et qui se propage. */
+/* L'accent dans la bordure et le texte, pas en aplat : voir le point 2 ci-dessus.
+   `--amber-soft` est le jeton de teinte deja utilise ailleurs dans cette feuille,
+   donc ce fond n'est pas une couleur inventee ici. */
 .gate-go {
   width: 100%;
   margin-top: 4px;
-  padding: 10px 14px;
+  padding: 9px 14px;
   font-weight: 600;
+  color: var(--amber-text);
+  background: var(--amber-soft);
+  border-color: var(--amber);
+  transition: background 0.12s, border-color 0.12s;
+}
+.gate-go:hover:not(:disabled) {
+  background: var(--amber);
+  border-color: var(--amber);
+  color: #171310;
+}
+.gate-go:disabled {
+  color: var(--ink2);
+  background: transparent;
+  border-color: var(--line2);
 }
 
-/* LA HAUTEUR DE LA LIGNE D'ERREUR EST RESERVEE, toujours.
-   Sans ca, la carte grandit au moment ou une connexion echoue - donc le bouton
+/* Le compte affiche pendant le chargement. Pas un libelle de formulaire : c'est
+   un fait, et il se lit comme tel. */
+.gate-who {
+  font-weight: 600;
+  margin: 0 0 2px;
+}
+
+/* LA HAUTEUR DE CETTE LIGNE EST RESERVEE, toujours.
+   Sans ca, l'ecran grandit au moment ou une connexion echoue - donc le bouton
    descend sous le curseur de quelqu'un qui vient de rater son mot de passe et
    s'apprete a reessayer. */
 .gate-msg {
   min-height: 34px;
-  margin: 14px 0 0;
+  margin: 12px 0 0;
   font-size: 13px;
   line-height: 1.45;
   color: var(--ink2);

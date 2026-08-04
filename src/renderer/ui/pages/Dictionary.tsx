@@ -23,6 +23,51 @@ const EMPTY: DictInput & { id: string } = {
   starred: false,
 };
 
+/**
+ * CE QUE LE CONTROLE DIT, SELON LE TYPE DE L'ENTREE.
+ *
+ * Roch, le 2026-08-04 : « a place de mettre une etoile, c'est un peu melangeant,
+ * mets un bouton Enable / Disable pour que ca soit plus evident ».
+ *
+ * IL AVAIT RAISON SUR LE DIAGNOSTIC, ET L'ETOILE ETAIT CONFUSE POUR UNE RAISON
+ * PRECISE : un seul symbole portait DEUX sens.
+ *
+ *   vocabulaire, etoile   -> le terme est dit au moteur avant qu'il ecoute
+ *   vocabulaire, sans     -> l'entree ne fait RIEN DU TOUT (l'etage 1 est le seul
+ *                            etage par lequel un terme de vocabulaire agit)
+ *   remplacement, etoile  -> dit au moteur ET reecrit apres coup
+ *   remplacement, sans    -> reecrit apres coup, donc IL FONCTIONNE ENCORE
+ *
+ * Donc « Enabled / Disabled » est vrai pour un terme de vocabulaire et FAUX pour
+ * un remplacement : ecrire « Disabled » sur une ligne qui continue de reecrire le
+ * texte de quelqu'un serait exactement le genre de mensonge d'interface que ce
+ * depot refuse ailleurs (le bouton « Reprendre le nettoyage a 90 jours » a ete
+ * supprime pour ca).
+ *
+ * Le libelle suit donc le type. C'est ce qui repond vraiment au « melangeant » :
+ * le controle dit ce qu'il fait, la ou l'etoile demandait de se souvenir d'une
+ * regle.
+ */
+function toggleLabel(kind: DictKind, starred: boolean): { text: string; title: string } {
+  if (kind === "replacement") {
+    return starred
+      ? {
+          text: "Also prompted",
+          title: "This replacement rewrites the text after the fact, and its term is also told to the engine before it listens.",
+        }
+      : {
+          text: "Rewrite only",
+          title: "This replacement still rewrites the text after the fact. It is simply not told to the engine beforehand, which costs nothing.",
+        };
+  }
+  return starred
+    ? { text: "Enabled", title: "This term is told to the engine before it listens, which is how a vocabulary term acts." }
+    : {
+        text: "Disabled",
+        title: "A vocabulary term that is not told to the engine does nothing at all: that short list is the only way it can act.",
+      };
+}
+
 export function Dictionary() {
   const [items, setItems] = useState<DictEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -130,12 +175,13 @@ export function Dictionary() {
                   ) : null}
                   <span className="kind">{e.kind === "replacement" ? "replacement" : "vocabulary"}</span>
                   <button
-                    className={"star" + (e.starred ? "" : " off")}
-                    aria-label={e.starred ? `Unstar ${e.term}` : `Star ${e.term}`}
+                    className={"dtoggle" + (e.starred ? " on" : "")}
+                    aria-label={`${toggleLabel(e.kind, e.starred).text}: ${e.term}`}
                     aria-pressed={e.starred}
+                    title={toggleLabel(e.kind, e.starred).title}
                     onClick={() => void toggleStar(e)}
                   >
-                    {e.starred ? "★" : "☆"}
+                    {toggleLabel(e.kind, e.starred).text}
                   </button>
                   <button className="btn ghost" onClick={() => edit(e)}>Edit</button>
                   <button className="btn ghost" onClick={() => void remove(e)}>Delete</button>
@@ -144,14 +190,16 @@ export function Dictionary() {
             </div>
           )}
 
-          {/* Review U6/U7 (blocking, mine): this used to claim that ONLY starred
-              terms reach the engine and that everything else "works after the
-              fact". Both were false - the prompt takes starred terms first and
-              then fills the remaining budget with the others. Writing a claim
-              about the engine without reading the engine is exactly the failure
-              this campaign hunts elsewhere. The wording now describes what the
-              star actually does: it decides the ORDER, and the order decides
-              who fits. */}
+          {/* Review U6/U7 : cette phrase a deja ete corrigee une fois pour avoir
+              decrit le moteur sans le lire.
+              2026-08-04 : le commentaire qui l'accompagnait etait a son tour
+              perime. Il disait « le drapeau decide l'ORDRE, et l'ordre decide qui
+              rentre », ce qui etait vrai de la version ou le prompt se remplissait
+              avec les termes non marques apres avoir pris les marques. Le
+              constructeur les IGNORE maintenant (`promptTerms` : `if (!e.starred)
+              continue`), donc le drapeau decide l'APPARTENANCE et le budget decide
+              qui rentre. La phrase visible ci-dessous disait deja ca ; c'est le
+              commentaire qui avait vieilli. */}
           <p className="sub" style={{ margin: "18px 0 0", maxWidth: "64ch" }}>
             {sent < starred
               ? `${sent} of your ${starred} starred terms are sent to the engine before it listens. The rest do not fit in that short list.`
@@ -237,23 +285,26 @@ function Editor({ draft, setDraft, aliasText, setAliasText, onSave, onCancel }: 
           </div>
         </div>
 
+        {/* Le libelle ET l'explication suivent le type, pour la raison du bandeau de
+            toggleLabel : « active » ne veut pas dire la meme chose pour un terme de
+            vocabulaire et pour un remplacement. */}
         <div className="row">
           <div className="l">
-            <b>Starred</b>
+            <b>{draft.kind === "replacement" ? "Tell the engine too" : "Enabled"}</b>
             <span>
-              Starred terms go into the short list the engine hears about before it listens. A
-              vocabulary term that is not starred does nothing: that list is the only way a
-              vocabulary term acts.
+              {draft.kind === "replacement"
+                ? "This replacement rewrites the text after the fact either way, at no cost. Turning this on also puts its term in the short list the engine hears before it listens, which can help it write the word correctly in the first place."
+                : "A vocabulary term acts by being in the short list the engine hears before it listens. Disabled, it does nothing at all."}
             </span>
           </div>
           <div className="c">
             <button
-              className={"star" + (draft.starred ? "" : " off")}
-              aria-label="Starred"
+              className={"dtoggle" + (draft.starred ? " on" : "")}
+              aria-label={toggleLabel(draft.kind, draft.starred).text}
               aria-pressed={draft.starred}
               onClick={() => setDraft({ ...draft, starred: !draft.starred })}
             >
-              {draft.starred ? "★" : "☆"}
+              {toggleLabel(draft.kind, draft.starred).text}
             </button>
           </div>
         </div>

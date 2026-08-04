@@ -217,16 +217,15 @@ if (!app.requestSingleInstanceLock()) {
       });
     }
     overlay.create(DEV);
+    applyDictationSuspension(); // le compte n'est pas charge au boot : la dictee part suspendue
     tray = new FlowTray({
       showWindow: () => mainWindow.show(DEV),
       // The DERIVED line (pause overlay + update notice folded in): the tray
       // only reads it for its tooltip, it never writes anything back (A10).
       getStatus: () => engineStatus(),
       pauseHotkey: (v) => {
-        hotkey.suspend(v);
-        // Suspending only the hotkey left the microphone open and its indicator
-        // lit, right after the user asked Flow to stop listening.
-        setMicWarmthSuspended(v);
+        trayPaused = v;
+        applyDictationSuspension();
       },
       // U4 (blocking review): the SAME "busy" the updater refuses to install
       // through. "Quit Flow" was the one control that walked straight past it.
@@ -1147,6 +1146,7 @@ async function loadAccountData(): Promise<void> {
   primeDictionary(flowLog);
   history.adopt();
   noAccountSaid = false; // le compte est la : un futur refus devra se dire a nouveau
+  applyDictationSuspension(); // et la dictee se reveille, si le plateau ne la retient pas
   applySettings({}); // reapplique ce qui vient d'arriver : raccourci, langue, theme
   // B3b : LE SAUVETAGE DES REUNIONS INTERROMPUES.
   //
@@ -1193,6 +1193,9 @@ auth.onChange((a) => {
     // La copie de l'ancien compte ne doit pas survivre : la personne suivante a
     // se connecter sur cette machine verrait son dictionnaire.
     workingCopy.reset();
+    // Et la dictee se rendort dans le meme souffle : `reset()` vide la copie, donc
+    // `isReady()` est deja faux quand cette ligne s'execute.
+    applyDictationSuspension();
   }
 });
 
@@ -1752,6 +1755,50 @@ function refuseIfNoAccount(): string {
     : "Connectez-vous d'abord. Vos reglages, votre dictionnaire et vos reunions vivent dans votre compte - sans lui, votre dictionnaire ne s'appliquerait pas et ce qui serait produit serait perdu a la fermeture.";
 }
 
+/**
+ * LA DICTEE EST-ELLE SUSPENDUE ? UNE SEULE DECISION, DEUX FAITS.
+ *
+ * ---------------------------------------------------------------------------
+ * POURQUOI CE N'EST PAS UN REFUS DANS `onStart`
+ * ---------------------------------------------------------------------------
+ *
+ * Roch, le 2026-08-04 : « le raccourci s'allume et s'eteint directement, meme si
+ * on n'est pas logine. Il fonctionne pas, mais faut pas que ca apparaisse.
+ * L'application est TURN OFF, rien fonctionne. On fait une pause complete. »
+ *
+ * Ma premiere version refusait DANS `onStart` : elle jouait le son, montrait la
+ * pastille un quart de seconde, puis la retirait - en se disant qu'« une pression
+ * doit toujours etre ressentie ». Cet argument vaut quand Flow POSSEDE la touche.
+ * Sans compte, Flow ne possede rien : montrer sa pastille est alors une
+ * application qui fait semblant d'etre vivante, ce qui est pire que le silence.
+ *
+ * `suspend(true)` laisse les touches passer a l'OS SANS etre interceptees. Il n'y
+ * a donc rien a refuser, rien a montrer, rien a annuler : la dictee n'existe pas.
+ * C'est le meme mecanisme que la pause du plateau, et c'est deliberement le meme -
+ * « Flow ne dicte pas en ce moment » est un seul etat, pas deux qui se ressemblent.
+ *
+ * ---------------------------------------------------------------------------
+ * DEUX PROPRIETAIRES, UNE SEULE ECRITURE
+ * ---------------------------------------------------------------------------
+ *
+ * La pause du plateau et le compte veulent tous les deux suspendre. S'ils
+ * appelaient `suspend()` chacun de leur cote, celui qui parle en dernier gagne :
+ * charger le compte reveillerait une dictee que le plateau venait de mettre en
+ * pause, et le plateau reveillerait une dictee qui n'a pas de compte. Les deux
+ * FAITS sont donc gardes separement, et une seule fonction en derive l'etat.
+ *
+ * Le micro suit, pour la raison qui a fait ajouter cette ligne a la pause du
+ * plateau : suspendre le raccourci seul laissait le microphone ouvert et son
+ * temoin allume, juste apres qu'on ait demande a Flow de ne plus ecouter.
+ */
+let trayPaused = false;
+
+function applyDictationSuspension(): void {
+  const suspended = trayPaused || !workingCopy.isReady();
+  hotkey.suspend(suspended);
+  setMicWarmthSuspended(suspended);
+}
+
 /** Le refus « pas de compte » a-t-il deja ete dit ? Remis a zero des que le
  * compte charge, pour que la prochaine session hors compte le dise a nouveau. */
 let noAccountSaid = false;
@@ -1782,29 +1829,24 @@ const hotkey = new HotkeyAdapter(settings.combo, {
     // demontee un instant plus tard. Quelqu'un qui appuie doit toujours sentir
     // qu'il a appuye, y compris quand la reponse est non (voir le commentaire
     // de startAndRefuse dans overlay.ts).
+    // SANS COMPTE, ON NE DEVRAIT PAS ETRE ICI DU TOUT : `applyDictationSuspension`
+    // a laisse les touches passer a l'OS, donc `onStart` n'est jamais appele.
+    //
+    // Cette garde reste quand meme, et elle n'est pas de la ceinture et des
+    // bretelles : la suspension est appliquee au chargement du compte et a la
+    // deconnexion, donc il existe une fenetre - courte, mais reelle - entre
+    // l'instant ou la copie de travail se vide et celui ou la touche cesse d'etre
+    // ecoutee. Une dictee qui partirait dans cette fenetre n'aurait ni
+    // dictionnaire ni destination.
+    //
+    // RIEN N'EST MONTRE : pas de son, pas de pastille. Sans compte, Flow ne
+    // possede pas cette touche, et montrer sa pastille serait une application qui
+    // fait semblant d'etre vivante.
     if (!workingCopy.isReady()) {
-      // La pression est RESSENTIE - son et pastille, comme tout refus.
-      overlay.startAndRefuse({ sounds: settings.sounds, micDeviceId: settings.micDeviceId });
       hotpath.abandon(HOTPATH_ABANDON_REASON.noAccount);
-      // ET LA FENETRE SE MONTRE, ce qui est la vraie reponse.
-      //
-      // Roch, le 2026-08-04 : « l'application ne peut pas fonctionner s'il n'y a
-      // aucun compte connecte ». Si c'est vrai - et ca l'est - alors un eclair de
-      // 260 ms sur la pastille est un mystere, pas une reponse : quelqu'un appuie,
-      // entend un son, et rien n'arrive. La seule chose qui AIDE est de montrer
-      // l'ecran qui explique et qui repare, c'est-a-dire la connexion.
-      //
-      // UNE FOIS PAR SERIE DE REFUS, jamais a chaque pression : dix pressions ne
-      // doivent pas voler le focus dix fois a quelqu'un qui est en train de taper
-      // ailleurs. Le drapeau se remet a zero quand le compte charge.
       if (!noAccountSaid) {
         noAccountSaid = true;
-        mainWindow.show(DEV);
-        flowLog(
-          accountSnapshot.signedIn
-            ? "[hotkey] dictee refusee : le compte n'est pas encore charge, donc votre dictionnaire ne s'appliquerait pas"
-            : "[hotkey] dictee refusee : personne n'est connecte, donc votre dictionnaire ne s'appliquerait pas",
-        );
+        flowLog("[hotkey] dictee ignoree : la dictee est suspendue tant qu'aucun compte n'est charge");
       }
       return;
     }

@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import type { UiStatePayload } from "../../shared/ipcContracts";
 import { Row } from "./components";
-import { Ribbon } from "./Ribbon";
+import iconUrl from "../assets/icon.png";
 
 // ---------------------------------------------------------------------------
 // LE FORMULAIRE DE CONNEXION, UNE SEULE FOIS.
@@ -83,7 +83,7 @@ export function SignInForm({ onDone }: { onDone?: () => void }) {
           aria-label="Password"
         />
       </Row>
-      <button className="btn amber gate-go" type="submit" disabled={busy || !email || !password}>
+      <button className="btn gate-go" type="submit" disabled={busy || !email || !password}>
         {busy ? "Signing in..." : "Sign in"}
       </button>
       {/* La hauteur de cette ligne est RESERVEE (.gate-msg) meme quand il n'y a
@@ -135,29 +135,31 @@ export function SignInScreen({ s }: { s: UiStatePayload }) {
   const loading = s.account.signedIn && !s.accountDataReady;
   return (
     <div className="gate-card">
-      {/* Le ruban ambre, AU REPOS. La signature de Flow, et la meme forme que
-          l'indicateur « je t'entends » de la pastille de dictee. `active={false}`
-          dessine UNE ligne et ne demarre aucune boucle d'animation : il dit ce
-          qu'est Flow sans pretendre qu'une capture est en cours, et sans couter un
-          cycle de GPU sur un ecran qu'on voit a chaque demarrage a froid.
-          C'est la seule decoration de cet ecran, et la seule qui communique
-          quelque chose. */}
-      <div className="gate-mark">
-        <Ribbon active={false} width={320} height={36} cssWidth={160} cssHeight={18} strandCount={4} />
-      </div>
-      <h1 className="gate-title">Flow</h1>
+      {/* LE LOGO, PAS LE MOT. Roch, le 2026-08-04 : « ou c'est ecrit Flow, mais le
+          logo de Flow a place ». Byte pour byte le meme fichier que la barre de
+          titre (resources/icon.png, egalite verifiee au build), donc l'ecran
+          d'entree et la fenetre portent la meme marque et non deux variantes.
+
+          `alt=""` et `aria-hidden` : le nom du produit est deja dans la barre de
+          titre et dans le titre de la fenetre, donc un lecteur d'ecran qui
+          annoncerait « Flow » une troisieme fois ne dirait rien de neuf.
+
+          LE RUBAN A DISPARU. Il etait la comme signature - la meme forme que
+          l'indicateur « je t'entends » de la pastille - et mon raisonnement se
+          tenait. Le RESULTAT, non : au repos et a cette taille, il se lisait comme
+          un trait brun oublie sous le titre, c'est-a-dire comme une erreur. Une
+          decoration qui a l'air d'un accident coute plus que rien du tout. */}
+      <img className="gate-logo" src={iconUrl} alt="" aria-hidden="true" width={52} height={52} />
       {loading ? (
         <>
-          <p className="gate-lead">Signed in as {s.account.email}.</p>
+          {/* Le SEUL cas ou une phrase est due : quelqu'un est connecte et l'ecran
+              ne bouge pas, donc il doit savoir si Flow travaille ou s'il est
+              bloque. */}
+          <p className="gate-who">{s.account.email}</p>
           <p className="gate-msg">Loading your account...</p>
         </>
       ) : (
-        <>
-          <p className="gate-lead">
-            Your settings, dictionary and meetings live in your account, not on this computer.
-          </p>
-          <SignInForm />
-        </>
+        <SignInForm />
       )}
     </div>
   );

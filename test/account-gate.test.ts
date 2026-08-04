@@ -94,27 +94,61 @@ test("LES QUATRE chemins qui produisent des donnees refusent sans compte", () =>
   );
 });
 
-test("le refus de la dictee est RESSENTI, jamais silencieux", () => {
-  // Quelqu'un qui appuie doit toujours sentir qu'il a appuye, y compris quand la
-  // reponse est non. Meme chemin que le refus « une reunion tient le moteur » :
-  // son, pastille, session demontee un instant plus tard.
+test("PAUSE COMPLETE : sans compte, la touche n'est pas interceptee du tout", () => {
+  // Roch, le 2026-08-04 : « le raccourci s'allume et s'eteint directement, meme si
+  // on n'est pas logine. Il fonctionne pas, mais faut pas que ca apparaisse.
+  // L'application est TURN OFF, rien fonctionne. On fait une pause complete. »
+  //
+  // Ma premiere version refusait DANS `onStart` : son, pastille un quart de
+  // seconde, puis retrait - au nom d'« une pression doit toujours etre
+  // ressentie ». Cet argument vaut quand Flow POSSEDE la touche. Sans compte, il
+  // ne possede rien, et montrer sa pastille est une application qui fait semblant
+  // d'etre vivante - ce qui est pire que le silence.
+  //
+  // `suspend(true)` laisse les touches passer a l'OS SANS etre interceptees : il
+  // n'y a rien a refuser, rien a montrer, rien a annuler.
+  const at = INDEX.indexOf("function applyDictationSuspension(): void {");
+  assert.ok(at > 0, "la suspension doit etre une decision NOMMEE, pas un appel disperse");
+  const body = INDEX.slice(at, INDEX.indexOf("\n}\n", at));
+  assert.match(body, /trayPaused \|\| !workingCopy\.isReady\(\)/, "deux faits, une seule decision derivee");
+  assert.match(body, /hotkey\.suspend\(suspended\)/);
+  // Le micro suit : suspendre le raccourci seul laissait le microphone ouvert et
+  // son temoin allume, juste apres qu'on ait demande a Flow de ne plus ecouter.
+  assert.match(body, /setMicWarmthSuspended\(suspended\)/);
+});
+
+test("PAUSE COMPLETE : une seule ecriture de la suspension, deux proprietaires", () => {
+  // La pause du plateau et le compte veulent tous les deux suspendre. S'ils
+  // appelaient `suspend()` chacun de leur cote, le dernier qui parle gagnerait :
+  // charger le compte reveillerait une dictee que le plateau vient de mettre en
+  // pause, et le plateau reveillerait une dictee qui n'a pas de compte.
+  assert.equal(
+    INDEX.split("hotkey.suspend(").length - 1,
+    1,
+    "un seul appel a hotkey.suspend dans tout le fichier : celui de la decision derivee",
+  );
+  // Et les trois moments qui changent un des deux faits la recalculent.
+  const calls = INDEX.split("applyDictationSuspension()").length - 1;
+  assert.ok(calls >= 4, `la suspension doit etre recalculee au boot, a la pause, a la connexion et a la deconnexion (${calls} appels)`);
+  // La pause du plateau ecrit le FAIT, pas l'etat.
+  const tray = INDEX.indexOf("pauseHotkey: (v) => {");
+  const trayBody = INDEX.slice(tray, INDEX.indexOf("},", tray));
+  assert.match(trayBody, /trayPaused = v/);
+  assert.ok(!/hotkey\.suspend/.test(trayBody), "le plateau ne doit pas ecrire l'etat lui-meme");
+});
+
+test("PAUSE COMPLETE : rien n'est montre quand la dictee est refusee sans compte", () => {
+  // La garde de `onStart` reste - elle couvre la fenetre entre le vidage de la
+  // copie de travail et l'arret de l'ecoute de la touche - mais elle ne doit RIEN
+  // afficher : pas de son, pas de pastille.
   const at = INDEX.indexOf("if (!workingCopy.isReady()) {");
   assert.ok(at > 0, "la garde du raccourci doit exister");
-  const body = INDEX.slice(at, at + 1400);
-  assert.match(body, /overlay\.startAndRefuse\(/, "le meme refus ressenti que « une reunion tient le moteur »");
-  assert.match(body, /hotpath\.abandon\(HOTPATH_ABANDON_REASON\.noAccount\)/, "et la trace se ferme honnetement");
-  // Et la FENETRE se montre, ce qui est la vraie reponse. Roch, le 2026-08-04 :
-  // « l'application ne peut pas fonctionner s'il n'y a aucun compte connecte ».
-  // Si c'est vrai, un eclair de 260 ms est un mystere - la seule chose qui aide
-  // est de montrer l'ecran qui explique ET qui repare.
-  assert.match(body, /mainWindow\.show\(DEV\)/, "la fenetre doit se montrer, pas seulement clignoter");
-  // Une fois par serie, jamais a chaque pression : dix pressions ne doivent pas
-  // voler le focus dix fois a quelqu'un qui tape ailleurs.
-  const raise = body.indexOf("mainWindow.show(DEV)");
-  const guard = body.lastIndexOf("if (!noAccountSaid) {", raise);
-  assert.ok(guard > 0 && guard < raise, "la fenetre se montre DANS la garde « une seule fois »");
-  // La raison est NOMMEE dans le vocabulaire partage, pas une chaine libre : le
-  // panneau Diagnostics compte les abandons par raison.
+  const body = INDEX.slice(at, at + 900);
+  assert.ok(!/overlay\.startAndRefuse/.test(body), "aucune pastille : sans compte, Flow ne possede pas cette touche");
+  assert.ok(!/mainWindow\.show/.test(body), "et il ne vole pas le focus non plus");
+  assert.match(body, /hotpath\.abandon\(HOTPATH_ABANDON_REASON\.noAccount\)/, "mais la trace se ferme honnetement");
+  // La raison reste NOMMEE dans le vocabulaire partage : le panneau Diagnostics
+  // compte les abandons par raison.
   assert.match(src("src", "shared", "hotpath.ts"), /noAccount: "no-account"/);
 });
 
