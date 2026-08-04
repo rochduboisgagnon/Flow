@@ -466,10 +466,16 @@ test("F13: la seconde verification de destination existe et vient APRES l'attent
 test("spliceNotes: a bare transcript (no Ollama) gains ## Notes and ## Transcript", () => {
   const header = transcriptHeader("Kickoff", "2026-07-21T09:00:00.000Z");
   const doc = header + "[00:00:00] Bonjour.\n\n[00:00:05] On commence.\n\n";
+  // 2026-08-04 : « ## Resume » DISPARAIT, et c'est un correctif du jour. Le
+  // document porte deja « ## Notes » ; un titre de resume juste en dessous empile
+  // deux titres dont le second ne dit rien de plus. Le modele l'ecrit malgre la
+  // consigne qui l'interdit (mesure contre le vrai modele), donc la sortie est
+  // nettoyee - voir stripLeadingSummaryHeading. Ce que ce test defend n'a pas
+  // bouge : un transcript nu gagne ses deux sections.
   const out = spliceNotes(doc, header, "## Resume\n\nCourt.");
   assert.equal(
     out,
-    header + "## Notes\n\n## Resume\n\nCourt.\n\n## Transcript\n\n[00:00:00] Bonjour.\n\n[00:00:05] On commence.\n\n",
+    header + "## Notes\n\nCourt.\n\n## Transcript\n\n[00:00:00] Bonjour.\n\n[00:00:05] On commence.\n\n",
   );
 });
 
@@ -511,7 +517,8 @@ test("B3a: notesSplice ecrit les notes dans la ligne, designee par son identifia
   const res = await rec.notesSplice(id, "## Resume\n\nCourt.");
   assert.equal(res.ok, true, res.error ?? "expected ok");
   const doc = store.rows.get(id)!.doc;
-  assert.ok(doc.includes("## Notes\n\n## Resume\n\nCourt.\n\n## Transcript\n\n[00:00:00] Bonjour."));
+  // Meme correctif du 2026-08-04 : le titre de resume redondant est retire.
+  assert.ok(doc.includes("## Notes\n\nCourt.\n\n## Transcript\n\n[00:00:00] Bonjour."));
   // Des notes vides et un identifiant vide sont refuses sans rien toucher.
   assert.equal((await rec.notesSplice(id, "   ")).ok, false);
   assert.equal((await rec.notesSplice("", "x")).ok, false);

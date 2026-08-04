@@ -6,6 +6,8 @@
 // it writes into a folder the USER chose (plan §7.2b). Dictation stays
 // zero-retention; these two rules never mix.
 
+import { detectSummaryLanguage, summaryShape, stripLeadingSummaryHeading } from "./summaryLanguage";
+
 export const SAMPLE_RATE = 16_000;
 
 // Segments aim for this length; a natural pause closes one earlier, a hard cap
@@ -305,7 +307,12 @@ export function spliceNotes(doc: string, header: string, notes: string): string 
   // F9: defang here as well as in composeNotesBlock, because the common path -
   // a first splice, with no prior notes block - never reaches composeNotesBlock,
   // and that is exactly the path a finalize takes.
-  let content = defangStructureMarkers(notes).trim();
+  // 2026-08-04 : `stripLeadingSummaryHeading` d'abord. Le document enveloppe deja
+  // les notes sous « ## Notes » ; un « ## Summary » que le modele ecrit par-dessus
+  // - mesure le 2026-08-04, malgre la consigne qui l'interdit - empilerait deux
+  // titres dont le second ne dit rien de plus. Une regle qu'un modele peut
+  // ignorer se double d'une regle qui ne s'ignore pas.
+  let content = stripLeadingSummaryHeading(defangStructureMarkers(notes)).trim();
   const prior = body.match(/^## (?:Summary|Notes)\n[\s\S]*?\n## Transcript\n+/);
   if (prior) {
     if (!content.includes(MY_NOTES_HEADING)) {
@@ -400,8 +407,15 @@ export function summaryPrompt(
   // just produces bullets that lose their citation for no reason.
   const cite =
     'PROVENANCE: end each bullet with the timestamp of the transcript line it is based on, in square brackets, exactly as that line begins - for example "[00:12:30]". COPY the timestamp from the transcript; never compose, round or adjust one. When a bullet draws on several lines, cite the FIRST. When you are not certain which line a bullet comes from, write NO timestamp for it: a missing timestamp is correct, an approximate one is a lie that will send the reader to the wrong place.';
-  const shape =
-    'Write in the LANGUAGE of the transcript. Start with a one-paragraph summary as plain text, with NO heading. Then add these sections, each introduced by its exact heading alone on its line with bullet points beneath it: "## Points cles", "## Decisions", "## Actions" (name the owner and any stated deadline), and "## Suivis" (include this section only if there are open follow-ups).';
+  // 2026-08-04 : LA LANGUE EST NOMMEE, ET LES TITRES LA SUIVENT.
+  //
+  // Cette chaine ecrivait « Write in the LANGUAGE of the transcript » et, dans la
+  // meme phrase, imposait quatre titres en francais. Le modele obeissait aux deux
+  // instructions a la fois : mesure le 2026-08-04 contre le vrai modele, un
+  // transcript ANGLAIS rendait de la prose anglaise sous « ## Points cles » et
+  // « ## Suivis ». Le raisonnement complet, la mesure et la raison pour laquelle
+  // seules deux langues sont nommees sont dans shared/summaryLanguage.ts.
+  const shape = summaryShape(detectSummaryLanguage(transcript));
   return [
     "You summarize a meeting transcript. Base EVERYTHING on the transcript below; never invent facts, names or numbers. Output ONLY markdown, no preamble.",
     // F11 (second scan): the transcript used to be concatenated into this
