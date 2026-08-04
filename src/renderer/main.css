@@ -300,7 +300,20 @@ html.light .toggle.on:hover { background: #c98a3a; border-color: #c98a3a; }
 /* Light theme: the knob color equals --panel, so its edge must be firmer. */
 html.light .toggle::after { border-color: rgba(0, 0, 0, 0.3); }
 
-select, input[type="text"] {
+/* 2026-08-04 : le selecteur ne couvrait que `type="text"`.
+   Les champs de l'ecran de connexion sont `email` et `password`, donc ils ne
+   recevaient RIEN - ni fond, ni bordure, ni rayon. Ce que Roch a vu comme deux
+   boites grises posees dans du vide n'etait pas un choix esthetique : c'etait le
+   rendu par defaut du navigateur.
+   La liste enumere les types plutot que d'attraper `input` en entier, parce
+   qu'une case a cocher et un curseur de volume n'ont rien a faire avec un fond
+   de panneau et un `min-width` de 180 px. */
+select,
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="search"],
+input[type="number"] {
   font: inherit;
   color: var(--ink);
   background: var(--panel2);
@@ -777,41 +790,147 @@ html.light .heat i.l2 { background: #cf9d55; }
 }
 
 /* ---------------------------------------------------------------------------
-   LA PORTE DU COMPTE (2026-08-04)
+   LA PORTE DU COMPTE
    ---------------------------------------------------------------------------
-   Une carte centree, et RIEN d'autre a l'ecran : pas de rail, pas de sections.
-   Roch, en installant la 2.0.0 : « on ne devrait meme pas voir les menus ».
-   Un rail dont aucune section ne repond est un controle mort, et cette campagne
-   a passe six vagues a en retirer ailleurs.
+   Un ecran, pas un formulaire pose dans du vide. Roch, le 2026-08-04 : « ce
+   n'est pas beau ».
 
-   `justify-content: center` sur l'axe vertical est volontairement ABSENT : le
-   formulaire grandit d'une ligne quand une erreur s'affiche, et un bloc centre
-   verticalement sauterait vers le haut a ce moment-la - sous les doigts de
-   quelqu'un qui vient de rater son mot de passe et va le retaper.
+   CE QUI LE REND DIFFERENT, ET POURQUOI CHAQUE PIECE EST LA :
+
+   1. UNE SURFACE. Le formulaire flottait sur le fond brut de la fenetre, donc il
+      n'avait aucun poids : rien ne disait ou l'ecran commence. La carte reprend
+      `--hero-grad`, le meme degrade que la carte d'accueil - pas un degrade
+      invente pour l'occasion.
+
+   2. LE RUBAN AMBRE, AU REPOS. C'est la signature de Flow, la meme forme que
+      l'indicateur « je t'entends » de la pastille de dictee. Il est rendu avec
+      `active={false}`, donc il dessine UNE ligne au repos et ne demarre aucune
+      boucle d'animation : il dit « ceci est Flow, et Flow ecoute » sans pretendre
+      qu'une capture est en cours, et sans couter un cycle de GPU.
+      C'est la seule decoration de l'ecran, et c'est la seule qui communique
+      quelque chose.
+
+   3. L'ACTION EST AMBRE. Le bouton portait `.btn` nu - le meme gris qu'un bouton
+      secondaire - sur un ecran qui n'offre qu'UNE action. `.btn.amber` existait
+      deja dans cette feuille ; c'etait la plus grande raison pour laquelle
+      l'ecran avait l'air inachve.
+
+   4. AUCUN MOUVEMENT AU CHARGEMENT. Cet ecran s'affiche a chaque demarrage a
+      froid, et une animation qu'on subit trois cents fois devient un defaut.
+      Le seul mouvement est celui des etats de champ, qui repond a un geste.
+
+   CE QUI N'EST PAS LA, DELIBEREMENT : pas de degrade violet, pas de point de
+   statut decoratif, pas d'etiquette de version, pas de sur-titre numerote. Une
+   decoration qui ne communique rien est du bruit, et cet ecran est le premier
+   que quelqu'un voit.
    --------------------------------------------------------------------------- */
 .content.gate {
   display: flex;
+  align-items: center;
   justify-content: center;
-  padding-top: 12vh;
+  /* Le padding du haut de `.content` decalerait le centre vers le bas. */
+  padding: 24px;
 }
+
 .gate-card {
   width: 100%;
-  max-width: 420px;
+  max-width: 372px;
+  background: var(--hero-grad);
+  border: 1px solid var(--line2);
+  /* Le rayon de la carte derive de --r plutot que d'etre un troisieme chiffre
+     libre : un controle a 8 px pose dans une carte se lit concentrique quand la
+     carte est plus ronde que lui, et une valeur derivee ne peut pas deriver
+     ailleurs le jour ou --r change. */
+  border-radius: calc(var(--r) + 4px);
+  padding: 30px 30px 26px;
+  /* Une ombre portee TRES basse : sur un fond presque noir, une ombre franche
+     ne se voit pas, elle salit. Celle-ci ne fait que decoller la carte du fond. */
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 18px 40px rgba(0, 0, 0, 0.28);
 }
+html.light .gate-card {
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.7) inset, 0 14px 34px rgba(90, 74, 48, 0.1);
+}
+
+/* Le ruban est plus large que haut et se lit comme une signature, pas comme un
+   graphique : il est cale a gauche, au-dessus du titre, a la taille ou il reste
+   une forme et non un trait. */
+.gate-mark {
+  margin: 0 0 18px;
+  opacity: 0.9;
+}
+
 .gate-title {
-  font-size: 30px;
+  font-size: 27px;
   font-weight: 600;
   letter-spacing: -0.02em;
-  margin: 0 0 10px;
+  line-height: 1.1;
+  margin: 0 0 6px;
 }
-/* Les libelles du formulaire empilent au lieu de s'aligner sur une colonne de
-   droite : la carte fait 420 px, une grille a deux colonnes y serrerait les
-   champs a une largeur ou on ne lit plus ce qu'on tape. */
+
+/* Une seule phrase, et elle dit la seule chose qu'un premier lancement doit
+   apprendre : ou vivent les donnees. `max-width` en ch pour que la ligne casse
+   sur une mesure lisible plutot que sur la largeur de la carte. */
+.gate-lead {
+  color: var(--ink2);
+  font-size: 13.5px;
+  line-height: 1.55;
+  margin: 0 0 22px;
+  max-width: 34ch;
+}
+
+/* Les libelles empilent au-dessus des champs : la carte fait 372 px, et la
+   grille a deux colonnes de `.row` y serrerait les champs a une largeur ou on
+   ne lit plus ce qu'on tape. */
 .gate-card .row {
   display: block;
+  padding: 0 0 14px;
+  border-bottom: 0;
 }
-.gate-card .row input {
+.gate-card .row .l b {
+  font-size: 12.4px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--ink2);
+  margin-bottom: 6px;
+}
+.gate-card .row .c {
+  display: block;
+  padding-top: 0;
+}
+.gate-card input {
   width: 100%;
-  margin-top: 6px;
+  min-width: 0;
+  padding: 9px 12px;
+  background: var(--panel);
+  border-color: var(--line2);
+  transition: border-color 0.12s, background 0.12s;
 }
-.gate-card .rows { margin-top: 18px; }
+.gate-card input:hover {
+  border-color: var(--ink3);
+}
+
+/* L'action occupe la largeur de la carte : sur un ecran qui n'offre qu'un geste,
+   un bouton de la taille de son texte se cherche. Il ne passe PAS par `.row` -
+   un `.row` sans libelle laisserait un `<b>` vide dans le markup, et un element
+   vide est exactement le genre de detail qu'on ne voit pas et qui se propage. */
+.gate-go {
+  width: 100%;
+  margin-top: 4px;
+  padding: 10px 14px;
+  font-weight: 600;
+}
+
+/* LA HAUTEUR DE LA LIGNE D'ERREUR EST RESERVEE, toujours.
+   Sans ca, la carte grandit au moment ou une connexion echoue - donc le bouton
+   descend sous le curseur de quelqu'un qui vient de rater son mot de passe et
+   s'apprete a reessayer. */
+.gate-msg {
+  min-height: 34px;
+  margin: 14px 0 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ink2);
+}
+.gate-msg.err {
+  color: var(--err);
+}
