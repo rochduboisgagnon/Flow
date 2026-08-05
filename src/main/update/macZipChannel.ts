@@ -362,7 +362,15 @@ export class MacZipChannel implements UpdateChannel {
     const dir = updateDir(this.deps.dataDir());
     fs.mkdirSync(dir, { recursive: true });
     const dst = path.join(dir, "mac-swap.sh");
-    fs.copyFileSync(this.deps.swapScriptSource(), dst);
+    // Les fins de ligne sont NORMALISEES a la copie, pour la meme raison que le
+    // chmod juste en dessous : supprimer la question plutot que d'y repondre par
+    // esperance. Ce depot se developpe sous Windows avec core.autocrlf, et un \r
+    // en fin de ligne fait echouer chaque commande de sh avec « command not
+    // found » - y compris la fonction abort() censee dire pourquoi on abandonne.
+    // .gitattributes le garantit deja a la source ; ceci le garantit meme si le
+    // paquet a ete fabrique autrement.
+    const text = fs.readFileSync(this.deps.swapScriptSource(), "utf8").replace(/\r\n/g, "\n");
+    fs.writeFileSync(dst, text, "utf8");
     fs.chmodSync(dst, 0o755);
     return dst;
   }

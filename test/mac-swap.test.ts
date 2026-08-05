@@ -121,12 +121,29 @@ test("MS-8: the script IS in the bundle - without this, the whole feature is a n
   );
 });
 
+test("MS-8b: not one carriage return may reach /bin/sh", () => {
+  // Ce depot se developpe sous Windows avec core.autocrlf : sans .gitattributes,
+  // un clone frais donne un mac-swap.sh en CRLF. sh lit alors le retour chariot
+  // comme une partie du dernier mot de chaque ligne, donc TOUTES les commandes
+  // echouent avec « command not found » - y compris abort(), la fonction censee
+  // dire pourquoi on abandonne. Une panne silencieuse, sur le seul geste
+  // irreversible de Flow.
+  const CR = String.fromCharCode(13);
+  assert.ok(!SCRIPT.includes(CR), "mac-swap.sh contient un retour chariot");
+  const attrs = read(".gitattributes");
+  assert.match(attrs, /\*\.sh text eol=lf/, ".gitattributes ne fige pas les fins de ligne des scripts shell");
+  // Et la copie normalise de toute facon : supprimer la question plutot que d'y
+  // repondre par esperance, exactement comme le chmod ci-dessous.
+  assert.ok(CHANNEL_CODE.includes(".replace("), "la copie du script ne normalise pas les fins de ligne");
+  assert.ok(CHANNEL_CODE.includes('writeFileSync(dst, text, "utf8")'));
+});
+
 test("MS-9: the script is COPIED out of the bundle, with an explicit chmod", () => {
   // `sh` lit son script de facon incrementale : un script qui vit dans le bundle
   // qu'il est en train de supprimer peut se faire couper en deux au milieu. Et le
   // chmod explicite supprime la question de savoir si extraResources preserve le
   // bit d'execution, au lieu d'y repondre par esperance.
-  assert.match(CHANNEL, /copyFileSync\(this\.deps\.swapScriptSource\(\)/);
+  assert.match(CHANNEL, /readFileSync\(this\.deps\.swapScriptSource\(\), "utf8"\)/);
   assert.match(CHANNEL, /chmodSync\(dst, 0o755\)/);
 });
 

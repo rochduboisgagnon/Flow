@@ -1,0 +1,16 @@
+# ---------------------------------------------------------------------------
+# 2026-08-04 : LES SCRIPTS SHELL RESTENT EN LF, TOUJOURS.
+#
+# Ce depot se developpe sous Windows avec core.autocrlf actif, donc un fichier
+# sans regle ici est converti en CRLF a la sortie. Pour du TypeScript c'est sans
+# consequence. Pour resources/mac-swap.sh, qui est lance par /bin/sh sur macOS,
+# c'est fatal et SILENCIEUX d'une facon particulierement mechante : sh lit le \r
+# comme une partie du dernier mot de chaque ligne, donc la premiere commande
+# echoue avec « command not found », et meme la fonction abort() du script - celle
+# qui doit dire pourquoi on abandonne - serait cassee de la meme facon.
+#
+# Le script qui echange le bundle est le seul geste irreversible de Flow. Il ne
+# peut pas dependre du systeme d'exploitation sur lequel quelqu'un a fait un
+# clone. Un canari (test/mac-swap.test.ts) verifie qu'aucun \r n'y entre.
+# ---------------------------------------------------------------------------
+*.sh text eol=lf
