@@ -26,6 +26,7 @@ import { notesModelPath, ensureNotesModel } from "./asr/modelStore";
 import { SessionStore } from "./data/sessionStore";
 import { createFlowClient } from "./data/client";
 import { Auth } from "./data/auth";
+import { readLastRun, versionChanged, writeLastRun } from "./data/lastRun";
 import { Repo } from "./data/repo";
 import { WorkingCopy } from "./data/workingCopy";
 import { WorkingCopyCaptureStore } from "./data/captureStore";
@@ -177,6 +178,13 @@ if (!app.requestSingleInstanceLock()) {
     // they could ever read the note. Persisting it here settles that by order.
     captureLegacyHistory(migratedLegacyHistoryDir);
     for (const line of migrationLogs) flowLog(line);
+    // 2026-08-04 : quelle version tournait ici la derniere fois. LU AVANT d'ecrire
+    // la nouvelle, evidemment, et avant la reprise de session qui s'en sert : sur
+    // macOS, « le trousseau a refuse » et « la version vient de changer » sont le
+    // meme evenement, et les rapprocher est ce qui transforme un symptome en cause.
+    const justUpdated = versionChanged(readLastRun({ dir: dataDir, log: flowLog }), app.getVersion());
+    if (justUpdated.changed) flowLog(`[lastrun] premiere execution de ${app.getVersion()} (avant : ${justUpdated.from})`);
+    writeLastRun({ dir: dataDir, log: flowLog }, app.getVersion());
     // 2026-08-04 : REPRENDRE LA SESSION, ICI ET PAS AILLEURS.
     //
     // C'est le premier instant du programme ou `safeStorage` repond : avant
@@ -197,7 +205,22 @@ if (!app.requestSingleInstanceLock()) {
     void auth
       .restore()
       .then((r) => {
-        if (!r.restored && r.reason) flowLog(`[auth] pas de reprise de session : ${r.reason}`);
+        if (r.restored || !r.reason) return;
+        flowLog(`[auth] pas de reprise de session : ${r.reason}`);
+        // 2026-08-04 : et si c'est le trousseau qui a refuse ET que la version
+        // vient de changer, on NOMME la cause au lieu de decrire le symptome.
+        // C'est l'explication complete sur macOS : safeStorage s'y appuie sur un
+        // element du trousseau dont l'ACL s'exprime en termes de la signature de
+        // l'application, et la signature ad-hoc de Flow change a chaque version.
+        // Sans cette ligne, la seule trace de la panne est un utilisateur qui
+        // retape son mot de passe apres chaque mise a jour sans savoir pourquoi.
+        if (/trousseau/i.test(r.reason) && justUpdated.changed) {
+          flowLog(
+            `[session] le trousseau a refuse la session apres une mise a jour (${justUpdated.from} -> ${app.getVersion()}) : ` +
+              "macOS lie l'acces au trousseau a la signature de l'application, et celle de Flow change a chaque version. " +
+              "Rien n'a ete efface : le fichier est toujours la, et il peut redevenir lisible.",
+          );
+        }
       })
       .finally(() => {
         restoringSession = false;

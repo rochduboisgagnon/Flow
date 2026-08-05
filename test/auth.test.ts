@@ -23,7 +23,7 @@ function fakeClient(over: Record<string, unknown> = {}) {
   } as unknown as AuthDeps["client"];
 }
 
-function store(saved: string | null = null) {
+function store(saved: string | null = null, readFailure: string | null = null) {
   let cleared = 0;
   return {
     clear: () => void cleared++,
@@ -32,6 +32,10 @@ function store(saved: string | null = null) {
     // Par defaut il ne rend rien, ce qui est l'etat d'une premiere installation ;
     // les tests de la reprise passent une session enregistree.
     getItem: (_k: string) => saved,
+    // 2026-08-04 : et pourquoi la relecture a echoue, quand elle a echoue. Sans ce
+    // fait, « jamais connecte » et « le trousseau a refuse la cle » rendent le
+    // meme message alors que leurs remedes sont opposes.
+    lastReadFailure: () => readFailure,
   };
 }
 
@@ -278,4 +282,37 @@ test("reprise : hors ligne, elle ne LEVE pas - un demarrage ne depend pas du res
   const r = await auth.restore();
   assert.equal(r.restored, false);
   assert.match(r.reason, /injoignable/);
+});
+
+// ---------------------------------------------------------------------------
+// 2026-08-04 : LA REPRISE DE SESSION DOIT DIRE LAQUELLE DES DEUX CAUSES.
+//
+// « Je n'ai rien a reprendre » et « je n'ai pas pu lire ce que j'ai » rendaient
+// exactement le meme motif, donc la meme ligne dans flow.log. Leurs remedes sont
+// opposes : se connecter, contre autoriser Flow dans le trousseau du systeme.
+//
+// Le cas est devenu probable avec le portage macOS : safeStorage s'y appuie sur un
+// element du trousseau dont l'ACL s'exprime en termes de la SIGNATURE de
+// l'application, et la signature ad-hoc de Flow change a chaque version.
+// ---------------------------------------------------------------------------
+
+test("2026-08-04: un trousseau qui a refuse la cle ne se lit pas comme une premiere installation", async () => {
+  const a = new Auth({
+    client: fakeClient({ getSession: async () => ({ data: { session: null } }) }),
+    store: store(null, "session enregistree illisible : le trousseau du systeme a refuse la cle"),
+  });
+  const r = await a.restore();
+  assert.equal(r.restored, false);
+  assert.match(r.reason, /trousseau/i);
+  assert.doesNotMatch(r.reason, /aucune session enregistree/);
+});
+
+test("2026-08-04: une vraie premiere installation garde son propre motif", async () => {
+  const a = new Auth({
+    client: fakeClient({ getSession: async () => ({ data: { session: null } }) }),
+    store: store(),
+  });
+  const r = await a.restore();
+  assert.equal(r.restored, false);
+  assert.equal(r.reason, "aucune session enregistree");
 });

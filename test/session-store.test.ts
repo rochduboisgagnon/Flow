@@ -224,3 +224,53 @@ test("A2: la valeur du jeton n'apparait dans AUCUN message de journal", () => {
   s.clear();
   for (const m of logs) assert.ok(!m.includes(secret), `un journal contient le jeton : ${m}`);
 });
+
+// ---------------------------------------------------------------------------
+// 2026-08-04 : « ILLISIBLE » ET « ABSENT » NE SONT PAS LE MEME FAIT.
+//
+// Le portage macOS a rendu ce chemin probable au lieu d'exotique. safeStorage
+// s'appuie la-bas sur un element du trousseau dont l'ACL s'exprime en termes de
+// la SIGNATURE de l'application. Flow est signe ad-hoc, donc son identite change
+// a chaque version : apres une mise a jour, macOS peut demander l'acces au
+// trousseau, ou le refuser.
+//
+// Or les deux causes rendaient exactement le meme message a l'utilisateur
+// (« aucune session enregistree »), alors que leurs remedes sont opposes : se
+// connecter, contre autoriser Flow dans le trousseau. Un magasin qui ne sait pas
+// dire lequel des deux s'est produit force a deviner.
+// ---------------------------------------------------------------------------
+
+test("2026-08-04: un trousseau qui REFUSE n'est pas une absence de session", () => {
+  const dir = tmpDir();
+  // Une session ecrite par une version precedente, avec un autre marqueur : c'est
+  // exactement ce qu'un changement de signature produit du point de vue du code.
+  const written = new SessionStore({ dir: () => dir, ...fakeCrypto("VERSION-PRECEDENTE:") });
+  written.setItem("flow-session", JSON.stringify({ access_token: "a", refresh_token: "r" }));
+
+  const logs: string[] = [];
+  const s = new SessionStore({ dir: () => dir, ...fakeCrypto("APRES-MISE-A-JOUR:"), log: (m) => logs.push(m) });
+  assert.equal(s.getItem("flow-session"), null, "une session illisible ne doit surtout pas etre servie");
+
+  // Le fait, nomme, disponible pour qui doit l'expliquer.
+  const failure = s.lastReadFailure();
+  assert.ok(failure, "le magasin ne dit pas qu'il a ECHOUE a relire : indistinguable d'une premiere fois");
+  assert.match(failure, /trousseau|keychain/i);
+
+  // Et le fichier est TOUJOURS LA. C'est la partie qui compte le plus : il peut
+  // redevenir lisible au prochain lancement (« Toujours autoriser »), et c'est du
+  // jeton d'acces au compte. La mauvaise reponse a « je n'arrive pas a te
+  // reconnaitre » est de detruire la preuve.
+  assert.ok(fs.existsSync(path.join(dir, "session.bin")), "le jeton a ete efface au lieu d'etre laisse tranquille");
+  assert.ok(
+    logs.some((l) => /n'a pas pu etre relue/i.test(l)),
+    `rien n'a ete journalise : ${JSON.stringify(logs)}`,
+  );
+});
+
+test("2026-08-04: une premiere fois n'invente PAS un echec de trousseau", () => {
+  // Le symetrique, sans lequel le champ ci-dessus mentirait dans l'autre sens.
+  const dir = tmpDir();
+  const s = new SessionStore({ dir: () => dir, ...fakeCrypto() });
+  assert.equal(s.getItem("flow-session"), null);
+  assert.equal(s.lastReadFailure(), null);
+});

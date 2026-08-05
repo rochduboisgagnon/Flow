@@ -81,6 +81,8 @@ export class SessionStore implements SupabaseStorage {
    * prete, et ce magasin peut etre construit avant. */
   private usable: boolean | null = null;
   private loaded = false;
+  /** Pourquoi la relecture a echoue, quand elle a echoue. Voir lastReadFailure(). */
+  private readFailure: string | null = null;
 
   constructor(deps: SessionStoreDeps) {
     this.deps = deps;
@@ -164,10 +166,36 @@ export class SessionStore implements SupabaseStorage {
       }
     } catch {
       this.deps.log?.("[session] la session enregistree n'a pas pu etre relue : reconnexion demandee");
+      // 2026-08-04 : et on RETIENT le fait, au lieu de laisser la memoire vide
+      // parler pour deux causes opposees. Sans cette ligne, Auth.restore() trouve
+      // un magasin vide et rend « aucune session enregistree », c'est-a-dire le
+      // message de quelqu'un qui ne s'est jamais connecte sur cette machine -
+      // alors que le remede n'est pas du tout le meme.
+      //
+      // Le cas est devenu probable avec macOS : safeStorage s'y appuie sur un
+      // element du trousseau dont l'ACL s'exprime en termes de la SIGNATURE de
+      // l'application, et la signature ad-hoc de Flow change a chaque version.
+      this.readFailure =
+        "session enregistree illisible : le trousseau du systeme a refuse la cle, ou elle a change de proprietaire";
       // Le fichier n'est PAS supprime. Il appartient peut-etre a un autre profil
       // Windows monte au meme endroit, et effacer la session de quelqu'un
       // d'autre parce qu'on n'a pas su la lire serait pire que de l'ignorer.
+      // Deuxieme raison, macOS : il peut redevenir lisible au prochain lancement
+      // (« Toujours autoriser »), donc l'effacer transformerait un etat
+      // recuperable en etat definitif. Et c'est du jeton d'acces au compte : la
+      // mauvaise reponse a « je n'arrive pas a te reconnaitre » est de detruire la
+      // preuve.
     }
+  }
+
+  /** Pourquoi la derniere relecture a echoue, ou null si elle n'a pas echoue.
+   *
+   * Existe pour qu'« illisible » et « absent » puissent produire deux phrases
+   * differentes : ce sont deux faits dont les remedes sont opposes (se connecter,
+   * contre autoriser Flow dans le trousseau). */
+  lastReadFailure(): string | null {
+    this.load();
+    return this.readFailure;
   }
 
   /** Ecriture atomique (tmp puis rename), meme discipline que les magasins que

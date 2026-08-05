@@ -45,7 +45,7 @@ export interface AuthDeps {
   /** Le magasin du jeton. `clear()` est appele a la deconnexion, en plus de
    * celle du client ; `getItem` sert a la RESTAURATION au demarrage (voir
    * restore). */
-  store: Pick<SessionStore, "clear" | "getItem">;
+  store: Pick<SessionStore, "clear" | "getItem" | "lastReadFailure">;
   log?(msg: string): void;
 }
 
@@ -150,7 +150,17 @@ export class Auth {
     if (live.data.session) return { restored: true, reason: "deja en place" };
 
     const raw = this.deps.store.getItem(SESSION_STORAGE_KEY);
-    if (!raw) return { restored: false, reason: "aucune session enregistree" };
+    if (!raw) {
+      // 2026-08-04 : DEUX causes, deux phrases. Un magasin vide parce qu'on ne
+      // s'est jamais connecte sur cette machine et un magasin vide parce que le
+      // trousseau a refuse la cle rendaient le meme message, alors que le premier
+      // se regle en se connectant et le second en autorisant Flow. Le cas est
+      // devenu probable avec macOS : la signature ad-hoc de Flow change a chaque
+      // version, et l'acces au trousseau y est attache.
+      const failure = this.deps.store.lastReadFailure();
+      if (failure) return { restored: false, reason: failure };
+      return { restored: false, reason: "aucune session enregistree" };
+    }
 
     let access = "";
     let refresh = "";
