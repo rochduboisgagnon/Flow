@@ -74,6 +74,25 @@ export class OverlayWindow {
       focusable: false, // never steal focus from the dictation target
       skipTaskbar: true,
       alwaysOnTop: true,
+      // 2026-08-04, signale par Roch : « dans une window fullscreen, l'animation
+      // qui montre que ca ecoute ne s'affiche pas, je pense qu'elle s'affiche
+      // derriere l'application. »
+      //
+      // Il avait raison, et sur les deux points. Le niveau « screen-saver » plus
+      // bas suffit sur Windows, ou il n'y a rien au-dessus. Sur macOS il ne suffit
+      // PAS : une application en plein ecran occupe son propre ESPACE, et une
+      // fenetre ordinaire appartient a l'espace ou elle est nee. Elle ne monte donc
+      // pas par-dessus, elle reste dans l'espace d'a cote - exactement « derriere
+      // l'application ».
+      //
+      // Un NSPanel, lui, flotte au-dessus du contenu en plein ecran. `type: "panel"`
+      // est la facon d'en demander un, et c'est la moitie structurelle du
+      // correctif ; l'autre moitie est `setVisibleOnAllWorkspaces` juste apres la
+      // construction. Aucune des deux ne suffit seule.
+      //
+      // macOS SEULEMENT : ce type n'existe pas ailleurs, et le passer sur Windows
+      // serait une option ignoree que quelqu'un devrait un jour aller verifier.
+      ...(process.platform === "darwin" ? { type: "panel" as const } : {}),
       webPreferences: {
         preload: path.join(__dirname, "preload.js"),
         contextIsolation: true,
@@ -94,6 +113,7 @@ export class OverlayWindow {
       },
     });
     this.win.setAlwaysOnTop(true, "screen-saver");
+    this.showOverFullScreen();
     this.win.setIgnoreMouseEvents(true); // clicks pass through to whatever is under it
     this.win.webContents.on("did-finish-load", () => {
       this.ready = true;
@@ -189,6 +209,12 @@ export class OverlayWindow {
     // just cost this ONE cue, it risks the keyboard hook itself.)
     try {
       this.win.setAlwaysOnTop(true, "screen-saver"); // re-assert above any fullscreen app
+      // Re-affirmee a CHAQUE apparition, comme le niveau juste au-dessus et pour la
+      // meme raison : macOS reattribue une fenetre a un espace quand on change
+      // d'ecran, qu'on entre en plein ecran ou qu'on revient d'une veille, et une
+      // pastille qui a rate une seule dictee dans ce cas-la est une pastille a
+      // laquelle on ne fait plus confiance.
+      this.showOverFullScreen();
       this.reposition(); // anchor on the display under the cursor (multi-monitor)
       this.win.showInactive(); // show WITHOUT focusing
     } catch (err) {
@@ -274,6 +300,35 @@ export class OverlayWindow {
   /** Anchor the strip at the bottom-centre of the display under the cursor, recomputed on
    * each press: the create()-time position is fixed to the primary display, so dictating on
    * a second monitor would put the ribbon on the wrong screen ("it did not show"). */
+  /**
+   * FLOTTER AU-DESSUS D'UNE APPLICATION EN PLEIN ECRAN (macOS).
+   *
+   * `setAlwaysOnTop(true, "screen-saver")` regle la HAUTEUR de la fenetre dans la
+   * pile. Sur macOS, ca ne dit rien de l'ESPACE auquel elle appartient - et une
+   * application en plein ecran occupe le sien. Une fenetre qui n'est visible que
+   * sur son espace d'origine est donc parfaitement au-dessus... de l'espace d'a
+   * cote, ce qui, vu de l'utilisateur, s'appelle « derriere l'application ».
+   *
+   * `visibleOnFullScreen` est ce qui la fait suivre. Avec le `type: "panel"` de la
+   * construction, c'est le couple documente pour une surface flottante par-dessus
+   * du plein ecran ; separement, aucune des deux ne suffit.
+   *
+   * NE LEVE JAMAIS. Cette methode est appelee depuis le chemin de la pression -
+   * celui qui n'a pas de try/catch au-dessus de lui dans le crochet clavier - et
+   * une pastille mal placee ne doit jamais couter la dictee elle-meme, ni le
+   * crochet. Meme raisonnement que le bloc qui l'entoure.
+   *
+   * macOS seulement : sur Windows il n'y a pas d'espaces, et la pile suffit.
+   */
+  private showOverFullScreen(): void {
+    if (process.platform !== "darwin") return;
+    try {
+      this.win?.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    } catch {
+      /* voir le bandeau : jamais au prix de la dictee */
+    }
+  }
+
   private reposition() {
     if (!this.win || this.win.isDestroyed()) return;
     const wa = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
