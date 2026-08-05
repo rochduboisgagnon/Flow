@@ -256,3 +256,215 @@ jobs:
           done
           echo "latest.yml never became reachable: the release is not visible to the updater"
           exit 1
+
+  # ---------------------------------------------------------------------------
+  # 2026-08-04 : macOS ENTRE DANS LE CHEMIN DE PUBLICATION, SUR LE MEME TAG.
+  #
+  # Roch : « j'aimerais faire en sorte que l'app sur macOS se update sans devoir
+  # installer l'ancienne version », et le paquet mac est un asset de la release
+  # existante, sur le MEME tag que Windows.
+  #
+  # LA REGLE « JAMAIS DEUX CHEMINS DE PUBLICATION » N'A PAS BOUGE D'UN MOT. Elle
+  # ne dit pas « mac ne publie pas » : elle dit qu'il n'existe qu'UN SEUL GESTE
+  # QUI EXPEDIE, et ce geste reste `git tag vX && git push --tags`. Un
+  # declencheur, un fichier de workflow, une release. Le job `release` la CREE et
+  # possede latest.yml, le feed que les installations Windows interrogent ; ce
+  # job-ci n'AJOUTE que des assets et n'appelle jamais `gh release create`.
+  #
+  # Trois autres formes ont ete pesees et ecartees :
+  #  - `release: published` NE SE DECLENCHE JAMAIS. GitHub ne declenche aucun
+  #    workflow depuis un evenement produit par secrets.GITHUB_TOKEN (prevention
+  #    de boucle), et c'est ce token qui publie plus haut. Le workflow ne partirait
+  #    pas, en silence.
+  #  - `workflow_run` executerait la version du fichier presente sur la branche par
+  #    defaut plutot que celle que le tag a figee, et laisserait un
+  #    workflow_dispatch par lequel un asset mac peut etre publie HORS TAG. C'est
+  #    exactement le second chemin qu'on refuse.
+  #  - une matrice ferait courir deux jobs vers `gh release create` en meme temps
+  #    (un vrai TOCTOU, que --clobber n'adresse pas : le cas dangereux est deux
+  #    create concurrents), et ferait attendre la publication Windows apres macOS.
+  #    On n'installe pas la plateforme neuve en amont de celle qui marche.
+  #
+  # LA FENETRE : entre la publication Windows et la fin de ce job, la release
+  # existe sans son manifeste mac. C'est inoffensif PAR CONSTRUCTION, et c'est une
+  # clause du contrat cote application : un 404 sur mac-arm64.json signifie « rien
+  # de neuf », jamais « erreur » (voir MacZipChannel.check). Le client repasse dans
+  # quatre heures. Fail-closed : un Mac ne voit jamais un etat partiel, il ne voit
+  # rien du tout.
+  #
+  # REPRISE APRES ECHEC : « Re-run failed jobs », jamais « Re-run all jobs ». Le
+  # second rejouerait le job `release`, qui mourrait a sa garde « version not
+  # already released » puisque la release existe desormais, et ce job-ci ne
+  # partirait jamais. `--clobber` rend la reprise idempotente.
+  # ---------------------------------------------------------------------------
+  mac:
+    needs: release
+    runs-on: macos-14
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+
+      # Les memes portes que Windows, dans le meme ordre, et AVANT le build. Un
+      # portage qui se publierait sans passer les tests ne serait pas un portage.
+      - run: npm test
+      - run: npm run lint
+      - run: npm run typecheck
+
+      - name: Fetch the engine binaries (macOS arm64)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node scripts/fetch-whisper.cjs
+          node scripts/fetch-llama.cjs
+
+      - name: Ensure the macOS key server is present (hard gate)
+        run: |
+          test -f node_modules/keyspy/runtime/MacKeyServer || {
+            echo "MISSING MacKeyServer (no dictation shortcut)"; exit 1; }
+          chmod +x node_modules/keyspy/runtime/MacKeyServer
+
+      - run: npm run build
+
+      - name: Build the macOS app (ad-hoc signed)
+        run: npx electron-builder --mac --publish never
+
+      - name: Refuse the second updater feed
+        run: |
+          # electron-builder ecrit latest-mac.yml des qu'un provider `publish`
+          # global existe, et electron-builder.json en a un. Ce fichier EST un feed
+          # electron-updater : le jour ou quelqu'un active autoUpdater sur darwin,
+          # il serait ramasse tout seul et tenterait une installation Squirrel.Mac
+          # qui echoue sur une signature ad-hoc. Le second chemin de publication
+          # apparaitrait par le seul fait qu'un fichier porte le nom que la
+          # bibliotheque cherche. On le supprime pour qu'aucun glob futur ne puisse
+          # le ramasser.
+          ls -la dist-build
+          rm -f dist-build/latest-mac.yml dist-build/latest-mac-arm64.yml
+
+      - name: Inspect the artifact BEFORE publishing
+        run: |
+          ZIP=$(ls dist-build/Flow-*-mac-arm64.zip)
+          ls -l "$ZIP"
+          # `ditto -x -k` et PAS `unzip` : un .app porte des liens symboliques (les
+          # frameworks d'Electron) et des bits d'execution. `unzip -l` ne dit ni
+          # l'un ni l'autre, et `unzip` les perd a l'extraction, donc un zip casse
+          # passerait une inspection faite avec lui et l'app extraite chez
+          # l'utilisateur ne se lancerait pas. On extrait comme l'application
+          # s'extraira.
+          WORK=$(mktemp -d)
+          ditto -x -k "$ZIP" "$WORK"
+          APP="$WORK/Flow.app"
+          test -d "$APP" || { echo "le zip ne contient pas Flow.app"; ls -la "$WORK"; exit 1; }
+          BIN="$APP/Contents/Resources/bin"
+          test -f "$BIN/whisper-server-darwin-arm64" || { echo "MISSING whisper-server (no transcript)"; exit 1; }
+          test -f "$BIN/llama-server" || { echo "MISSING llama-server (no meeting notes)"; exit 1; }
+          # Un bit d'execution perdu echoue au spawn avec EACCES, une panne qui
+          # ressemble a un fichier manquant.
+          test -x "$BIN/whisper-server-darwin-arm64" || { echo "whisper-server sans bit d'execution"; exit 1; }
+          test -x "$BIN/llama-server" || { echo "llama-server sans bit d'execution"; exit 1; }
+          test -x "$APP/Contents/MacOS/Flow" || { echo "l'executable principal a perdu son bit d'execution"; exit 1; }
+          # LE SCRIPT D'ECHANGE. Sans lui dans le paquet, toute la mise a jour
+          # macOS est un no-op en production : la lecon de la 1.22.0, appliquee a
+          # un fichier de ressource.
+          test -f "$APP/Contents/Resources/mac-swap.sh" || { echo "MISSING mac-swap.sh (no self-update)"; exit 1; }
+          # LE CROCHET CLAVIER, DANS LE PAQUET et pas dans node_modules. La porte de
+          # mac-build.yml verifiait l'arbre de dependances : un paquet pouvait donc
+          # sortir sans son serveur de touches, se lancer, et ne jamais repondre au
+          # raccourci.
+          KS=$(find "$APP/Contents/Resources" -name MacKeyServer -print -quit)
+          test -n "$KS" || { echo "MISSING MacKeyServer dans le paquet (no dictation shortcut)"; exit 1; }
+          # Les liens symboliques d'Electron. Un zip qui les a transformes en copies
+          # donne une app qui ne demarre pas, et AUCUNE assertion de presence ne le
+          # verrait. On compte, parce qu'un zip qui les perd en a zero.
+          LINKS=$(find "$APP" -type l | wc -l | tr -d ' ')
+          [ "$LINKS" -gt 0 ] || { echo "aucun lien symbolique : le zip a perdu la structure des frameworks"; exit 1; }
+          echo "liens symboliques preserves : $LINKS"
+          # Ecrit en `! ... ||` et PAS en `... && { exit 1; }` : cette seconde forme
+          # rend 1 quand la recherche ne trouve rien, c'est-a-dire dans le cas SAIN,
+          # et sous `set -e` elle ferait echouer la release chaque fois que tout va
+          # bien. Meme piege que l'inspection Windows.
+          ! find "$BIN" -name "*.exe" | grep -q . || { echo "le paquet macOS transporte des binaires Windows"; exit 1; }
+          ! find "$APP" -name "ggml-rpc-server*" | grep -q . || { echo "l'elagage de llama n'a pas tourne"; exit 1; }
+          codesign -dv "$APP" 2>&1 | head -5
+          rm -rf "$WORK"
+
+      - name: Write the manifest the macOS app reads
+        run: |
+          ZIP=$(ls dist-build/Flow-*-mac-arm64.zip)
+          node scripts/mac-manifest.cjs --zip "$ZIP" --tag "$GITHUB_REF_NAME" --out dist-build/mac-arm64.json
+          node scripts/mac-manifest.cjs --verify dist-build/mac-arm64.json --zip "$ZIP"
+          # Un outil SYSTEME, independant de notre code, confirme le nombre. C'est
+          # aussi exactement la commande que Roch tapera sur son Mac pour verifier a
+          # la main.
+          WANT=$(node -e 'console.log(require("./dist-build/mac-arm64.json").sha256)')
+          GOT=$(shasum -a 256 "$ZIP" | cut -d" " -f1)
+          [ "$WANT" = "$GOT" ] || { echo "notre empreinte ($WANT) et shasum ($GOT) ne s accordent pas"; exit 1; }
+          cat dist-build/mac-arm64.json
+
+      # Attester ICI, avant l'upload, pour la meme raison qu'a l'etape 17 : ce qui
+      # est signe est ce qui vient d'etre inspecte.
+      #
+      # L'arbitrage ecarte 0/3 portait sur latest.yml, et ses deux motifs ne
+      # transposent pas : il s'agissait d'un MANIFESTE et non d'un executable, et il
+      # disait que la verification de signature d'electron-updater est un no-op
+      # faute de publisherName. Sur mac il n'y a meme pas de no-op a reparer : la
+      # signature est ad-hoc, donc AUCUNE autorite ne dit d'ou viennent ces octets.
+      # L'attestation est la seule affirmation existante sur l'origine du paquet
+      # mac, et ne pas la produire serait retirer le seul instrument disponible la
+      # ou il n'y a rien d'autre.
+      - name: Attest what was built (macOS)
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: dist-build/Flow-*-mac-arm64.zip
+
+      - name: Publish the macOS assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # TROIS appels, et l'ordre EST le contrat. `gh` televerse les fichiers
+          # d'un meme appel en parallele, donc un appel unique pourrait publier
+          # mac-arm64.json avant la fin du zip : une fenetre pendant laquelle un Mac
+          # lit un manifeste qui pointe vers un asset absent. Le manifeste EST la
+          # publication ; le zip n'est que des octets tant que rien ne le nomme.
+          #
+          # Jamais `gh release create` ici : `needs: release` garantit que la
+          # release existe, et le job Windows en est le seul createur. Il possede
+          # aussi latest.yml, que ce job ne touche sous aucun pretexte.
+          #
+          # Pas de .blockmap : il ne sert qu'au telechargement differentiel
+          # d'electron-updater, hors jeu sur mac. D'ou le glob sans etoile finale.
+          gh release upload "$GITHUB_REF_NAME" --clobber dist-build/Flow-*-mac-arm64.zip
+          gh release upload "$GITHUB_REF_NAME" --clobber dist-build/Flow-*-mac-arm64.dmg
+          gh release upload "$GITHUB_REF_NAME" --clobber dist-build/mac-arm64.json
+
+      - name: Verify the mac update document is live
+        run: |
+          # « La release existe » n'est pas la meme chose que « l'APPLICATION la
+          # voit ». Ceci assert ce qu'un Mac va reellement chercher, sur l'URL
+          # anonyme « latest » que src/main/update/macManifest.ts epelle.
+          URL="https://github.com/${{ github.repository }}/releases/latest/download/mac-arm64.json"
+          OK=""
+          for i in 1 2 3 4 5; do
+            CODE=$(curl -sL -o live.json -w "%{http_code}" "$URL")
+            if [ "$CODE" = "200" ]; then OK=1; echo "mac-arm64.json est joignable"; break; fi
+            echo "essai $i : pas encore joignable ($CODE)"; sleep 30
+          done
+          [ -n "$OK" ] || { echo "mac-arm64.json n est jamais devenu joignable : aucun Mac ne verra cette version"; exit 1; }
+          cat live.json
+          # `releases/latest` designe la release la plus RECENTE, pas forcement le
+          # tag qu'on vient de pousser.
+          LIVE=$(node -e 'console.log(require("./live.json").version)')
+          PKG=$(node -p "require('./package.json').version")
+          [ "$LIVE" = "$PKG" ] || { echo "le document que l app lira nomme $LIVE, pas $PKG"; exit 1; }
+          # Et l'asset qu'il nomme se telecharge vraiment, par le chemin exact que
+          # l'application compose.
+          NAME=$(node -e 'console.log(require("./live.json").zip)')
+          CODE=$(curl -sIL -o /dev/null -w "%{http_code}" \
+            "https://github.com/${{ github.repository }}/releases/download/$GITHUB_REF_NAME/$NAME")
+          [ "$CODE" = "200" ] || { echo "l asset nomme par le manifeste ne se telecharge pas ($CODE)"; exit 1; }
+          echo "le document, la version et l asset s accordent : un Mac peut se mettre a jour"

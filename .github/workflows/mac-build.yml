@@ -1,38 +1,58 @@
 name: macOS build (test)
 
 # ---------------------------------------------------------------------------
-# 2026-08-04, PORTAGE macOS : un build a la demande, pour Roch.
+# 2026-08-05 : LE BANC D'ESSAI macOS. Il ne publie rien, et ce n'est plus tout a
+# fait la meme phrase qu'avant.
 #
-# CE WORKFLOW NE PUBLIE RIEN, et c'est le point. Il depose un artefact
-# telechargeable ; il ne touche ni aux releases, ni a `latest.yml`, ni au feed
-# d'auto-update que les installations Windows interrogent. Un build Mac non signe
-# publie sur ce feed ne s'installerait pas et casserait la mise a jour de Windows -
-# la release a deja ete cassee une fois cette semaine (publication locale par
-# `--publish always`), et la regle qui en est sortie est : jamais deux chemins de
-# publication.
+# Ce fichier disait le 2026-08-04 : « pas d'auto-update sur Mac ». C'etait vrai de
+# Squirrel.Mac, qui exige un Developer ID, et faux de la question que Roch posait :
+# « que l'app sur macOS se mette a jour sans reinstaller l'ancienne version ». Il y
+# a donc desormais une mise a jour macOS, et elle est publiee par release.yml, job
+# `mac`, sur le MEME tag que Windows.
 #
-# MANUEL (`workflow_dispatch`) plutot qu'a chaque tag : un runner macOS coute dix
-# fois un runner Linux en minutes, le depot est public donc c'est gratuit, mais
-# construire un paquet Mac a chaque commit Windows serait du bruit.
+# LA REGLE N'A PAS CHANGE D'UN MOT : jamais deux chemins de publication. Il y en a
+# UN, et c'est le tag. `git tag vX && git push --tags` declenche release.yml, dont
+# le job `release` cree la release et possede latest.yml (le feed que les
+# installations Windows interrogent), et dont le job `mac` AJOUTE trois assets a
+# cette release : le zip arm64, le dmg, et mac-arm64.json, le document que
+# l'application macOS lit. Le job mac n'appelle jamais `gh release create` et ne
+# televerse aucun .yml.
+#
+# CE FICHIER-CI, LUI, NE PUBLIE TOUJOURS RIEN, et c'est sa raison d'exister : il
+# depose un artefact telechargeable pour essayer un paquet Mac AVANT de tagger. Un
+# test (test/mac-release.test.ts) verifie qu'il ne contient ni `gh release create`,
+# ni `gh release upload`, ni un `--publish` autre que `never` : la regle est
+# machine-verifiable, et pas seulement ecrite ici.
+#
+# MANUEL (`workflow_dispatch`) plutot qu'a chaque commit : un runner macOS coute
+# dix fois un runner Linux en minutes, le depot est public donc c'est gratuit, mais
+# construire un paquet Mac a chaque commit serait du bruit.
 #
 # ---------------------------------------------------------------------------
 # LA SIGNATURE EST AD-HOC, ET CE QUE CA COUTE EST DIT
 # ---------------------------------------------------------------------------
 #
-# Decision de Roch : « on n'a pas besoin du 99 $ pour dev ». Exact. `codesign
-# --sign -` est gratuit et suffit a ce qu'un binaire arm64 s'execute (Apple Silicon
-# refuse un binaire non signe, meme localement). electron-builder le fait de
-# lui-meme quand `mac.identity` vaut null.
+# Decision de Roch, invariante : aucun certificat ne sera achete, et un auto-signe
+# n'apporte rien. `codesign --sign -` est gratuit et suffit a ce qu'un binaire
+# arm64 s'execute (Apple Silicon refuse un binaire non signe, meme localement).
+# electron-builder le fait de lui-meme quand `mac.identity` vaut null.
 #
 # Trois consequences, ecrites ici pour qu'elles ne soient pas decouvertes :
 #
-#  1. Gatekeeper rale au premier lancement (« Apple ne peut pas verifier »). Clic
-#     droit sur l'app, puis Ouvrir, une fois.
+#  1. Gatekeeper rale au premier lancement telecharge par un navigateur (« Apple
+#     ne peut pas verifier »). Le remede est `xattr -dr com.apple.quarantine
+#     /Applications/Flow.app`, pas un clic droit. A MESURER apres une mise a jour
+#     automatique : com.apple.quarantine est pose par le TELECHARGEUR, et Flow
+#     telecharge sa propre mise a jour avec node:https, donc l'attribut ne devrait
+#     pas y etre du tout (`xattr -p com.apple.quarantine /Applications/Flow.app`).
 #  2. LES PERMISSIONS NE COLLENT PAS. macOS attache l'autorisation Accessibilite a
 #     la signature ; en ad-hoc elle change a chaque build, donc elle doit etre
-#     redonnee a chaque version. C'est la surprise la plus probable.
-#  3. Pas d'auto-update : Squirrel.Mac exige une vraie signature Developer ID.
-# ---------------------------------------------------------------------------
+#     redonnee a chaque version, mise a jour comprise. C'est la surprise la plus
+#     probable, et l'application la PREVIENT desormais au lieu de la laisser
+#     decouvrir (voir src/shared/accessibility.ts).
+#  3. electron-updater reste hors jeu sur mac : Squirrel.Mac exige un Developer ID.
+#     C'est pour cela que le document publie s'appelle mac-arm64.json et NON
+#     latest-mac.yml - ce nom-la serait ramasse tout seul par la bibliotheque.
 
 on:
   workflow_dispatch:
@@ -51,8 +71,8 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
           cache: npm
@@ -92,22 +112,85 @@ jobs:
       - name: Build the macOS app (ad-hoc signed)
         run: npx electron-builder --mac --publish never
 
-      # Le zip est la verite de ce qui va etre installe. Un paquet sans moteur
-      # passe toutes les portes ci-dessus SAUF celle-la.
-      - name: Inspect the artifact BEFORE handing it over
+      - name: Refuse the second updater feed
         run: |
-          APP="dist-build/mac-arm64/Flow.app"
-          test -d "$APP" || APP="dist-build/mac/Flow.app"
-          test -d "$APP" || { echo "no Flow.app in dist-build"; ls -R dist-build | head -40; exit 1; }
+          # Meme geste que le job qui publie : latest-mac.yml EST un feed
+          # electron-updater, et le laisser trainer dans dist-build c'est laisser un
+          # futur glob le ramasser. A MESURER a la premiere execution : `--publish
+          # never` l'ecrit-il quand meme ? Le `ls -la` repond. Le `rm -f` reste de
+          # toute facon, il coute zero.
+          ls -la dist-build
+          rm -f dist-build/latest-mac.yml dist-build/latest-mac-arm64.yml
+
+      # LES MEMES PORTES QUE LE JOB QUI PUBLIE, deliberement : c'est ici qu'elles
+      # sont mises au point, pour qu'une porte ne soit jamais essayee pour la
+      # premiere fois sur une release.
+      - name: Inspect the artifact the way the app will read it
+        run: |
+          ZIP=$(ls dist-build/Flow-*-mac-arm64.zip)
+          ls -l "$ZIP"
+          # LA MESURE QUI MANQUE AU CODE : MIN_ZIP_BYTES dans
+          # src/main/update/macManifest.ts porte encore un chiffre provisoire (60
+          # Mio), avec pour consigne de le resserrer a environ la moitie de la
+          # taille reelle. La voici.
+          echo "TAILLE REELLE DU ZIP MAC : $(stat -f%z "$ZIP") octets"
+          shasum -a 256 "$ZIP"
+          # Un zip telecharge par l'application n'a pas de quarantaine (elle est
+          # posee par le TELECHARGEUR). Celui-ci vient d'etre fabrique ici, donc il
+          # ne devrait rien avoir non plus : la mesure est gratuite et repond a la
+          # question du bandeau.
+          xattr -l "$ZIP" || true
+          # `ditto -x -k` et PAS `unzip` : un .app porte des liens symboliques et
+          # des bits d'execution, et unzip les perd. On extrait comme l'application
+          # s'extraira, sinon on inspecte une arborescence deja abimee.
+          WORK=$(mktemp -d)
+          ditto -x -k "$ZIP" "$WORK"
+          APP="$WORK/Flow.app"
+          test -d "$APP" || { echo "le zip ne contient pas Flow.app"; ls -la "$WORK"; exit 1; }
           BIN="$APP/Contents/Resources/bin"
           test -f "$BIN/whisper-server-darwin-arm64" || { echo "MISSING whisper-server (no transcript)"; exit 1; }
           test -f "$BIN/llama-server" || { echo "MISSING llama-server (no meeting notes)"; exit 1; }
-          ls "$APP/Contents/Resources" | head
-          # La signature ad-hoc doit etre LA : sans elle, macOS refuse de lancer un
-          # binaire arm64, et l'app est morte avant sa premiere fenetre.
+          test -x "$BIN/whisper-server-darwin-arm64" || { echo "whisper-server sans bit d'execution"; exit 1; }
+          test -x "$BIN/llama-server" || { echo "llama-server sans bit d'execution"; exit 1; }
+          test -x "$APP/Contents/MacOS/Flow" || { echo "l'executable principal a perdu son bit d'execution"; exit 1; }
+          test -f "$APP/Contents/Resources/mac-swap.sh" || { echo "MISSING mac-swap.sh (no self-update)"; exit 1; }
+          # LE CROCHET CLAVIER, DANS LE PAQUET. L'ancienne porte verifiait
+          # node_modules, c'est-a-dire l'arbre de dependances et pas le paquet : un
+          # paquet mac pouvait donc sortir sans son serveur de touches, se lancer, et
+          # ne jamais repondre au raccourci. C'est la panne de la 1.22.0 sous une
+          # quatrieme forme.
+          KS=$(find "$APP/Contents/Resources" -name MacKeyServer -print -quit)
+          test -n "$KS" || { echo "MISSING MacKeyServer dans le paquet (no dictation shortcut)"; exit 1; }
+          # Les liens symboliques d'Electron : un zip qui les transforme en copies
+          # donne une app qui ne demarre pas, et aucune assertion de presence ne le
+          # verrait. On compte, parce qu'un zip qui les perd en a zero.
+          LINKS=$(find "$APP" -type l | wc -l | tr -d ' ')
+          [ "$LINKS" -gt 0 ] || { echo "aucun lien symbolique : le zip a perdu la structure des frameworks"; exit 1; }
+          echo "liens symboliques preserves : $LINKS"
+          ! find "$BIN" -name "*.exe" | grep -q . || { echo "le paquet macOS transporte des binaires Windows"; exit 1; }
+          ! find "$APP" -name "ggml-rpc-server*" | grep -q . || { echo "l'elagage de llama n'a pas tourne"; exit 1; }
+          # LA SIGNATURE A-T-ELLE SURVECU A L'ALLER-RETOUR ? C'est la seule chose qui
+          # autorise macOS a lancer un binaire arm64. `--deep` n'est PAS impose : je
+          # n'ai pas mesure s'il passe sur les trois binaires tiers de Resources/bin,
+          # donc il est imprime a titre indicatif et n'echoue rien. Tant que ce n'est
+          # pas mesure, la porte reste `--verify --strict`.
+          codesign --verify --strict "$APP" || { echo "la signature ne verifie pas apres extraction"; exit 1; }
+          codesign --verify --deep --strict "$APP" && echo "deep OK" || echo "deep echoue (indicatif, pas une porte)"
           codesign -dv "$APP" 2>&1 | head -5
+          rm -rf "$WORK"
 
-      - uses: actions/upload-artifact@v4
+      - name: Write the manifest, exactly as the release does
+        run: |
+          ZIP=$(ls dist-build/Flow-*-mac-arm64.zip)
+          # Le tag n'existe pas sur un banc d'essai : on prend celui que
+          # package.json implique, pour que le script suive le MEME chemin qu'en
+          # release plutot qu'un chemin de test qui divergerait.
+          TAG="v$(node -p "require('./package.json').version")"
+          node scripts/mac-manifest.cjs --zip "$ZIP" --tag "$TAG" --out dist-build/mac-arm64.json
+          node scripts/mac-manifest.cjs --verify dist-build/mac-arm64.json --zip "$ZIP"
+          cat dist-build/mac-arm64.json
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: Flow-macOS-arm64
           path: |
