@@ -29,12 +29,20 @@ export function updateChannelFor(platform: string): UpdateChannelName {
   if (platform === "win32") return "electron-updater";
   // macOS : un zip signe ad-hoc, une empreinte publiee a cote, et un echange de
   // bundle qu'on fait nous-memes (Squirrel.Mac exige un Developer ID, qui ne sera
-  // pas achete). Le mecanisme se construit en plusieurs commits ; ce nom ne sera
-  // rendu qu'au commit de basculement, quand macZipChannel.ts ET la chaine de
-  // publication existeront tous les deux. Rendre "mac-zip" avant cela donnerait un
-  // updater qui interroge un document que personne ne publie : un controle mort
-  // qui a l'air vivant, ce que ce depot refuse.
-  if (platform === "darwin") return null;
+  // pas achete).
+  //
+  // 2026-08-04, BASCULEMENT. Ce nom rendait null jusqu'ici, et l'ordre etait le
+  // point : brancher l'updater avant que la chaine de publication ecrive son
+  // document aurait donne un updater interrogeant un 404 quatre fois par jour en se
+  // croyant a jour, c'est-a-dire un controle mort qui a l'air vivant. Les deux
+  // moities existent maintenant - src/main/update/macZipChannel.ts et le job `mac`
+  // de release.yml - donc le nom est rendu.
+  //
+  // Le pire cas de ce basculement est benin et c'est ce qui le rend acceptable
+  // avant la premiere release mac : si le job de publication echoue, il n'y a pas
+  // de manifeste, le 404 signifie « rien de neuf », et le Mac repasse dans quatre
+  // heures. Fail-closed.
+  if (platform === "darwin") return "mac-zip";
   // Tout le reste. Rien n'est publie pour cette plateforme, donc l'updater reste
   // inerte - et le DIT, au lieu de laisser un bouton qui ne repond pas. Meme
   // defaut prudent que capabilitiesFor().

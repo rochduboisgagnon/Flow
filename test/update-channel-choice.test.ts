@@ -22,12 +22,16 @@ test("UC-2: an unknown platform gets NO channel, rather than a guess", () => {
   assert.equal(updateChannelFor(""), null);
 });
 
-test("UC-3: macOS has no channel until BOTH the mechanism and the feed exist", () => {
-  // Ce test change en une ligne au commit de basculement, et c'est voulu : il
-  // interdit de brancher l'updater mac sur un document que la chaine de
-  // publication n'ecrit pas encore. Le mauvais ordre donnerait un updater qui
-  // interroge un 404 quatre fois par jour en se croyant a jour.
-  assert.equal(updateChannelFor("darwin"), null);
+test("UC-3: macOS updates itself, now that BOTH halves exist", () => {
+  // Ce test a longtemps asserte `null`, et c'etait voulu : il interdisait de
+  // brancher l'updater mac sur un document que la chaine de publication n'ecrivait
+  // pas encore. Le mauvais ordre aurait donne un updater interrogeant un 404 quatre
+  // fois par jour en se croyant a jour.
+  //
+  // Les deux moities existent : src/main/update/macZipChannel.ts et le job `mac` de
+  // release.yml. Repondre a la demande de Roch (« que l'app sur macOS se mette a
+  // jour sans reinstaller l'ancienne version ») tient a cette ligne.
+  assert.equal(updateChannelFor("darwin"), "mac-zip");
 });
 
 test("UC-4: nothing but updateChannelFor decides which channel gets built", () => {
