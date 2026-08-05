@@ -32,6 +32,7 @@ import { WorkingCopyCaptureStore } from "./data/captureStore";
 import { AudioLocal, audioDirIn, migrateAudioDir } from "./audioLocal";
 import { AudioDuck } from "./audioDuck";
 import { capabilitiesFor, MISSING_ON_THIS_PLATFORM } from "../shared/platform";
+import { updateChannelFor } from "../shared/updateChannelChoice";
 import { whisperServerNames, llamaServerName } from "../shared/engineBinaries";
 import { LocalApi } from "./api";
 import { LongRecorder } from "./longform";
@@ -62,6 +63,8 @@ import { resourcePath } from "./resources";
 import { UiBridge, LOGIN_ARGS } from "./uiBridge";
 import { FlowTray } from "./tray";
 import { FlowUpdater } from "./updater";
+import type { UpdateChannel } from "./update/channel";
+import { ElectronUpdaterChannel } from "./update/electronUpdaterChannel";
 import { hotpath, HOTPATH_ABANDON_REASON } from "../shared/hotpath";
 import { LoopLagSampler, realScheduler } from "../shared/loopLag";
 import { hookIsArmed, hookStatusLine } from "../shared/hookWatchdog";
@@ -112,6 +115,10 @@ const DEV = process.env.AGRFLOW_DEV === "1";
  * ce qui n'existe pas, en le disant une fois dans le journal.
  */
 const CAPS = capabilitiesFor(process.platform);
+/** Quel MECANISME de mise a jour cette plateforme a. Lu ici, au meme endroit et
+ * pour la meme raison que CAPS : une seule lecture de process.platform, et
+ * updater.ts n'en contient toujours aucune. */
+const UPDATE_CHANNEL = updateChannelFor(process.platform);
 
 // Settings (shortcut, language, model, microphone) live in ~/.flow, outside the
 // install; mutated via the local API and the main window.
@@ -579,6 +586,13 @@ if (!app.requestSingleInstanceLock()) {
     // ---- auto-update (V1, A4) ----
     // Built AFTER the engine: updating is a background chore and the boot must
     // never wait on it (the first check is two minutes out anyway).
+    // Le canal est construit ICI et non dans updater.ts : construire le canal
+    // Windows importe electron-updater, et c'est precisement ce qui rendait la
+    // politique de mise a jour intestable. Le NOM vient d'une fonction pure
+    // (updateChannelFor), l'objet est fabrique au seul endroit qui a le droit de
+    // toucher a electron.
+    const updateChannel: UpdateChannel | null =
+      UPDATE_CHANNEL === "electron-updater" ? new ElectronUpdaterChannel(flowLog) : null;
     const flowUpdater = new FlowUpdater({
       // The quiet window, non-negotiable: the SAME definition of "busy" that
       // GET /update-readiness reports (engineBusy), injected rather than
@@ -588,6 +602,9 @@ if (!app.requestSingleInstanceLock()) {
       isBusy: () => engineBusy(),
       quietForMs: () => Date.now() - lastActivityAt,
       log: flowLog,
+      isPackaged: () => app.isPackaged,
+      currentVersion: () => app.getVersion(),
+      channel: updateChannel,
     });
     updater = flowUpdater; // module-level handle for getUiState() and before-quit
     flowUpdater.start();

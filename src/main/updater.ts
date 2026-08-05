@@ -1,11 +1,9 @@
-import { app } from "electron";
-import { autoUpdater } from "electron-updater";
 import type { UpdateCheckResult } from "../shared/ipcContracts";
+import type { ChannelEvent, UpdateChannel } from "./update/channel";
 
 // Auto-update (plan V1, A4). Flow is an autonomous app now: nothing else on the
-// machine updates it, so it updates itself from its own GitHub Releases
-// (electron-builder publishes the NSIS installer + latest.yml; electron-updater
-// reads that manifest). No account, no telemetry, no server of ours in between.
+// machine updates it, so it updates itself from its own GitHub Releases.
+// No account, no telemetry, no server of ours in between.
 //
 // THE INVARIANT OF THIS FILE: an update NEVER installs while a dictation or a
 // long recording is in flight. Swapping the binary mid-sentence would kill the
@@ -15,8 +13,20 @@ import type { UpdateCheckResult } from "../shared/ipcContracts";
 // injected here rather than re-derived, so there is one definition of "busy".
 //
 // The rest is deliberately boring: download in the background, install at the
-// first real lull, and - whatever happens - let autoInstallOnAppQuit catch the
-// update on the next manual quit. Nothing here ever blocks the engine.
+// first real lull, and - whatever happens - let the channel's own quit hook
+// catch the update on the next manual quit. Nothing here ever blocks the engine.
+//
+// 2026-08-04 : CE FICHIER NE CONTIENT PLUS AUCUN MECANISME, et il ne connait ni
+// electron ni electron-updater. Le portage macOS avait besoin d'un second
+// mecanisme (Squirrel.Mac exige un Developer ID que Roch a decide de ne pas
+// acheter) derriere exactement la meme politique, et dupliquer le sas calme
+// aurait produit deux definitions du calme qui divergent. Le mecanisme est donc
+// injecte (src/main/update/channel.ts).
+//
+// Le vrai gain n'est pas l'elegance : c'est que l'invariant ci-dessus a
+// desormais des tests (test/updater.test.ts). Il n'en avait aucun, parce que ce
+// fichier importait `electron` au niveau module et ne pouvait pas etre importe
+// hors d'un processus Electron.
 
 /** How long the engine gets to itself before the first network round trip. */
 const BOOT_DELAY_MS = 2 * 60 * 1000;
@@ -49,6 +59,22 @@ export interface UpdaterState {
   message: string;
 }
 
+/** Timer seam, so four hours and two minutes are testable without waiting for
+ * them. Same shape and same reason as CaptureTimers and HookTimers. */
+export interface UpdaterTimers {
+  set(fn: () => void, ms: number): unknown;
+  clear(handle: unknown): void;
+  every(fn: () => void, ms: number): unknown;
+  clearEvery(handle: unknown): void;
+}
+
+const REAL_TIMERS: UpdaterTimers = {
+  set: (fn, ms) => setTimeout(fn, ms),
+  clear: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+  every: (fn, ms) => setInterval(fn, ms),
+  clearEvery: (h) => clearInterval(h as ReturnType<typeof setInterval>),
+};
+
 export interface FlowUpdaterDeps {
   /** True while a dictation, a long recording OR a model transfer is in
    * flight. One of the two things standing between a downloaded update and a
@@ -64,10 +90,23 @@ export interface FlowUpdaterDeps {
   /** The engine's rotating log (flowLog), so a failed update is not invisible
    * in a built app - there is no dev console out there. */
   log(msg: string): void;
+  /** app.isPackaged, injected: `npm run dev` runs from source and there is no
+   * installed app to swap. Injected rather than imported so this file stays
+   * testable. */
+  isPackaged(): boolean;
+  /** app.getVersion(), for the one sentence the button says when up to date. */
+  currentVersion(): string;
+  /** The mechanism. `null` means nothing is published for this platform, which
+   * is a different fact from "this is a development build" and gets its own
+   * message. See src/shared/updateChannelChoice.ts. */
+  channel: UpdateChannel | null;
+  timers?: UpdaterTimers;
 }
 
 export class FlowUpdater {
   private deps: FlowUpdaterDeps;
+  private timers: UpdaterTimers;
+  private channel: UpdateChannel | null;
   private enabled: boolean;
   private st: UpdaterState = { phase: "idle", version: "", pct: 0, message: "" };
   /** 2026-07-30: set by checkNow(), i.e. by a HUMAN clicking the button.
@@ -82,48 +121,34 @@ export class FlowUpdater {
    * or recording: isBusy() is checked either way, and that is the guarantee
    * that actually matters. */
   private userAsked = false;
-  private bootTimer: NodeJS.Timeout | undefined;
-  private periodicTimer: NodeJS.Timeout | undefined;
-  private quietTimer: NodeJS.Timeout | undefined;
-  private confirmTimer: NodeJS.Timeout | undefined;
+  private bootTimer: unknown = null;
+  private periodicTimer: unknown = null;
+  private quietTimer: unknown = null;
+  private confirmTimer: unknown = null;
   /** A lull is being confirmed right now; the poll must not stack a second one. */
   private confirming = false;
 
   constructor(deps: FlowUpdaterDeps) {
     this.deps = deps;
-    // `npm run dev` runs from source: there is no installer to swap, and
-    // electron-updater would only throw about a missing dev-app-update.yml.
-    // One honest line, then this object is inert for the whole session.
-    this.enabled = app.isPackaged;
-    if (!this.enabled) {
+    this.timers = deps.timers ?? REAL_TIMERS;
+    this.channel = deps.channel;
+
+    // Two different facts, two different messages. Conflating them is how a
+    // packaged macOS build would have reported itself as a development build.
+    if (!deps.isPackaged()) {
+      this.enabled = false;
       this.deps.log("[updater] disabled: this is a development build, nothing to update in place");
       return;
     }
+    if (!this.channel) {
+      this.enabled = false;
+      this.deps.log("[updater] disabled: no update channel is published for this platform");
+      return;
+    }
 
-    // Explicit rather than relying on the library defaults: these two are the
-    // whole update strategy, and a future major flipping a default silently is
-    // exactly the kind of surprise this app cannot afford.
-    autoUpdater.autoDownload = true; // fetch in the background; installing is the guarded part
-    autoUpdater.autoInstallOnAppQuit = true; // the natural swap: user quits, next launch is new
-    // 2026-07-31, security pass: the same "explicit, not inherited" rule as the
-    // two above, applied to the one default that is a SECURITY property rather
-    // than a strategy. A downgrade is how an attacker who can publish gets a
-    // machine back onto a version whose hole is already patched - the update
-    // channel used in reverse. The library defaults this to false today; that is
-    // exactly why it is written down, because a default nobody states is a
-    // default nobody notices changing.
-    autoUpdater.allowDowngrade = false;
-    // Pre-releases are not a channel this app publishes, and accepting one would
-    // widen what a compromised release page can push onto a machine.
-    autoUpdater.allowPrerelease = false;
-
-    autoUpdater.logger = {
-      info: (m?: unknown) => this.deps.log(`[updater] ${String(m)}`),
-      warn: (m?: unknown) => this.deps.log(`[updater] warn: ${String(m)}`),
-      error: (m?: unknown) => this.deps.log(`[updater] error: ${String(m)}`),
-    };
-
-    this.wireEvents();
+    this.enabled = true;
+    this.deps.log(`[updater] channel: ${this.channel.kind}`);
+    this.channel.onEvent((e) => this.onChannelEvent(e));
   }
 
   /** A copy, so no caller can mutate the updater's view of itself. */
@@ -134,21 +159,26 @@ export class FlowUpdater {
   /** Arm the boot check and the steady cadence. Safe to call once. */
   start(): void {
     if (!this.enabled) return;
-    this.bootTimer = setTimeout(() => {
-      this.bootTimer = undefined;
+    this.bootTimer = this.timers.set(() => {
+      this.bootTimer = null;
       void this.silentCheck();
-      this.periodicTimer = setInterval(() => void this.silentCheck(), CHECK_EVERY_MS);
+      this.periodicTimer = this.timers.every(() => void this.silentCheck(), CHECK_EVERY_MS);
     }, BOOT_DELAY_MS);
   }
 
   /** The Updates tab's "Check now" button (UI_CHECK_UPDATES -> uiBridge). */
   async checkNow(): Promise<UpdateCheckResult> {
-    if (!this.enabled) {
-      return { ok: false, message: "Updates apply to the installed app; this is a development build." };
+    if (!this.enabled || !this.channel) {
+      return {
+        ok: false,
+        message: this.deps.isPackaged()
+          ? "Flow does not publish an update package for this platform yet, so there is nothing to check."
+          : "Updates apply to the installed app; this is a development build.",
+      };
     }
-    // Answer from state when something is already in flight: electron-updater
-    // would hand back the same in-flight promise, but "downloading 63%" tells
-    // the person who just clicked far more than a re-run of the check would.
+    // Answer from state when something is already in flight: the channel would
+    // hand back the same in-flight work, but "downloading 63%" tells the person
+    // who just clicked far more than a re-run of the check would.
     if (this.st.phase === "downloading") {
       return { ok: true, message: `Downloading version ${this.st.version} (${this.st.pct}%)...` };
     }
@@ -158,80 +188,79 @@ export class FlowUpdater {
         message: `Version ${this.st.version} is downloaded. It installs itself as soon as you are neither dictating nor recording.`,
       };
     }
-    try {
-      this.userAsked = true;
-      const result = await autoUpdater.checkForUpdates();
-      if (result?.isUpdateAvailable) {
-        // autoDownload is on, so the download has already started; from here
-        // the event handlers own the state.
-        return { ok: true, message: `Version ${result.updateInfo.version} is available - downloading it now.` };
-      }
-      return { ok: true, message: `Flow ${app.getVersion()} is up to date.` };
-    } catch (err) {
-      // The "error" event handler has already recorded the phase; this is only
-      // about what the button says.
-      const msg = err instanceof Error ? err.message : String(err);
-      return { ok: false, message: `Could not check for updates: ${msg}` };
+    this.userAsked = true;
+    const outcome = await this.channel.check();
+    if (!outcome.ok) {
+      // The "error" event has already recorded the phase; this is only about
+      // what the button says.
+      return { ok: false, message: `Could not check for updates: ${outcome.message}` };
     }
+    if (outcome.available) {
+      return { ok: true, message: `Version ${outcome.version} is available - downloading it now.` };
+    }
+    return { ok: true, message: `Flow ${this.deps.currentVersion()} is up to date.` };
   }
 
-  /** Drop every timer. Does NOT touch autoInstallOnAppQuit: stopping our own
-   * polling must never cancel the swap electron-updater performs on a manual
-   * quit - that path is what catches every update we chose not to force. */
+  /** Drop every timer. Does NOT cancel whatever the channel has armed for the
+   * next quit: on Windows that is electron-updater's autoInstallOnAppQuit, on
+   * macOS it is a detached swap script already waiting on this PID. Stopping our
+   * own polling must never cancel the swap that happens on a manual quit - that
+   * path is what catches every update we chose not to force. */
   stop(): void {
-    clearTimeout(this.bootTimer);
-    this.bootTimer = undefined;
-    clearInterval(this.periodicTimer);
-    this.periodicTimer = undefined;
-    clearInterval(this.quietTimer);
-    this.quietTimer = undefined;
-    clearTimeout(this.confirmTimer);
-    this.confirmTimer = undefined;
+    this.timers.clear(this.bootTimer);
+    this.bootTimer = null;
+    this.timers.clearEvery(this.periodicTimer);
+    this.periodicTimer = null;
+    this.timers.clearEvery(this.quietTimer);
+    this.quietTimer = null;
+    this.timers.clear(this.confirmTimer);
+    this.confirmTimer = null;
     this.confirming = false;
   }
 
-  private wireEvents(): void {
-    autoUpdater.on("checking-for-update", () => {
-      this.st = { phase: "checking", version: "", pct: 0, message: "" };
-    });
-    autoUpdater.on("update-not-available", (info) => {
-      this.st = { phase: "up-to-date", version: info.version, pct: 0, message: "" };
-    });
-    autoUpdater.on("update-available", (info) => {
-      this.st = { phase: "downloading", version: info.version, pct: 0, message: "" };
-    });
-    autoUpdater.on("download-progress", (progress) => {
-      // Guarded: a straggling progress event after "update-downloaded" would
-      // otherwise demote the one phase the UI must not lose.
-      if (this.st.phase !== "downloading") return;
-      this.st = { ...this.st, pct: Math.max(0, Math.min(100, Math.round(progress.percent))) };
-    });
-    autoUpdater.on("update-downloaded", (event) => {
-      this.st = { phase: "downloaded-waiting-quiet", version: event.version, pct: 100, message: "" };
-      this.deps.log(`[updater] version ${event.version} downloaded; waiting for a quiet moment to install`);
-      this.waitForQuiet();
-    });
-    autoUpdater.on("error", (err) => {
-      // No cloud, no account: an update failure is a nuisance, never a stop.
-      // It is recorded, shown on request, and retried at the next cadence tick.
-      this.st = { phase: "error", version: this.st.version, pct: 0, message: err.message };
-    });
+  private onChannelEvent(e: ChannelEvent): void {
+    switch (e.kind) {
+      case "checking":
+        this.st = { phase: "checking", version: "", pct: 0, message: "" };
+        return;
+      case "not-available":
+        this.st = { phase: "up-to-date", version: e.version, pct: 0, message: "" };
+        return;
+      case "available":
+        this.st = { phase: "downloading", version: e.version, pct: 0, message: "" };
+        return;
+      case "progress":
+        // Guarded: a straggling progress event after "downloaded" would
+        // otherwise demote the one phase the UI must not lose.
+        if (this.st.phase !== "downloading") return;
+        this.st = { ...this.st, pct: Math.max(0, Math.min(100, Math.round(e.pct))) };
+        return;
+      case "downloaded":
+        this.st = { phase: "downloaded-waiting-quiet", version: e.version, pct: 100, message: "" };
+        this.deps.log(`[updater] version ${e.version} downloaded; waiting for a quiet moment to install`);
+        this.waitForQuiet();
+        return;
+      case "error":
+        // No cloud, no account: an update failure is a nuisance, never a stop.
+        // It is recorded, shown on request, and retried at the next cadence tick.
+        this.st = { phase: "error", version: this.st.version, pct: 0, message: e.message };
+        return;
+    }
   }
 
   private async silentCheck(): Promise<void> {
     // An update already downloaded (or downloading) makes another check
     // pointless: what is missing is a lull, not a newer manifest.
     if (this.st.phase === "downloading" || this.st.phase === "downloaded-waiting-quiet") return;
-    try {
-      await autoUpdater.checkForUpdates();
-    } catch {
-      /* the "error" event already recorded and logged it */
-    }
+    // The verdict is deliberately dropped: on failure the channel has already
+    // emitted "error", which recorded the phase and logged it. A background
+    // check has nobody to answer to.
+    await this.channel?.check();
   }
 
   private waitForQuiet(): void {
     if (this.quietTimer) return; // already waiting (a second download event)
-    this.quietTimer = setInterval(() => this.tryInstall(), QUIET_POLL_MS);
+    this.quietTimer = this.timers.every(() => this.tryInstall(), QUIET_POLL_MS);
     this.tryInstall(); // most of the time the machine is idle right now
   }
 
@@ -248,22 +277,25 @@ export class FlowUpdater {
       // Asked for, and the engine is free: go. No confirmation pause, because
       // the person who would be interrupted by it is the person who asked.
       this.deps.log(`[updater] installing version ${this.st.version} - requested by the user`);
-      this.stop();
-      autoUpdater.quitAndInstall(true, true);
+      this.swap();
       return;
     }
     this.confirming = true;
-    this.confirmTimer = setTimeout(() => {
-      this.confirmTimer = undefined;
+    this.confirmTimer = this.timers.set(() => {
+      this.confirmTimer = null;
       this.confirming = false;
       // Anything at all happened during the pause = not quiet, poll retries.
       if (this.deps.isBusy() || this.deps.quietForMs() < QUIET_CONFIRM_MS) return;
       this.deps.log(`[updater] quiet window confirmed; installing version ${this.st.version}`);
-      this.stop(); // no more polling: the process is about to be replaced
-      // Silent install, then relaunch. Relaunching matters: Flow is a hotkey
-      // daemon, and an update that leaves the machine with no push-to-talk
-      // until the next login is a worse outcome than a window reappearing.
-      autoUpdater.quitAndInstall(true, true);
+      this.swap();
     }, QUIET_CONFIRM_MS);
+  }
+
+  /** The one irreversible gesture. stop() FIRST: the process is about to be
+   * replaced, and an interval that survived into the swap would poll a machine
+   * that no longer has the binary it was polling for. */
+  private swap(): void {
+    this.stop();
+    this.channel?.install();
   }
 }
