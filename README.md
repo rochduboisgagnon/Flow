@@ -250,12 +250,40 @@ to know](https://learn.microsoft.com/windows/win32/winmsg/lowlevelkeyboardproc).
 
 ## macOS
 
-Deferred by design (plan phase 5). The codebase is structured for it - the
-hotkey (keyspy ships a MacKeyServer), the injection (nut.js) and the engine
-(whisper.cpp with Core ML/Metal) are cross-platform; what remains is the
-AX-API focus probe (the Windows one is a UI Automation sidecar), the
-Accessibility / Input Monitoring permission onboarding, and a mac packaging
-lane. No Windows-only assumption lives outside the OS adapters.
+Shipped, arm64 (Apple Silicon), from the same tag as Windows. Dictation, the
+local engines, the account, the dictionary and meeting recording all work; what
+this machine can and cannot do is a single table in `src/shared/platform.ts`,
+and the app *says* what is missing rather than greying a control out.
+
+Not there yet, and named rather than vaguely deferred: capturing what the
+computer plays during a meeting (Windows gets it free from WASAPI loopback;
+macOS needs ScreenCaptureKit and the Screen Recording permission), muting other
+applications during a dictation (macOS has no per-application volume API at all,
+so this one probably never crosses), and the front-window probe (the Windows one
+launches powershell.exe).
+
+**It updates itself.** Not through electron-updater: Squirrel.Mac requires a
+real Developer ID signature, and no certificate is being bought. Flow reads a
+small document published beside the zip (`mac-arm64.json`: version, archive
+name, SHA-256, size), downloads, checks the fingerprint *before* the file takes
+its name, expands with `ditto`, inspects the bundle that comes out, and swaps it
+through a detached script that waits for the process to die, keeps the old
+bundle aside until the new one is in place, and relaunches. The same quiet
+window as Windows holds it back: never during a dictation or a recording.
+
+Two consequences of the ad-hoc signature, said here so they are not discovered:
+
+- **The Accessibility permission has to be granted again after every update.**
+  macOS ties it to the app's exact signature, and an ad-hoc signature is a hash
+  of the code, so a new version is a new application as far as the system is
+  concerned. Flow detects this and points at the right pane instead of telling
+  you to restart it. This matters more than it sounds: without that permission a
+  process can start its key server *successfully* and never receive a single key
+  event, which no health check could see.
+- **The first install** (the .dmg, downloaded by a browser) trips Gatekeeper:
+  `xattr -dr com.apple.quarantine /Applications/Flow.app`. Updates should not,
+  because the quarantine flag is set by the *downloader* and Flow fetches its own
+  update.
 
 ## Development
 
