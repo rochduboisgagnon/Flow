@@ -54,14 +54,13 @@ const SHA256 = /^[0-9a-f]{64}$/;
 /** Plancher de taille, pour qu'une reponse tronquee ou une page d'erreur soit
  * refusee avant meme d'etre hachee.
  *
- * 2026-08-04 : CHIFFRE PROVISOIRE, A REMPLACER PAR UNE MESURE. Le zip Windows
- * equivalent pese 201 454 697 octets (mesure sur la release v2.5.0), et le zip mac
- * porte les memes deux moteurs plus Electron. Le plancher est mis a 60 Mio, soit
- * largement sous toute valeur plausible : il attrape une page d'erreur ou un
- * telechargement coupe, pas un paquet legitime. La vraie taille sera lue par
- * l'etape `ls -l` de mac-build.yml, et ce nombre sera resserre a environ la moitie
- * de la valeur observee. */
-export const MIN_ZIP_BYTES = 60 * 1024 * 1024;
+ * 2026-08-05, MESURE et non estimation : le zip macOS arm64 de la 2.6.0 pese
+ * 138 133 643 octets (run 31000665592 de mac-build.yml, etape « Inspect the
+ * artifact the way the app will read it »). Le plancher est fixe a 64 Mio, soit un
+ * peu sous la moitie : assez bas pour qu'une version qui maigrit ne se fasse pas
+ * refuser, assez haut pour arreter une page d'erreur HTML ou un telechargement
+ * coupe avant qu'on paie le hachage de 130 Mo. */
+export const MIN_ZIP_BYTES = 64 * 1024 * 1024;
 
 export type MacManifestVerdict =
   | { ok: true; version: string; zip: string; url: string; sha256: string; bytes: number; adhoc: boolean }

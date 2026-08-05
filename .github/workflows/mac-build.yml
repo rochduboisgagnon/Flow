@@ -169,14 +169,55 @@ jobs:
           echo "liens symboliques preserves : $LINKS"
           ! find "$BIN" -name "*.exe" | grep -q . || { echo "le paquet macOS transporte des binaires Windows"; exit 1; }
           ! find "$APP" -name "ggml-rpc-server*" | grep -q . || { echo "l'elagage de llama n'a pas tourne"; exit 1; }
-          # LA SIGNATURE A-T-ELLE SURVECU A L'ALLER-RETOUR ? C'est la seule chose qui
-          # autorise macOS a lancer un binaire arm64. `--deep` n'est PAS impose : je
-          # n'ai pas mesure s'il passe sur les trois binaires tiers de Resources/bin,
-          # donc il est imprime a titre indicatif et n'echoue rien. Tant que ce n'est
-          # pas mesure, la porte reste `--verify --strict`.
-          codesign --verify --strict "$APP" || { echo "la signature ne verifie pas apres extraction"; exit 1; }
-          codesign --verify --deep --strict "$APP" && echo "deep OK" || echo "deep echoue (indicatif, pas une porte)"
-          codesign -dv "$APP" 2>&1 | head -5
+          # ---------------------------------------------------------------------
+          # LA SIGNATURE : L'EXPERIENCE DECISIVE, ET ELLE N'ECHOUE RIEN.
+          #
+          # Mesure du 2026-08-05, run 31000665592 : `codesign --verify --strict` sur
+          # le bundle DETENDU echoue avec « code has no resources but signature
+          # indicates they must be present ». Avant d'en conclure que ditto casse la
+          # signature - et avant d'affaiblir une porte pour la rendre verte - il faut
+          # savoir si le bundle sort DEJA comme ca de electron-builder.
+          #
+          # D'ou le temoin : les MEMES commandes sur l'app d'origine, celle que
+          # electron-builder vient de signer, AVANT toute compression. Si les deux se
+          # comportent pareil, ditto est innocent et c'est la facon dont ce paquet est
+          # signe en ad-hoc qui est en cause ; si seul le detendu echoue, l'aller-retour
+          # abime quelque chose et la mise a jour macOS ne peut pas partir.
+          # ---------------------------------------------------------------------
+          ORIG="dist-build/mac-arm64/Flow.app"
+          test -d "$ORIG" || ORIG="dist-build/mac/Flow.app"
+          echo "=== TEMOIN : le bundle signe, AVANT le zip ($ORIG) ==="
+          test -f "$ORIG/Contents/_CodeSignature/CodeResources" && echo "CodeResources present" || echo "CodeResources ABSENT"
+          codesign --verify "$ORIG" && echo "  verify        : OK" || echo "  verify        : ECHEC"
+          codesign --verify --strict "$ORIG" && echo "  verify strict : OK" || echo "  verify strict : ECHEC"
+          codesign --verify --deep "$ORIG" && echo "  verify deep   : OK" || echo "  verify deep   : ECHEC"
+          codesign -dvvv "$ORIG" 2>&1 | head -12
+          echo "=== APRES l'aller-retour zip -> ditto ($APP) ==="
+          test -f "$APP/Contents/_CodeSignature/CodeResources" && echo "CodeResources present" || echo "CodeResources ABSENT"
+          codesign --verify "$APP" && echo "  verify        : OK" || echo "  verify        : ECHEC"
+          codesign --verify --strict "$APP" && echo "  verify strict : OK" || echo "  verify strict : ECHEC"
+          codesign --verify --deep "$APP" && echo "  verify deep   : OK" || echo "  verify deep   : ECHEC"
+          codesign -dvvv "$APP" 2>&1 | head -12
+          # LA SEULE QUESTION QUI COMPTE VRAIMENT : le noyau accepte-t-il de lancer ce
+          # binaire ? C'est ce que fait un utilisateur, et aucune des commandes
+          # ci-dessus ne le dit. Un lancement refuse pour signature invalide tue le
+          # processus au demarrage (SIGKILL, code 137 ou « Killed: 9 ») ; un Electron
+          # sans affichage sort autrement. On distingue les deux.
+          echo "=== LE NOYAU LANCE-T-IL LE BINAIRE DETENDU ? ==="
+          set +e
+          "$APP/Contents/MacOS/Flow" --version >/tmp/launch.out 2>&1 &
+          LAUNCH_PID=$!
+          sleep 8
+          if kill -0 "$LAUNCH_PID" 2>/dev/null; then
+            echo "  le processus VIT apres 8 s : le noyau a accepte la signature"
+            kill "$LAUNCH_PID" 2>/dev/null
+          else
+            wait "$LAUNCH_PID"; RC=$?
+            echo "  le processus est sorti avec le code $RC"
+            [ "$RC" = "137" ] && echo "  *** SIGKILL : le noyau a REFUSE la signature ***"
+          fi
+          head -20 /tmp/launch.out || true
+          set -e
           rm -rf "$WORK"
 
       - name: Write the manifest, exactly as the release does
