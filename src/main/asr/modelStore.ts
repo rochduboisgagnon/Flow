@@ -1,8 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import https from "node:https";
-import crypto from "node:crypto";
 import { defaultLocalAppData, resolveModelsRoot } from "../migrate";
+import { fetchToFile } from "../net/fetchVerified";
 
 // ASR models live in Flow's OWN data folder (%LOCALAPPDATA%\Flow\models),
 // outside the install directory: an app update must never re-download 190 MB,
@@ -241,61 +240,18 @@ export async function ensureModel(
  * file afterwards. Not only to avoid reading a gigabyte twice - it also means
  * the hash is of what this function actually received, which a later re-read
  * could no longer promise. */
-function download(url: string, dest: string, onProgress?: (pct: number) => void, redirects = 0): Promise<string> {
-  return new Promise((resolve, reject) => {
-    if (redirects > 5) return reject(new Error("too many redirects downloading the model"));
-    https
-      .get(url, (res) => {
-        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          res.resume();
-          // F8: a 302 used to be followed anywhere at all, http included.
-          const next = new URL(res.headers.location, url).toString();
-          if (!redirectAllowed(next)) {
-            return reject(new Error(`refusing a model redirect off the pinned host: ${next}`));
-          }
-          return resolve(download(next, dest, onProgress, redirects + 1));
-        }
-        if (res.statusCode !== 200) {
-          res.resume();
-          return reject(new Error(`model download failed: HTTP ${res.statusCode} for ${url}`));
-        }
-        const total = Number(res.headers["content-length"] ?? 0);
-        let got = 0;
-        const hash = crypto.createHash("sha256");
-        const out = fs.createWriteStream(dest);
-        res.on("data", (c: Buffer) => {
-          got += c.length;
-          hash.update(c);
-          if (total && onProgress) onProgress(Math.round((got / total) * 100));
-        });
-        res.pipe(out);
-        out.on("finish", () =>
-          out.close(() => {
-            // R1: a cut connection can end the stream cleanly with a short file. If the
-            // server told us the length, insist on getting all of it before we accept it.
-            if (total > 0 && got !== total) {
-              try {
-                fs.unlinkSync(dest);
-              } catch {
-                /* best effort */
-              }
-              return reject(new Error(`model download truncated: got ${got} of ${total} bytes`));
-            }
-            resolve(hash.digest("hex"));
-          }),
-        );
-        out.on("error", (e) => {
-          try {
-            fs.unlinkSync(dest);
-          } catch {
-            /* best effort */
-          }
-          reject(e);
-        });
-        res.on("error", reject);
-      })
-      .on("error", reject);
-  });
+function download(url: string, dest: string, onProgress?: (pct: number) => void): Promise<string> {
+  // 2026-08-04 : le corps a DEMENAGE dans net/fetchVerified.ts, sans une ligne de
+  // changement. Le canal de mise a jour macOS a exactement le meme besoin, et deux
+  // copies de la garde de troncature auraient fini par diverger.
+  //
+  // Ce qui reste ici est ce qui appartient VRAIMENT aux modeles : l'allowlist. Elle
+  // est passee en parametre plutot que devinee la-bas, precisement pour qu'un
+  // telechargement de modele ne puisse jamais atterrir sur un hote GitHub.
+  //
+  // test/model-integrity.test.ts doit passer SANS UNE MODIFICATION : c'est le filet
+  // qui prouve que le demenagement est fidele.
+  return fetchToFile({ url, dest, redirectAllowed, onProgress, what: "model" });
 }
 
 /** Le chemin du modele de redaction, telecharge ou non. */
