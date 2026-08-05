@@ -36,12 +36,19 @@ test("UC-4: nothing but updateChannelFor decides which channel gets built", () =
   // `process.platform === "darwin"` ecrit sur place, et la fonction pure
   // deviendrait un ornement teste qui ne decide plus rien.
   const index = fs.readFileSync(path.join(SRC, "main", "index.ts"), "utf8");
-  assert.match(
-    index,
-    /UPDATE_CHANNEL === "electron-updater" \? new ElectronUpdaterChannel/,
-    "index.ts ne construit plus le canal a partir du nom rendu par updateChannelFor",
-  );
   assert.match(index, /const UPDATE_CHANNEL = updateChannelFor\(process\.platform\)/);
+  // Chaque canal se construit derriere une comparaison au NOM, jamais derriere une
+  // lecture de plateforme ecrite sur place. Asserte sur l'intention et non sur la
+  // forme : ce test a deja epingle un ternaire, et le remplacer par un if/else -
+  // qui respectait parfaitement la regle - l'a fait echouer pour rien.
+  assert.match(index, /UPDATE_CHANNEL === "electron-updater"[\s\S]{0,80}new ElectronUpdaterChannel/);
+  assert.match(index, /UPDATE_CHANNEL === "mac-zip"[\s\S]{0,200}new MacZipChannel/);
+  // Et process.platform n'est lu que DEUX fois dans tout index.ts : pour CAPS et
+  // pour UPDATE_CHANNEL. C'est la regle « un fait de plateforme, un seul lecteur »,
+  // et elle est ce qui garde les deux fonctions pures reellement decisives.
+  const platformReads = (index.match(/capabilitiesFor\(process\.platform\)|updateChannelFor\(process\.platform\)/g) ?? [])
+    .length;
+  assert.equal(platformReads, 2, "index.ts a gagne ou perdu une lecture de plateforme");
 });
 
 test("UC-5: the update policy knows nothing about platforms", () => {

@@ -66,6 +66,7 @@ import { FlowTray } from "./tray";
 import { FlowUpdater } from "./updater";
 import type { UpdateChannel } from "./update/channel";
 import { ElectronUpdaterChannel } from "./update/electronUpdaterChannel";
+import { MacZipChannel } from "./update/macZipChannel";
 import { hotpath, HOTPATH_ABANDON_REASON } from "../shared/hotpath";
 import { LoopLagSampler, realScheduler } from "../shared/loopLag";
 import { hookIsArmed, hookStatusLine } from "../shared/hookWatchdog";
@@ -621,8 +622,27 @@ if (!app.requestSingleInstanceLock()) {
     // politique de mise a jour intestable. Le NOM vient d'une fonction pure
     // (updateChannelFor), l'objet est fabrique au seul endroit qui a le droit de
     // toucher a electron.
-    const updateChannel: UpdateChannel | null =
-      UPDATE_CHANNEL === "electron-updater" ? new ElectronUpdaterChannel(flowLog) : null;
+    let updateChannel: UpdateChannel | null = null;
+    if (UPDATE_CHANNEL === "electron-updater") {
+      updateChannel = new ElectronUpdaterChannel(flowLog);
+    } else if (UPDATE_CHANNEL === "mac-zip") {
+      macChannel = new MacZipChannel({
+        dataDir,
+        currentVersion: () => app.getVersion(),
+        exePath: () => app.getPath("exe"),
+        swapScriptSource: () => resourcePath("mac-swap.sh"),
+        log: flowLog,
+        // La fermeture NORMALE, celle qui passe par before-quit et ses sauvetages
+        // synchrones. Jamais app.exit(), qui les sauterait et pourrait perdre un
+        // enregistrement de reunion.
+        quit: () => app.quit(),
+      });
+      // Ce qu'un lancement precedent a laisse : un telechargement mort au milieu,
+      // un bundle detendu jamais echange. Au demarrage, jamais sur le chemin d'une
+      // dictee.
+      macChannel.sweep();
+      updateChannel = macChannel;
+    }
     const flowUpdater = new FlowUpdater({
       // The quiet window, non-negotiable: the SAME definition of "busy" that
       // GET /update-readiness reports (engineBusy), injected rather than
@@ -948,6 +968,10 @@ let tray: FlowTray | null = null;
 // The auto-updater (V1, A4): same lifecycle. Null until the boot below builds
 // it, which is why engineStatus() reads it optionally.
 let updater: FlowUpdater | null = null;
+/** Le canal macOS, quand c'est celui-la. Garde a part de `updater` parce que le
+ * crochet `will-quit` a besoin de lui poser une question que l'interface commune
+ * UpdateChannel ne porte pas : « as-tu un bundle verifie qui attend ? ». */
+let macChannel: MacZipChannel | null = null;
 // B9: sleep / wake / lock / unlock. Same lifecycle again - powerMonitor only
 // answers once the app is ready, and its subscriptions are released on quit.
 let systemWatch: SystemWatch | null = null;
@@ -2714,6 +2738,29 @@ app.on("before-quit", () => {
   // rescueOnQuit() above - the last diagnostics of a session are very often the
   // ones that explain why it ended.
   logQueue.flushSync();
+});
+
+// ---------------------------------------------------------------------------
+// 2026-08-04 : L'EQUIVALENT macOS D'autoInstallOnAppQuit.
+//
+// Sur Windows, electron-updater garde un crochet de sortie qui rattrape une mise
+// a jour telechargee que le sas calme n'a jamais pu installer : l'utilisateur
+// ferme a la main, et le prochain lancement est la nouvelle version. C'est le
+// chemin qui attrape tout ce qu'on a choisi de ne pas forcer, et sur mac il faut
+// le faire nous-memes.
+//
+// `will-quit` et PAS `before-quit`, delibere : la sequence de before-quit est
+// synchrone, son ORDRE est documente ligne par ligne, et elle ne contient aucun
+// spawn. Y ajouter un lancement de processus serait un genre de chose nouveau au
+// milieu d'un enchainement dont chaque position a une raison. Ici, les sauvetages
+// sont deja faits.
+//
+// Le drapeau interne du canal (swapArmed) empeche le double armement quand le
+// quit vient de l'echange lui-meme.
+app.on("will-quit", () => {
+  if (!macChannel?.hasStagedUpdate()) return;
+  flowLog("[updater] fermeture manuelle avec une mise a jour prete : echange arme");
+  macChannel.install();
 });
 
 // A headless engine must not die when its only (hidden) window closes.

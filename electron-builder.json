@@ -25,6 +25,10 @@
       "to": "probe.wav"
     },
     {
+      "from": "resources/mac-swap.sh",
+      "to": "mac-swap.sh"
+    },
+    {
       "from": "resources/bin",
       "to": "bin",
       "filter": [
