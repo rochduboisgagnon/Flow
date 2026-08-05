@@ -285,6 +285,15 @@ Two consequences of the ad-hoc signature, said here so they are not discovered:
   because the quarantine flag is set by the *downloader* and Flow fetches its own
   update.
 
+Precisely, because the loose phrase "ad-hoc signed" is easy to over-read: the
+package is not signed by us at all. `mac.identity: null` means *do not sign*, and
+what the binary carries is the signature Apple's linker puts on every arm64
+executable (`adhoc, linker-signed`). The kernel accepts it - the CI proves that by
+launching the extracted app, not by asking `codesign` - and nothing here needs
+more. What binds the bytes you download to the bytes that were built is the
+SHA-256 in the manifest and the GitHub provenance attestation, both of which say
+more than an ad-hoc signature ever could.
+
 ## Development
 
 ```

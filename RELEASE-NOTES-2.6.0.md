@@ -26,8 +26,9 @@ jamais pendant un enregistrement.
 ## Ce que macOS va vous redemander, et pourquoi
 
 **L'autorisation Accessibilité, après chaque mise à jour.** macOS attache cette
-permission à la signature exacte de l'application. Sans certificat, la signature est
-recalculée à chaque version, donc le système voit une application différente.
+permission à la signature exacte de l'application. Sans certificat, cette signature
+est celle que l'éditeur de liens d'Apple pose sur le binaire, recalculée à chaque
+version : le système voit donc une application différente à chaque fois.
 
 Flow le **dit** maintenant, au lieu de vous laisser le découvrir. La carte de la page
 d'accueil explique la cause et ouvre le bon panneau des Réglages Système d'un clic.
@@ -61,3 +62,12 @@ Le paquet macOS est publié sur le même tag que Windows, avec une attestation d
 provenance GitHub, et il est inspecté avant publication : les deux moteurs présents
 et exécutables, l'écouteur de clavier **dans le paquet** (la vérification précédente
 regardait au mauvais endroit), les liens symboliques intacts, aucun binaire Windows.
+
+Deux de ces vérifications ont été refaites après mesure, et la seconde a corrigé une
+affirmation fausse que ce dépôt portait depuis le début du portage : le paquet n'est
+pas « signé ad-hoc » par nous, il n'est **pas signé du tout**. Ce qu'il porte est la
+signature que l'éditeur de liens d'Apple appose sur tout binaire arm64. Le noyau
+l'accepte, ce que le CI prouve maintenant en **lançant réellement** l'application
+extraite plutôt qu'en interrogeant `codesign`. Et l'intégrité de ce que vous
+téléchargez ne repose de toute façon pas là-dessus : elle repose sur l'empreinte
+SHA-256 du manifeste et sur l'attestation de provenance, qui en disent bien plus.

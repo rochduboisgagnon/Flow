@@ -33,9 +33,17 @@ name: macOS build (test)
 # ---------------------------------------------------------------------------
 #
 # Decision de Roch, invariante : aucun certificat ne sera achete, et un auto-signe
-# n'apporte rien. `codesign --sign -` est gratuit et suffit a ce qu'un binaire
-# arm64 s'execute (Apple Silicon refuse un binaire non signe, meme localement).
-# electron-builder le fait de lui-meme quand `mac.identity` vaut null.
+# n'apporte rien.
+#
+# 2026-08-05, CORRECTION D'UNE AFFIRMATION FAUSSE DE CE FICHIER. Il disait
+# qu'electron-builder signe ad-hoc de lui-meme quand `mac.identity` vaut null.
+# Mesure (run 31000963544) : NON. `identity: null` veut dire NE PAS SIGNER. Le
+# paquet ne porte que la signature que l'editeur de liens d'Apple pose sur tout
+# binaire arm64 - `flags=0x20002(adhoc,linker-signed)`, `Identifier=Electron`, et
+# aucun `_CodeSignature/CodeResources`. Le noyau la trouve suffisante pour lancer
+# l'application (verifie en la lancant vraiment), et c'est tout ce dont ce paquet
+# a besoin. Rien de ce qui suit ne change ; seule la phrase qui l'expliquait etait
+# fausse.
 #
 # Trois consequences, ecrites ici pour qu'elles ne soient pas decouvertes :
 #
@@ -170,54 +178,64 @@ jobs:
           ! find "$BIN" -name "*.exe" | grep -q . || { echo "le paquet macOS transporte des binaires Windows"; exit 1; }
           ! find "$APP" -name "ggml-rpc-server*" | grep -q . || { echo "l'elagage de llama n'a pas tourne"; exit 1; }
           # ---------------------------------------------------------------------
-          # LA SIGNATURE : L'EXPERIENCE DECISIVE, ET ELLE N'ECHOUE RIEN.
+          # LA SIGNATURE : CE QU'ELLE EST VRAIMENT, MESURE LE 2026-08-05.
           #
-          # Mesure du 2026-08-05, run 31000665592 : `codesign --verify --strict` sur
-          # le bundle DETENDU echoue avec « code has no resources but signature
-          # indicates they must be present ». Avant d'en conclure que ditto casse la
-          # signature - et avant d'affaiblir une porte pour la rendre verte - il faut
-          # savoir si le bundle sort DEJA comme ca de electron-builder.
+          # Run 31000963544, temoin avant/apres. Le bundle QUE electron-builder VIENT
+          # DE PRODUIRE, avant toute compression, n'a PAS de
+          # Contents/_CodeSignature/CodeResources, et `codesign --verify` y echoue
+          # deja : « code has no resources but signature indicates they must be
+          # present ». Exactement comme apres l'aller-retour zip.
           #
-          # D'ou le temoin : les MEMES commandes sur l'app d'origine, celle que
-          # electron-builder vient de signer, AVANT toute compression. Si les deux se
-          # comportent pareil, ditto est innocent et c'est la facon dont ce paquet est
-          # signe en ad-hoc qui est en cause ; si seul le detendu echoue, l'aller-retour
-          # abime quelque chose et la mise a jour macOS ne peut pas partir.
+          # CE QUE CA VEUT DIRE, et c'est different de ce que ce fichier affirmait :
+          # `mac.identity: null` ne demande pas a electron-builder de signer ad-hoc,
+          # il lui demande de NE PAS SIGNER. Ce qui reste est la signature que
+          # l'editeur de liens d'Apple pose sur tout binaire arm64 - d'ou
+          # `flags=0x20002(adhoc,linker-signed)` et `Identifier=Electron` (le binaire
+          # Electron d'origine, et non ca.agrlabs.agrflow). Le bundle n'est donc pas
+          # scelle : rien ne lie Contents/Resources a la signature.
+          #
+          # POURQUOI ON NE « CORRIGE » PAS EN SIGNANT VRAIMENT. Un `codesign --force
+          # --deep --sign -` est gratuit et n'est pas un certificat, donc il ne
+          # contredirait pas la decision de Roch. Mais il n'achete rien ici : TCC
+          # continue de se lier au cdhash, qui change a chaque build ; Gatekeeper
+          # continue de refuser faute de notarisation ; et l'integrite du paquet est
+          # deja assuree, plus fortement, par le SHA-256 du manifeste et
+          # l'attestation de provenance. Il ajouterait en revanche un risque reel :
+          # `--deep` re-signerait les trois binaires tiers de Resources/bin.
+          #
+          # CE QU'ON VERIFIE DONC, ET QUI COMPTE VRAIMENT POUR LA MISE A JOUR :
+          #  1. que l'aller-retour zip -> ditto rende un code IDENTIQUE au bit pres,
+          #     ce que le CDHash prouve mieux que n'importe quel --verify ;
+          #  2. que le noyau accepte de LANCER le binaire detendu, ce qu'aucune
+          #     commande codesign ne dit et qui est pourtant la seule chose que
+          #     l'utilisateur constate.
           # ---------------------------------------------------------------------
           ORIG="dist-build/mac-arm64/Flow.app"
           test -d "$ORIG" || ORIG="dist-build/mac/Flow.app"
-          echo "=== TEMOIN : le bundle signe, AVANT le zip ($ORIG) ==="
-          test -f "$ORIG/Contents/_CodeSignature/CodeResources" && echo "CodeResources present" || echo "CodeResources ABSENT"
-          codesign --verify "$ORIG" && echo "  verify        : OK" || echo "  verify        : ECHEC"
-          codesign --verify --strict "$ORIG" && echo "  verify strict : OK" || echo "  verify strict : ECHEC"
-          codesign --verify --deep "$ORIG" && echo "  verify deep   : OK" || echo "  verify deep   : ECHEC"
-          codesign -dvvv "$ORIG" 2>&1 | head -12
-          echo "=== APRES l'aller-retour zip -> ditto ($APP) ==="
-          test -f "$APP/Contents/_CodeSignature/CodeResources" && echo "CodeResources present" || echo "CodeResources ABSENT"
-          codesign --verify "$APP" && echo "  verify        : OK" || echo "  verify        : ECHEC"
-          codesign --verify --strict "$APP" && echo "  verify strict : OK" || echo "  verify strict : ECHEC"
-          codesign --verify --deep "$APP" && echo "  verify deep   : OK" || echo "  verify deep   : ECHEC"
-          codesign -dvvv "$APP" 2>&1 | head -12
-          # LA SEULE QUESTION QUI COMPTE VRAIMENT : le noyau accepte-t-il de lancer ce
-          # binaire ? C'est ce que fait un utilisateur, et aucune des commandes
-          # ci-dessus ne le dit. Un lancement refuse pour signature invalide tue le
-          # processus au demarrage (SIGKILL, code 137 ou « Killed: 9 ») ; un Electron
-          # sans affichage sort autrement. On distingue les deux.
+          cdhash() { codesign -dvvv "$1" 2>&1 | sed -n 's/^CDHash=//p'; }
+          CD_ORIG=$(cdhash "$ORIG")
+          CD_ZIP=$(cdhash "$APP")
+          echo "CDHash avant le zip : ${CD_ORIG:-<aucun>}"
+          echo "CDHash apres ditto  : ${CD_ZIP:-<aucun>}"
+          test -n "$CD_ZIP" || { echo "le bundle detendu n'a AUCUNE signature : macOS refusera de le lancer"; exit 1; }
+          [ "$CD_ORIG" = "$CD_ZIP" ] || { echo "l'aller-retour zip a MODIFIE le code signe : la mise a jour livrerait autre chose que ce qui a ete inspecte"; exit 1; }
+          codesign -dvvv "$APP" 2>&1 | grep -E "^(Identifier|Format|CodeDirectory|Signature)=" || true
+          # Et le lancement reel. Un refus de signature tue le processus au demarrage
+          # (SIGKILL) ; un Electron qui demarre vit et cree ses fenetres. C'est la
+          # regle de ce depot appliquee au CI : ce qui peut etre verifie en lancant
+          # l'application doit l'etre.
           echo "=== LE NOYAU LANCE-T-IL LE BINAIRE DETENDU ? ==="
-          set +e
-          "$APP/Contents/MacOS/Flow" --version >/tmp/launch.out 2>&1 &
+          "$APP/Contents/MacOS/Flow" >/tmp/launch.out 2>&1 &
           LAUNCH_PID=$!
           sleep 8
           if kill -0 "$LAUNCH_PID" 2>/dev/null; then
             echo "  le processus VIT apres 8 s : le noyau a accepte la signature"
-            kill "$LAUNCH_PID" 2>/dev/null
+            kill "$LAUNCH_PID" 2>/dev/null || true
           else
-            wait "$LAUNCH_PID"; RC=$?
-            echo "  le processus est sorti avec le code $RC"
-            [ "$RC" = "137" ] && echo "  *** SIGKILL : le noyau a REFUSE la signature ***"
+            echo "  le paquet n'a pas tenu 8 secondes. Sortie :"
+            head -30 /tmp/launch.out || true
+            exit 1
           fi
-          head -20 /tmp/launch.out || true
-          set -e
           rm -rf "$WORK"
 
       - name: Write the manifest, exactly as the release does
