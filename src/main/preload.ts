@@ -211,7 +211,20 @@ const ui = {
     ipcRenderer.invoke(UI_SIGN_IN, email, password),
   signOut: (): Promise<{ ok: boolean; error: string }> => ipcRenderer.invoke(UI_SIGN_OUT),
   openPath: (
-    which: "log" | "data" | "history" | "legacy-history" | "pending-audio" | "repo" | "downloaded-file",
+    which:
+      | "log"
+      | "data"
+      | "history"
+      | "legacy-history"
+      | "pending-audio"
+      | "repo"
+      | "downloaded-file"
+      // 2026-08-04 : le panneau Accessibilite des Reglages Systeme (macOS). Une
+      // destination FIXE de plus, et c'est pourquoi elle passe par ici plutot que
+      // d'elargir ALLOWED_SCHEMES de shared/externalNav.ts : la page nomme, le
+      // main resout. L'inverse donnerait a une page le droit d'ouvrir un
+      // x-apple.systempreferences: arbitraire.
+      | "accessibility-settings",
   ): Promise<void> =>
     ipcRenderer.invoke(UI_OPEN_PATH, which),
   /** Ce que l'audio des reunions pese sur ce disque. TIRE : voir UI_AUDIO_USAGE

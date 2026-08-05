@@ -125,3 +125,35 @@ test("decideExternalOpen: a non-loopback host on http/https is still allowed", (
   const d = decideExternalOpen("http://example.com/page");
   assert.equal(d.allow, true);
 });
+
+// ---------------------------------------------------------------------------
+// 2026-08-04 : UNE DECISION QUI N'A PAS ETE PRISE, EPINGLEE POUR QU'ELLE TIENNE.
+//
+// La carte Home a maintenant un bouton « Open Accessibility settings », dont la
+// destination est une URL x-apple.systempreferences:. La solution facile aurait
+// ete d'ajouter ce schema a ALLOWED_SCHEMES. Elle est fausse : cette liste garde
+// les URL qui viennent du CONTENU DES PAGES (une navigation parasite, un lien
+// dans un extrait de transcript), et l'elargir donnerait a n'importe quelle page
+// le droit d'ouvrir un panneau des Reglages Systeme arbitraire.
+//
+// Le bouton passe donc par UI_OPEN_PATH, ou le renderer NOMME une destination et
+// le main la resout - le meme mecanisme que « repo ». Ces deux assertions coutent
+// deux lignes et sont le moyen le moins cher d'empecher une session future de
+// refaire le raisonnement a l'envers.
+// ---------------------------------------------------------------------------
+
+test("2026-08-04: an x-apple.systempreferences: URL from page content is REFUSED", () => {
+  const d = decideExternalOpen("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
+  assert.equal(d.allow, false);
+  assert.match(d.reason, /scheme not allowed/);
+});
+
+test("2026-08-04: exactly three schemes may come from page content", () => {
+  // Un ensemble qui grandit sans qu'on le remarque est la facon dont une frontiere
+  // se dissout. Les trois seuls schemas legitimes sont testes un par un ailleurs
+  // dans ce fichier ; ceci verifie qu'il n'y en a pas un quatrieme.
+  for (const scheme of ["file", "ftp", "javascript", "data", "x-apple.systempreferences", "ms-settings"]) {
+    const d = decideExternalOpen(`${scheme}://example.com/x`);
+    assert.equal(d.allow, false, `${scheme} a ete accepte`);
+  }
+});

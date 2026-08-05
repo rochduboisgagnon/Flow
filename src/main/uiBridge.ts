@@ -65,6 +65,7 @@ import {
 import type { MainWindow } from "./mainWindow";
 import { listDictionary, saveDictEntry, deleteDictEntry } from "./dictionary";
 import { decideLongStart } from "../shared/longStart";
+import { ACCESSIBILITY_PANE_URL } from "./macAccessibility";
 
 // The main window's bridge into the engine (plan V1, A2). One rule above all:
 // these handlers call the SAME functions the local HTTP API is built on
@@ -438,6 +439,30 @@ export class UiBridge {
         if (!last) this.deps.log?.("[ui] show downloaded file: nothing downloaded yet");
         else shell.showItemInFolder(last);
       } else if (which === "repo") await shell.openExternal(REPO_URL);
+      else if (which === "accessibility-settings") {
+        // 2026-08-04 : « prevenir et guider », decision de Roch. La carte Home dit
+        // pourquoi la permission a disparu ; ce bouton amene a l'endroit exact ou
+        // on la redonne, ce que le dialogue systeme de macOS ne fait pas.
+        //
+        // shell.openExternal et non openPath : ce n'est pas un chemin de fichier
+        // mais un schema d'URL, remis a LaunchServices, qui est ce qui sait
+        // resoudre x-apple.systempreferences:. openPath echouerait.
+        // La plateforme est resolue dans main/macAccessibility.ts, jamais ici : un
+        // canari (test/long-ipc-parity.test.ts) interdit toute lecture de la
+        // plateforme dans ce fichier, parce qu'un fait de plateforme ecrit sur
+        // place est un fait qu'aucun test ne voit. `null` = pas de tel panneau ici.
+        if (!ACCESSIBILITY_PANE_URL) {
+          this.deps.log?.("[ui] accessibility-settings ignore : ce panneau n'existe que sur macOS");
+          return;
+        }
+        try {
+          await shell.openExternal(ACCESSIBILITY_PANE_URL);
+        } catch (err) {
+          // Un panneau qui refuse de s'ouvrir ne doit pas laisser l'utilisateur
+          // devant un bouton muet : la carte dit deja le chemin en mots.
+          this.deps.log?.(`[ui] could not open the Accessibility pane: ${String(err)}`);
+        }
+      }
     });
 
     this.guarded<[], { files: number; bytes: number }>(UI_AUDIO_USAGE, { files: 0, bytes: 0 }, () =>

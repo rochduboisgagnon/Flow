@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import type { HistoryEntry, UiStatePayload } from "../../../shared/ipcContracts";
 import type { Section } from "../Rail";
 import { MISSING_ON_THIS_PLATFORM, isReadOnlyPlatform } from "../../../shared/platform";
+import { ACCESSIBILITY_WHY } from "../../../shared/accessibility";
 
 // Home (wave U1): the mockup's hero + status cards, REAL data only. The
 // mockup's "Words today / This week" cards are deliberately absent - their
@@ -41,6 +42,11 @@ import { MISSING_ON_THIS_PLATFORM, isReadOnlyPlatform } from "../../../shared/pl
 // restart of the app. Collapsing them into one red line would tell someone to
 // restart Flow while Flow was in the middle of fixing itself.
 function dictationLabel(s: UiStatePayload): string {
+  // 2026-08-04 : la permission AVANT l'etat du crochet, et c'est tout l'interet.
+  // Sans autorisation Accessibilite, macOS ne refuse pas le crochet : il ne lui
+  // livre rien. hook.state vaut alors « armed », donc ce libelle dirait « Armed »
+  // au-dessus d'un raccourci qui ne repond pas.
+  if (s.access === "missing") return "Waiting for permission";
   switch (s.hook.state) {
     case "restarting":
       return "Restarting the keyboard shortcut...";
@@ -133,7 +139,27 @@ export function Home({ s, go }: { s: UiStatePayload; go: (sec: Section) => void 
               them was not captured. Dictation is working again; nothing needs to be restarted.
             </p>
           ) : null}
-          {s.hook.state === "abandoned" ? (
+          {/* 2026-08-04 : la permission REMPLACE la note du crochet, jamais empilee
+              par-dessus. Deux paragraphes rouges pour une cause unique se lisent
+              comme deux pannes, et celui du crochet donnerait le conseil
+              precisement faux (« redemarrez Flow » ne rend pas une autorisation
+              que le systeme refuse). Le POURQUOI est dans le texte parce que Roch
+              va rencontrer cette carte apres CHAQUE mise a jour : sans la cause,
+              elle se lit comme une regression de Flow. */}
+          {s.access === "missing" ? (
+            <p className="note-err" style={{ margin: "6px 0 0" }}>
+              Dictation cannot start: macOS has not granted Flow the Accessibility permission, so no key press reaches
+              it. {ACCESSIBILITY_WHY}
+              <br />
+              <button
+                className="btn amber"
+                style={{ marginTop: 8 }}
+                onClick={() => void window.flowui.openPath("accessibility-settings")}
+              >
+                Open Accessibility settings
+              </button>
+            </p>
+          ) : s.hook.state === "abandoned" ? (
             <p className="note-err" style={{ margin: "6px 0 0" }}>
               The keyboard shortcut kept failing, so Flow stopped restarting it. Restart Flow to get dictation back.
             </p>

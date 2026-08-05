@@ -68,6 +68,8 @@ import { ElectronUpdaterChannel } from "./update/electronUpdaterChannel";
 import { hotpath, HOTPATH_ABANDON_REASON } from "../shared/hotpath";
 import { LoopLagSampler, realScheduler } from "../shared/loopLag";
 import { hookIsArmed, hookStatusLine } from "../shared/hookWatchdog";
+import { accessibilityStatusLine, type AccessibilityVerdict } from "../shared/accessibility";
+import { probeAccessibility } from "./macAccessibility";
 import { silentFailures, SILENT_FAILURE } from "../shared/silentFailures";
 import { LogQueue, LOG_QUEUE_FAILURE } from "../shared/logQueue";
 import { createFileLogSink } from "./logSink";
@@ -291,6 +293,11 @@ if (!app.requestSingleInstanceLock()) {
     // raccourci dont rien ne peut ensuite honorer l'avalement - donc une dictee
     // qui laisserait ses touches fuir dans le document. Mieux vaut ne rien armer
     // et le DIRE (voir shared/platform.ts, et la phrase que la fenetre affiche).
+    // AVANT d'armer le crochet : sur macOS, un crochet arme sans autorisation
+    // Accessibilite ne recoit jamais rien et ne meurt jamais. Connaitre le verdict
+    // d'abord est ce qui permet de le DIRE au lieu de laisser decouvrir un
+    // raccourci muet (shared/accessibility.ts).
+    refreshAccessibility();
     if (CAPS.dictation) startPtt();
     else flowLog("[platform] dictee non demarree : cette plateforme n'a pas de crochet clavier verifie");
     // B11: started right after the hook, because the hook is what it measures
@@ -741,6 +748,46 @@ if (!app.requestSingleInstanceLock()) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// 2026-08-04 : L'AUTORISATION ACCESSIBILITE, EN CACHE ET RAFRAICHIE A LA MAIN.
+//
+// La sonde est un appel systeme (TCC) sur le processus qui porte le crochet
+// clavier, donc elle n'a rien a faire dans getUiState(), qui tourne a 1 Hz tant
+// qu'une fenetre est visible. Le verdict est donc retenu ici et rafraichi aux
+// quatre seuls moments ou la reponse peut avoir change de pertinence :
+//   - au demarrage, juste avant d'armer le crochet ;
+//   - a chaque transition de sante du crochet (onHealthChange) ;
+//   - quand un humain lance un self-check ;
+//   - et, TANT QUE la permission manque, toutes les dix secondes.
+//
+// Ce dernier point est le seul qui coute quelque chose, et il est necessaire :
+// TCC ne notifie personne quand une permission est accordee. Sans interrogation,
+// la carte continuerait de reclamer une autorisation deja donnee, ce qui est
+// exactement le controle mort que ce depot interdit. Le cout est borne au temps
+// ou c'est casse, et il s'arrete de lui-meme.
+// ---------------------------------------------------------------------------
+let accessVerdict: AccessibilityVerdict = "unknown";
+let accessRetryTimer: NodeJS.Timeout | null = null;
+
+function refreshAccessibility(): void {
+  const before = accessVerdict;
+  accessVerdict = probeAccessibility();
+  if (accessVerdict !== before) {
+    flowLog(`[access] autorisation Accessibilite : ${before} -> ${accessVerdict}`);
+    tray?.refreshNow();
+    uiBridge?.pushNow();
+  }
+  // On ne sonde en boucle que pendant la panne, et on arrete des qu'elle est
+  // reglee : un minuteur qui survit a sa raison d'etre est un minuteur qu'on
+  // oublie.
+  if (accessVerdict === "missing" && accessRetryTimer === null) {
+    accessRetryTimer = setInterval(() => refreshAccessibility(), 10_000);
+  } else if (accessVerdict !== "missing" && accessRetryTimer !== null) {
+    clearInterval(accessRetryTimer);
+    accessRetryTimer = null;
+  }
+}
+
 /** The status line the main window and the tray tooltip show. `statusText`
  * stays the engine's own source of truth; two OVERLAY states may borrow the
  * line, and only while the engine has nothing of its own to say ("ready") -
@@ -756,6 +803,14 @@ if (!app.requestSingleInstanceLock()) {
  * has: nothing the user can press reaches Flow at all, so a warm speech engine
  * reporting "ready" underneath it would be true and completely useless. */
 function engineStatus(): string {
+  // 2026-08-04 : LA PERMISSION AVANT LE CROCHET, et l'ordre est le fait.
+  // Sur macOS une autorisation Accessibilite absente est ce qui fait mourir - ou
+  // taire - le serveur de touches : la panne du crochet en est la consequence.
+  // Afficher « keyboard shortcut unavailable - restart Flow » quand c'est le
+  // systeme qui refuse envoie l'utilisateur redemarrer en boucle. Voir
+  // shared/accessibility.ts pour la panne silencieuse que ca detecte.
+  const accessLine = accessibilityStatusLine(accessVerdict);
+  if (accessLine) return accessLine;
   const hookLine = hookStatusLine(hotkey.health());
   if (hookLine) return hookLine;
   if (statusText !== "ready") return statusText;
@@ -817,6 +872,11 @@ function getUiState(): UiStatePayload {
     paused: tray !== null && tray.pausedUntilMs() !== null,
     hookOk: hookIsArmed(hook),
     hook,
+    // 2026-08-04 : ce que macOS repond sur l'autorisation Accessibilite. En CACHE
+    // (accessVerdict), jamais sonde ici : getUiState() tourne a 1 Hz tant qu'une
+    // fenetre est visible, et c'est un appel systeme sur le processus qui porte le
+    // crochet clavier. « unknown » sur Windows, ou la question ne se pose pas.
+    access: accessVerdict,
     settings: {
       language: settings.language,
       model: settings.model,
@@ -1504,8 +1564,12 @@ async function gatherSelfCheck(): Promise<SelfCheckReport> {
     modelPresent = null;
   }
   const disk = probeDataDirWritable();
+  // Un humain a demande : c'est un des quatre moments ou la reponse du systeme
+  // vaut la peine d'etre redemandee (voir refreshAccessibility).
+  refreshAccessibility();
   const facts: SelfCheckFacts = {
     hook: hotkey.health(),
+    access: accessVerdict,
     micCount: ready ? mics.length : null,
     micError: ready ? undefined : "the window that enumerates audio devices has not finished loading",
     engineWarm: asrWarm,
@@ -2113,6 +2177,10 @@ const hotkey = new HotkeyAdapter(settings.combo, {
   // window closed it is the ONLY surface the user has, and that is precisely
   // the situation where they believe dictation is working.
   onHealthChange: () => {
+    // 2026-08-04 : et on redemande au systeme. Une mort du serveur de touches sur
+    // macOS est le symptome le plus probable d'une autorisation retiree, et c'est
+    // le seul instant ou la reponse a une chance d'avoir change.
+    refreshAccessibility();
     tray?.refreshNow();
     uiBridge?.pushNow();
   },

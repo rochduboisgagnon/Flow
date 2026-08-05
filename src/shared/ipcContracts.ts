@@ -5,6 +5,7 @@ import type { ThemePref, ResolvedTheme } from "./theme";
 import type { HookHealth } from "./hookWatchdog";
 import type { BatchEngineState } from "./asrRole";
 import type { PlatformCapabilities } from "./platform";
+import type { AccessibilityVerdict } from "./accessibility";
 
 // main -> overlay
 export const CAPTURE_START = "capture:start";
@@ -463,6 +464,14 @@ export interface UiStatePayload {
    * is five scalars of fixed size, and because the Home card has to be able to
    * say "recovered from an interruption" without the user opening a panel. */
   hook: HookHealth;
+  /** 2026-08-04 : ce que macOS repond sur l'autorisation Accessibilite.
+   *
+   * « unknown » sur Windows, ou la question ne se pose pas. Ce champ existe parce
+   * qu'un crochet clavier arme SANS cette autorisation ne recoit jamais rien et ne
+   * meurt jamais : hookOk vaut true, hook.state vaut "armed", et le raccourci ne
+   * repond pas. C'est la seule panne de dictee que les cinq scalaires de `hook`
+   * ne peuvent pas decrire. Voir shared/accessibility.ts. */
+  access: AccessibilityVerdict;
   settings: {
     language: string;
     model: string;

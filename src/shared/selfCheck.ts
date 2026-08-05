@@ -21,6 +21,7 @@
 // content - the focus probe's answers are deliberately not part of this).
 
 import type { HookHealth } from "./hookWatchdog";
+import { ACCESSIBILITY_FIX, ACCESSIBILITY_WHY, type AccessibilityVerdict } from "./accessibility";
 
 export type SelfCheckId =
   | "keyboard-hook"
@@ -60,6 +61,14 @@ export interface SelfCheckReport {
 export interface SelfCheckFacts {
   /** The keyboard hook's own record (B4). */
   hook: HookHealth;
+  /** 2026-08-04 : ce que macOS repond sur l'autorisation Accessibilite, et
+   * « unknown » partout ou la question ne se pose pas.
+   *
+   * Il est dans les FAITS du self-check et pas seulement dans l'interface parce
+   * qu'un rapport de self-check est ce qu'on colle dans un message quand « ca ne
+   * marche pas » : sans ce fait, le rapport d'un Mac dont la permission est
+   * refusee est indistinguable de celui d'un Mac en pleine sante. */
+  access: AccessibilityVerdict;
   /** Audio input devices the renderer could enumerate. null = NOT ESTABLISHED,
    * which is a different fact from 0: the window that enumerates devices may
    * simply not have loaded yet, and an empty answer from it proves nothing. */
@@ -112,11 +121,32 @@ export function worstStatus(lines: SelfCheckLine[]): SelfCheckStatus {
   return worst;
 }
 
-function hookLine(hook: HookHealth): SelfCheckLine {
+function hookLine(hook: HookHealth, access: AccessibilityVerdict): SelfCheckLine {
   const history =
     hook.deaths > 0
       ? ` It has been interrupted ${hook.deaths} time(s) this session and recovered ${hook.restarts} time(s).`
       : "";
+  // 2026-08-04 : UNE SEULE ligne pour cette panne, et elle remplace celle du
+  // crochet plutot que de s'ajouter a elle.
+  //
+  // Deux raisons. La premiere : sur macOS une autorisation absente est ce qui fait
+  // taire le serveur de touches, donc l'etat du crochet en est la CONSEQUENCE, et
+  // deux lignes rouges pour une cause unique est la facon dont un rapport devient
+  // du bruit qu'on arrete de lire. La seconde est plus grave : quand la permission
+  // manque, l'etat du crochet est le plus souvent « armed », donc cette ligne
+  // serait VERTE au-dessus d'un raccourci qui ne repond pas.
+  if (access === "missing") {
+    return {
+      id: "keyboard-hook",
+      label: "Keyboard shortcut (the low-level hook)",
+      status: "fail",
+      detail:
+        `macOS has not granted Flow the Accessibility permission, so no key press reaches it. ` +
+        `The hook itself reports "${hook.state}", which is why this failure is otherwise invisible. ` +
+        `${ACCESSIBILITY_WHY}${history}`,
+      fix: ACCESSIBILITY_FIX,
+    };
+  }
   switch (hook.state) {
     case "armed":
       // Deliberately still OK: the shortcut works RIGHT NOW, which is the
@@ -312,7 +342,7 @@ function dataDirLine(facts: SelfCheckFacts): SelfCheckLine {
  * travels (microphone -> engine -> model), then the two supporting facts. */
 export function evaluateSelfCheck(facts: SelfCheckFacts): SelfCheckReport {
   const lines: SelfCheckLine[] = [
-    hookLine(facts.hook),
+    hookLine(facts.hook, facts.access),
     micLine(facts),
     engineLine(facts),
     modelLine(facts),

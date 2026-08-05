@@ -28,6 +28,11 @@ const ARMED: HookHealth = {
 function healthy(over: Partial<SelfCheckFacts> = {}): SelfCheckFacts {
   return {
     hook: ARMED,
+    // 2026-08-04 : « granted » et non « unknown » pour une machine ou tout marche.
+    // Les deux valent vert, mais une machine SAINE est une machine a qui macOS a
+    // dit oui ; « unknown » est la reponse de Windows, ou la question ne se pose
+    // pas. Le test dedie a la permission absente est plus bas.
+    access: "granted",
     micCount: 2,
     engineWarm: true,
     backend: "whisper-server-win32-x64-vulkan.exe",
@@ -105,6 +110,39 @@ test("B5: an abandoned hook is red and names the one thing that fixes it", () =>
   const l = line(healthy({ hook: { ...ARMED, state: "abandoned", deaths: 4 } }), "keyboard-hook");
   assert.equal(l.status, "fail");
   assert.match(l.fix ?? "", /restart flow/i);
+});
+
+test("2026-08-04: a missing Accessibility permission turns the GREEN hook line red", () => {
+  // La panne silencieuse de macOS : le crochet est parfaitement « armed », donc
+  // sans ce fait la ligne serait VERTE au-dessus d'un raccourci qui ne repond
+  // jamais. C'est le cas qui justifie que `access` soit dans les faits.
+  const l = line(healthy({ access: "missing" }), "keyboard-hook");
+  assert.equal(l.status, "fail");
+  assert.match(l.detail, /accessibility/i);
+  // Et le remede doit nommer les Reglages Systeme, PAS un redemarrage : Flow
+  // redemarre ne rend pas une autorisation que le systeme refuse.
+  assert.match(l.fix ?? "", /system settings/i);
+  assert.doesNotMatch(l.fix ?? "", /^Restart Flow/i);
+});
+
+test("2026-08-04: the permission produces ONE line, not a second one beside the hook", () => {
+  // Deux lignes rouges pour une cause unique est la facon dont un rapport devient
+  // du bruit qu'on arrete de lire.
+  const report = evaluateSelfCheck(healthy({ access: "missing", hook: { ...ARMED, state: "abandoned" } }));
+  const failing = report.lines.filter((l) => l.status === "fail");
+  assert.equal(failing.length, 1, JSON.stringify(failing, null, 2));
+  assert.equal(failing[0].id, "keyboard-hook");
+  assert.deepEqual(
+    report.lines.map((l) => l.id),
+    ["keyboard-hook", "microphone", "speech-engine", "speech-model", "local-api", "data-folder"],
+    "le rapport a gagne ou perdu une ligne",
+  );
+});
+
+test("2026-08-04: on Windows the question does not apply and changes no verdict", () => {
+  const l = line(healthy({ access: "unknown" }), "keyboard-hook");
+  assert.equal(l.status, "ok");
+  assert.doesNotMatch(l.detail, /accessibility/i);
 });
 
 test("B5: a hook still arming is 'unknown', never a false alarm", () => {
